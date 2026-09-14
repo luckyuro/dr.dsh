@@ -1,0 +1,103 @@
+# dr.dsh — Rust workspace.
+#
+# Design constraints that shape this file:
+#
+# 1. The relay must stay auditable. It carries ciphertext and nothing else, and
+#    its dependency closure is part of the security argument (ADR-0002), so it
+#    gets the smallest closure we can and forbids unsafe code in-crate.
+# 2. The daemon is the only component allowed to reach a DSH instance. Cargo
+#    features therefore never let the relay become DSH-aware.
+# 3. Edition 2024, resolver 3. Versions below are the ones this workspace was
+#    resolved against; bump them deliberately, not incidentally.
+
+[workspace]
+resolver = "3"
+members = [
+  "crates/dr-dsh-proto",
+  "crates/dr-dsh-crypto",
+  "crates/dr-dsh-daemon",
+  "crates/dr-dsh-relay",
+]
+# `cargo build` at the root builds the audit-critical pair only; the daemon and
+# relay are built explicitly so a contributor never accidentally links a
+# DSH-aware binary into a relay build.
+default-members = ["crates/dr-dsh-proto", "crates/dr-dsh-crypto"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+rust-version = "1.88"
+
+[workspace.dependencies]
+# Internal crates, referenced by path so one workspace version rules.
+dr-dsh-proto = { path = "crates/dr-dsh-proto" }
+dr-dsh-crypto = { path = "crates/dr-dsh-crypto" }
+
+# Runtime + HTTP/WS surface. axum keeps the relay's routing declarative and
+# reviewable; it brings hyper/tower regardless.
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "signal", "time", "sync", "fs", "io-util", "process"] }
+axum = { version = "0.8", features = ["ws"] }
+futures-util = "0.3"
+tower = "0.5"
+# The daemon talks to DSH over loopback HTTP and must control the Host header and
+# cookie jar itself, so it uses a minimal hyper client rather than a full client
+# stack: fewer dependencies in a process that runs unattended, and no hidden
+# redirect/retry behaviour between us and DSH's authentication fence.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "client", "client-legacy"] }
+http-body-util = "0.1"
+# The daemon dials the relay and speaks the carrier over one WebSocket. The same
+# crate is used by the relay's integration tests, so the two ends are exercised
+# against one implementation of the transport.
+tokio-tungstenite = "0.29"
+async-trait = "0.1"
+
+# Codec + serialization. The binary wire format is versioned and small enough
+# that a hand-rolled codec is defensible (ADR-0004); serde covers only the JSON
+# control plane (pairing, device management, health).
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+bytes = "1.12"
+
+# Crypto. RustCrypto's pure-Rust stack keeps the closure auditable and builds on
+# targets without a C toolchain (old-CPU mitigation, see roadmap M5).
+aes-gcm = "0.11"
+x25519-dalek = { version = "3.0", features = ["static_secrets", "zeroize"] }
+ed25519-dalek = { version = "3.0", features = ["zeroize"] }
+hkdf = "0.13"
+hmac = "0.13"
+sha2 = "0.11"
+subtle = "2.6"
+rand = "0.9"
+getrandom = "0.4"
+zeroize = { version = "1.9", features = ["derive"] }
+spake2 = "0.4"
+
+# Encoding.
+base64 = "0.22"
+
+# Observability + errors.
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+thiserror = "2.0"
+anyhow = "1.0"
+
+# Testing.
+tempfile = "3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"

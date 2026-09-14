@@ -1,0 +1,35 @@
+{
+  // Emits the client the relay serves.
+  //
+  // One `.js` file per source module, with imports rewritten to the emitted names: the
+  // relay serves flat modules and a browser loads them over HTTP, so there is nothing to
+  // bundle — and not bundling keeps the served file recognisable as the source it came
+  // from, which matters for a component a user is asked to trust.
+  //
+  // `allowImportingTsExtensions` is off here on purpose: emitted JavaScript cannot import
+  // `./tunnel.ts`, so the compiler rewrites the specifiers to `./tunnel.js`.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true,
+    "noEmit": false,
+    "emitDeclarationOnly": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "composite": false,
+    "incremental": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "module": "esnext",
+    "target": "es2022",
+    "lib": ["es2024", "dom", "dom.iterable"]
+  },
+  "include": ["src"],
+  // Tests are not part of the client: shipping them would serve assertion code to a
+  // browser and require a test runner it does not have.
+  //
+  // The service worker is excluded because it needs the worker lib rather than the DOM
+  // lib, and the two disagree about what `self` is; it has its own build.
+  "exclude": ["src/**/*.test.ts", "src/service-worker.ts"]
+}

@@ -1,0 +1,20 @@
+[package]
+name = "dr-dsh-proto"
+description = "dr.dsh wire protocol: frame codec, message types, version negotiation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+base64.workspace = true
+bytes.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+# Fixtures and the cross-language conformance corpus are JSON (ADR-0004).
+serde_json.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,18 @@
+[toolchain]
+# Pinned so `cargo test` on a contributor machine runs the same compiler as CI.
+# `stable` is intentional: the daemon ships to end users and must not require a
+# nightly toolchain.
+channel = "stable"
+components = ["rustfmt", "clippy"]
+targets = [
+  # Desktop: the daemon ships here.
+  "x86_64-unknown-linux-gnu",
+  "aarch64-unknown-linux-gnu",
+  "x86_64-apple-darwin",
+  "aarch64-apple-darwin",
+  "x86_64-pc-windows-msvc",
+  # Old-CPU / NAS fallbacks (roadmap M5).
+  "armv7-unknown-linux-gnueabihf",
+  "aarch64-unknown-linux-musl",
+]
+profile = "minimal"

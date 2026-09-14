@@ -1,0 +1,31 @@
+{
+  "name": "@dr.dsh/dsh-plugin",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "dr.dsh's DSH-side bundle: turns in-process harness events into daemon reports",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "dsh": ">=0.1.5 <0.2"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "node --test 'src/*.test.ts'"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.2"
+  }
+}

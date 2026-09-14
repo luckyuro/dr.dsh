@@ -1,0 +1,23 @@
+{
+  // Emits the service worker beside the client modules.
+  //
+  // Its own project because a worker global scope and a page global scope disagree about
+  // what `self` and `Event` are: with both libs present, `self` resolves to `Window` and
+  // every service-worker API disappears.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024", "webworker"],
+    "rootDir": "src",
+    "outDir": "dist",
+    "composite": false,
+    "incremental": false,
+    "noEmit": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    // Emitted JavaScript cannot import `./routing.ts`.
+    "allowImportingTsExtensions": false,
+    "rewriteRelativeImportExtensions": true
+  },
+  "include": ["src/service-worker.ts", "src/routing.ts"]
+}

@@ -1,0 +1,19 @@
+{
+  "name": "@dr.dsh/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "dr.dsh wire protocol: types, constants, and a conformance corpus",
+  "exports": {
+    ".": "./src/index.ts",
+    "./conformance": "./src/conformance.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.2"
+  }
+}

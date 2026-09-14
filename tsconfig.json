@@ -1,0 +1,12 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/protocol" },
+    { "path": "packages/crypto" },
+    { "path": "plugins/dr.dsh" },
+    { "path": "apps/pwa" },
+    // The service worker is its own project because a worker global scope and a
+    // page global scope disagree about what `self` and `Event` are.
+    { "path": "apps/pwa/tsconfig.worker.json" }
+  ]
+}

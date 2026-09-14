@@ -1,0 +1,39 @@
+[package]
+name = "dr-dsh-relay"
+description = "dr.dsh zero-knowledge relay: routes opaque frames between daemons and clients"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The binary lives in src/bin/ so the integration tests can import the same code
+# the shipped binary runs.
+[[bin]]
+name = "drdsh-relay"
+path = "src/bin/drdsh-relay.rs"
+
+[dependencies]
+# NOTE: no dr-dsh-crypto, no crypto primitives, no DSH knowledge. The relay holds
+# ciphertext and routing metadata only; keeping that true is a build-time
+# property, not a convention (ADR-0002). Adding a crypto dependency here is a
+# design change that needs an ADR, not a commit.
+dr-dsh-proto.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+tower.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio-tungstenite = "0.29"
+
+[lints]
+workspace = true

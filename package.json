@@ -1,0 +1,29 @@
+{
+  "name": "dr.dsh",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "description": "dr.dsh \u2014 local-first remote access and control for DeepSeek Harness",
+  "packageManager": "pnpm@12.3.4",
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "scripts": {
+    "build:rs": "cargo build --workspace",
+    "check:rs": "cargo check --workspace --all-targets",
+    "gen:vectors": "node scripts/ws-conformance.mjs",
+    "test:rs": "pnpm run gen:vectors && cargo test --workspace",
+    "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
+    "fmt:rs": "cargo fmt --all",
+    "typecheck:ts": "pnpm -r --if-present run typecheck",
+    "test:ts": "pnpm -r --if-present run test",
+    "lint:imports": "node scripts/check-dsh-isolation.mjs",
+    "docs:check": "node scripts/check-doc-links.mjs",
+    "verify": "pnpm run check:rs && pnpm run lint:rs && pnpm run test:rs && pnpm run typecheck:ts && pnpm run test:ts && pnpm run lint:imports && pnpm run docs:check"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.2"
+  }
+}

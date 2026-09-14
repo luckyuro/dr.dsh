@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // WebCrypto is a DOM/Worker API: `CryptoKey` and `crypto.subtle` type from
+    // the DOM lib. This package runs in the browser and in node (which ships the
+    // same API), so the DOM types are the honest description of it.
+    "lib": ["es2024", "dom"]
+  },
+  "include": ["src"],
+  "references": [{ "path": "../protocol" }]
+}

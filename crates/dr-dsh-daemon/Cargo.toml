@@ -1,0 +1,48 @@
+[package]
+name = "dr-dsh-daemon"
+description = "dr.dsh local daemon: supervises dsh web, proxies it over an outbound E2E tunnel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+# The binary lives in src/bin/drdshd.rs so the same code is reachable as a library
+# from the integration tests, which drive the real process and a real socket.
+[[bin]]
+name = "drdshd"
+path = "src/bin/drdshd.rs"
+
+[dependencies]
+dr-dsh-proto.workspace = true
+dr-dsh-crypto.workspace = true
+tokio.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+hyper.workspace = true
+hyper-util.workspace = true
+http-body-util.workspace = true
+tokio-tungstenite.workspace = true
+async-trait.workspace = true
+bytes.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+sha2.workspace = true
+hkdf.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The carrier's end-to-end test stands up a real relay in-process rather than
+# mocking one: the property under test is about what the relay *sees*, and a mock
+# would be written to agree with us.
+dr-dsh-relay = { path = "../dr-dsh-relay" }
+axum.workspace = true
+futures-util.workspace = true
+
+[lints]
+workspace = true

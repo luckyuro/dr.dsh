@@ -1,0 +1,14 @@
+# Nothing that is not needed to build belongs in the build context: it makes the build slower and it
+# is how a developer's local state — keys, paired-device registries — ends up shipped by accident.
+target/
+node_modules/
+**/node_modules/
+**/dist/
+**/dist-worker/
+**/*.tsbuildinfo
+.git/
+.gitignore
+.dr.dsh/
+*.local.toml
+docs/
+scripts/

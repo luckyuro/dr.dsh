@@ -1,0 +1,13 @@
+# One line ending for a repository whose docs are read on Windows as often as on
+# macOS and Linux: CRLF noise in diffs makes reviewed design documents hard to
+# review, and Markdown tables render differently with stray carriage returns.
+* text=auto eol=lf
+
+# Binary artifacts that must never be normalized.
+*.png binary
+*.jpg binary
+*.ico binary
+
+# Lockfiles are generated; collapsing them in review hides real dependency moves.
+pnpm-lock.yaml linguist-generated=true
+Cargo.lock linguist-generated=true

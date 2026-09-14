@@ -1,0 +1,36 @@
+[package]
+name = "dr-dsh-crypto"
+description = "dr.dsh end-to-end crypto: SPAKE2 pairing, session keys, sealed frames"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dr-dsh-proto.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+aes-gcm.workspace = true
+x25519-dalek.workspace = true
+ed25519-dalek.workspace = true
+hkdf.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+subtle.workspace = true
+rand.workspace = true
+getrandom.workspace = true
+zeroize.workspace = true
+spake2.workspace = true
+base64.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+# The SPAKE2 crate takes its ephemeral scalar from an injected RNG, and its `rand_core` is
+# two major versions behind the `rand` this workspace uses. The vectors need to *be* that
+# RNG, so the pairing PAKE can be pinned to a chosen scalar instead of to whatever was drawn
+# — a vector whose input is random pins nothing. Test-only: nothing that ships links it.
+rand_core = "0.6"
+
+[lints]
+workspace = true

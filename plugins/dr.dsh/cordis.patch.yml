@@ -1,0 +1,20 @@
+# dr.dsh's contribution to the `web` profile.
+#
+# A bundle is one inserted row: the plugin below owns everything else. Keeping
+# the layer this thin is deliberate — this file is the surface a DSH upgrade can
+# break, so it should stay small enough to review in one glance.
+#
+# Install with:
+#   dsh plugin --profile web add @dr.dsh/dsh-plugin
+# which appends this bundle to `dsh.profile.bundles`. Verify with:
+#   dsh --profile web --dump-config   # shows a "# == @dr.dsh/dsh-plugin" layer
+- insert:
+    - id: dr.dsh
+      name: '@dr.dsh/dsh-plugin'
+      config:
+        # Reports are POSTed here. Loopback only: the daemon never listens on a
+        # public interface, and the plugin has no way to reach one.
+        daemonUrl: 'http://127.0.0.1:8790'
+        # Which events are worth reporting. Alerts are interruptions; the rest
+        # are badge material (see docs/product/mvp.md § Notification taxonomy).
+        report: [turn_complete, approval_requested, goal_complete, subagent_complete]

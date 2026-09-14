@@ -1,0 +1,21 @@
+{
+  "name": "@dr.dsh/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "dr.dsh end-to-end crypto for the browser side: pairing and sealed frames",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "test": "node --test 'src/*.test.ts'"
+  },
+  "dependencies": {
+    "@dr.dsh/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.2"
+  }
+}

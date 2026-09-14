@@ -1,0 +1,31 @@
+{
+  // Host-side TypeScript surface: the DSH plugin, protocol/crypto mirrors, and
+  // the PWA. Browser code lives under an `apps/` package whose own tsconfig
+  // adds the DOM lib, so nothing here accidentally reaches for `window`.
+  "compilerOptions": {
+    "target": "es2024",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "lib": ["es2024"],
+    "types": ["node"],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "esModuleInterop": true,
+    // Relative imports carry the `.ts` extension so node's own type-stripping
+    // runner can execute these files unbundled, in tests and in the browser.
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "skipLibCheck": true,
+    "declaration": true,
+    "sourceMap": true,
+    "composite": true,
+    "incremental": true
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    // The page: DOM globals, no worker globals. `service-worker.ts` deliberately
+    // sits outside this project (see tsconfig.worker.json) because a page and a
+    // worker disagree about what `self` and `Event` are, and one project cannot
+    // hold both without lying about one of them.
+    "lib": ["es2024", "dom", "dom.iterable"]
+  },
+  "include": ["src"],
+  "exclude": ["src/service-worker.ts"],
+  "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/crypto" }]
+}

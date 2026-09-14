@@ -1,0 +1,23 @@
+# dr.dsh workspace.
+#
+# Deliberately NOT a pnpm `catalog:` workspace: the release unit here is the
+# Rust daemon/relay pair plus a TypeScript plugin, and pinning versions in one
+# place buys less than keeping the TS surface small and dependency-light (see
+# docs/decisions/0001-language-split.md).
+packages:
+  # Shared wire protocol: schema of record, fixtures, conformance corpus.
+  - packages/protocol
+  # Pairing + E2E crypto, implemented twice (TS here, Rust in crates/dr-dsh-crypto)
+  # against the same conformance corpus.
+  - packages/crypto
+  # The DSH-side plugin: events, lifecycle coordination, PWA host glue.
+  - plugins/dr.dsh
+  # The remote client (PWA). Must stay a pure static bundle.
+  - apps/pwa
+
+# Dependency lifecycle scripts are denied by default; list only what we review.
+# Keep this list empty until something genuinely needs a build step.
+allowBuilds: {}
+
+# Rust crates are built by cargo, never by a JS toolchain. These paths are
+# excluded from pnpm's view on purpose: crates/* is not a JS package.

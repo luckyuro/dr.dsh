@@ -1,0 +1,75 @@
+{
+  "$comment": "NORMATIVE cross-language conformance corpus for the dr.dsh carrier. Read by crates/dr-dsh-proto (include_str!) and packages/protocol (node:fs). Both implementations assert against these exact bytes in CI; changing a vector is a wire-breaking change and needs a protocol version bump. Header layout (18 bytes, big-endian): magic 'DR' | ver_major u16 | ver_minor u16 | frame_type u16 | flags u16 | stream_id u32 | payload_len u32.",
+  "frames": [
+    {
+      "name": "empty ping on the control stream",
+      "hex": "445200000001003000000000000000000000",
+      "version": [
+        0,
+        1
+      ],
+      "frameType": 48,
+      "flags": 0,
+      "streamId": 0,
+      "payloadHex": ""
+    },
+    {
+      "name": "fin on client stream 1",
+      "hex": "445200000001001100000000000100000000",
+      "version": [
+        0,
+        1
+      ],
+      "frameType": 17,
+      "flags": 0,
+      "streamId": 1,
+      "payloadHex": ""
+    },
+    {
+      "name": "data carrying three bytes on stream 3",
+      "hex": "445200000001001000000000000300000003c0ffee",
+      "version": [
+        0,
+        1
+      ],
+      "frameType": 16,
+      "flags": 0,
+      "streamId": 3,
+      "payloadHex": "c0ffee"
+    },
+    {
+      "name": "window update granting one kilobyte on stream 5",
+      "hex": "44520000000100200000000000050000000400000400",
+      "version": [
+        0,
+        1
+      ],
+      "frameType": 32,
+      "flags": 0,
+      "streamId": 5,
+      "payloadHex": "00000400"
+    }
+  ],
+  "rejections": [
+    {
+      "name": "wrong magic",
+      "hex": "585800000001003000000000000000000000",
+      "reason": "bad_magic"
+    },
+    {
+      "name": "major version 1",
+      "hex": "445200010001003000000000000000000000",
+      "reason": "version_mismatch"
+    },
+    {
+      "name": "unassigned frame type",
+      "hex": "445200000001000900000000000000000000",
+      "reason": "unknown_frame_type"
+    },
+    {
+      "name": "declared payload one byte above the cap",
+      "hex": "445200000001001000000000000000010001",
+      "reason": "payload_too_large"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+# Build output
+target/
+dist/
+dist-worker/
+*.tsbuildinfo
+
+# Dependencies
+node_modules/
+
+# Local runtime state: the daemon's room key, device registry, audit log and crash
+# reports live in a directory like this one on a developer machine. Never commit them.
+.dr.dsh/
+.dsh-remote/
+*.local.toml
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/settings.json
+
+# Local environment
+.env
+.env.local

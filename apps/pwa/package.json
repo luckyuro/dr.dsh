@@ -1,0 +1,20 @@
+{
+  "name": "@dr.dsh/pwa",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "dr.dsh's remote client: a PWA that speaks to the daemon through the tunnel",
+  "scripts": {
+    "typecheck": "tsc -b && tsc -b tsconfig.worker.json",
+    "test": "node --test 'src/*.test.ts'",
+    "build": "rm -rf dist dist-worker && tsc -p tsconfig.build.json && npx tsc -p tsconfig.worker.json && cp src/shell.js src/ws-bootstrap.js dist/ && cp static/manifest.webmanifest static/icon-192.png static/icon-512.png dist/"
+  },
+  "dependencies": {
+    "@dr.dsh/crypto": "workspace:*",
+    "@dr.dsh/protocol": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/node": "^22.20.2"
+  }
+}
