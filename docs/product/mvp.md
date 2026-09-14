@@ -913,7 +913,7 @@ JSON——手写正是 `accepted` 缺失的原因），并加了两条把每个 
 ### 五、这一轮的验证
 
 - `pnpm run verify` **全绿**：Rust **255** 个测试 + TS **226** 个（PWA 181、protocol 34、plugin 8、crypto 3）
-  + `docs:check`（29 个 Markdown、253 条相对链接）。
+  + `docs:check`（29 个 Markdown、270 条相对链接；README 的快速开始与本轮新增文档的链接都算在内）。
 - `scripts/pwa-crash-smoke.mjs` **9/9**；`scripts/cpu-baseline-smoke.mjs` **13/13**；
   `scripts/browser-pairing-smoke.mjs` **13/13**（真实浏览器，计时 7.9 秒）。
 - **Docker 复验**（保活与崩溃上报之后重建镜像，两次）：容器里跑的是带保活的中继（启动日志
