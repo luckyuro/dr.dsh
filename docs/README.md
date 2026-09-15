@@ -6,7 +6,7 @@
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [`../README.zh.md`](../README.zh.md) | 一分钟版本：它做什么、架构草图、原则 |
+| [`../README.zh.md`](../README.zh.md) | 功能概览、Relay / Daemon 两个入口、快速安装与配对 |
 | [`product/mvp.md`](product/mvp.md) | MVP 包含什么、不包含什么、目标平台优先级、里程碑的完成标准 |
 | [`product/overview.md`](product/overview.md) | 定义文档的每条承诺落在本仓库的哪个位置 |
 
@@ -14,7 +14,10 @@
 
 | 文档 | 内容 |
 | :--- | :--- |
-| [`operations/install.md`](operations/install.md) | 在 Linux / macOS / Windows 上安装 daemon，含 systemd、launchd、计划任务与附着模式 |
+| [`../relay/README.zh.md`](../relay/README.zh.md) | Relay 独立安装、管理命令、配置、PWA 与 Docker |
+| [`../daemon/README.zh.md`](../daemon/README.zh.md) | Daemon 独立安装、管理命令、配对、远端中继与插件 |
+| [`operations/cli.md`](operations/cli.md) | 两侧命令与配置、旧版统一入口兼容与配对状态迁移 |
+| [`operations/install.md`](operations/install.md) | daemon 构建、旧 CPU、Linux/macOS 常驻、Windows 边界与附着模式 |
 | [`operations/self-hosting.md`](operations/self-hosting.md) | 自托管中继：Docker、systemd、反向代理与超时陷阱 |
 | [`operations/troubleshooting.md`](operations/troubleshooting.md) | 症状 → 原因 → 确认 → 修复 |
 | [`integration/dsh-surface.md`](integration/dsh-surface.md) | 所依赖的确切 DSH 接口面，以及 `drdshd doctor` 能查出什么 |
@@ -41,6 +44,8 @@
 
 ```
 README.md / README.zh.md          项目入口
+relay/README.md / README.zh.md    Relay 独立入口
+daemon/README.md / README.zh.md   Daemon 独立入口
 docs/
   README.md                       本文件
   architecture.md                 组件、数据流、状态模型、失败与恢复
@@ -64,9 +69,12 @@ docs/
     0011-hosting-rules.md         托管中继：不预埋数据收集
     0012-audit-log-retention.md   审计日志：本机、滚动、不上送
     0013-room-key-provisioning.md 房间密钥：生成并落盘
+    0014-installation-and-services.md 统一安装与系统服务管理
+    0015-independent-relay-and-daemon.md 两侧独立安装、配置与服务
   integration/
     dsh-surface.md                依赖的 DSH 接口面、证据、失效表现、升级仪式
   operations/
+    cli.md                        一键安装与统一命令
     install.md                    daemon 的三平台安装
     self-hosting.md               自托管部署
     troubleshooting.md            故障排查

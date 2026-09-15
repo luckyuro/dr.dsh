@@ -4,7 +4,11 @@
 
 自托管不是省钱的选择，而是本项目安全叙事的一部分：中继提供远端页面所需的静态应用壳，因此它位于客户端的可信计算基里；由你自己的基础设施提供这个壳，中继运营者与用户就是同一个人（见 [`../security.md`](../security.md) § 5.1）。
 
-部署之前需要知道当前阶段：中继的 ingress（HTTP/WebSocket 路由与日志初始化）按 `crates/dr-dsh-relay/src/main.rs` 的注释随 **M0** 落地。在那之前 `drdsh-relay` 会打印两行版本信息然后以失败状态退出——代码里明确选择"不假装服务"，而不是绑一个什么也不答的端口。所以现在照本文部署，进程会立刻退出；这是预期行为，不是配置错误。反向代理、证书与 systemd 单元可以先准备好，M0 一到就能用。里程碑的完成标准见 [`../product/mvp.md`](../product/mvp.md) § 五。
+中继已经实现 HTTP/WebSocket 路由、`/healthz` 与静态客户端服务。macOS / Linux 可以运行
+`sh relay/install.sh --start` 独立构建、安装并启动中继与 PWA，随后使用 `drdsh-relayctl restart`、
+`drdsh-relayctl status`、`drdsh-relayctl logs --follow`。完整入口见
+[`../../relay/README.zh.md`](../../relay/README.zh.md)，旧安装迁移见 [`cli.md`](cli.md)。
+
 ## 中继是什么，不是什么
 
 `drdsh-relay` 的完整设计只有一句话：daemon 主动拨出并在一个 room 上停靠，客户端拨入并请求同一个 room，中继把两者的帧互相拼接（`crates/dr-dsh-relay/src/main.rs` 的模块文档）。这种"贫瘠"正是它的安全论据。
@@ -25,9 +29,9 @@
 
 强制手段是构建期属性：`crates/dr-dsh-relay/Cargo.toml` 不声明任何密码学依赖，也不使用 `dr-dsh-proto` 的 `control` 模块。这两点在 `cargo test -p dr-dsh-relay` 里被静态强制（[`../../crates/dr-dsh-relay/tests/zero_knowledge.rs`](../../crates/dr-dsh-relay/tests/zero_knowledge.rs)）：它检查依赖表、扫描中继源码里是否出现 `dr_dsh_crypto` 或 `dr_dsh_proto::control`，并用一个"扫描确实看到了预期形状"的测试防止前两条静默通过。依赖改动时 `cargo tree -p dr-dsh-relay` 是评审材料；检查命令与细节见 [`../development/contributing.md`](../development/contributing.md) 的硬规则一节。
 
-## 配置：只有两个环境变量
+## 配置：环境变量
 
-`drdsh-relay` 没有配置文件、没有命令行参数，全部配置来自环境变量（`crates/dr-dsh-relay/src/config.rs`）：
+原始 `drdsh-relay` 的配置来自环境变量；统一 CLI 的 JSON 配置会被转换为服务环境（`crates/dr-dsh-relay/src/config.rs`）：
 
 | 环境变量 | 默认值 | 含义 | 非法值的处理 |
 | :--- | :--- | :--- | :--- |
@@ -83,7 +87,7 @@ room id 是 128 位随机数（`b64u`），它是**路由句柄而不是凭据**
 | 组件 | 默认端口 | 谁在监听 | 暴露面 |
 | :--- | :--- | :--- | :--- |
 | DSH Web UI | `3080` | DSH 进程自己 | 仅回环。daemon 只允许 DSH 绑 `127.0.0.1`（`crates/dr-dsh-daemon/src/config.rs` 里 `LOOPBACK_HOST` 是常量，没有可配置项） |
-| daemon 本地面 | `8790` | `drdshd` | 仅回环 + 本地令牌。`POST /report`（插件上报）、`GET /healthz`、`GET /status`（[`../protocol.md`](../protocol.md) § 5.2） |
+| daemon 本地面（规划，尚未监听） | `8790` | 待实现 | 协议规划的 `POST /report`、`GET /healthz`、`GET /status` 尚未由 daemon 提供；统一 CLI 使用系统服务状态和 DSH HTTP 探测 |
 | relay | `8787` | `drdsh-relay` | 默认回环；由你的反向代理暴露到公网 |
 | DSH 的 `/api/remote.mux` | 随 DSH 端口 | DSH 进程自己 | 仅回环。DSH 侧唯一的 WebSocket 多路复用路由，经隧道到达远端 |
 
@@ -333,9 +337,10 @@ Caddy 这一侧还有两个与超时有关的事实值得记住：`stream_timeou
 
 ## 健康与可观测性
 
-**规范定义的存活探针是 `GET /healthz`**，返回版本与 room 数，且不包含任何 room 标识（[`../protocol.md`](../protocol.md) § 5.1）。它的实现随 M0 的 ingress 一起落地；在那之前中继甚至没有绑定端口，也没有初始化 `tracing` subscriber（它只往标准输出 `println!` 两行信息），所以 `RUST_LOG` 现在不生效。依赖里已经选了 `tracing` 与带 `env-filter`、`json` 特性的 `tracing-subscriber`，日志的具体形态（默认级别、是否默认 JSON）随 M0 一并确定。
+**存活探针是 `GET /healthz`**，返回版本与 room 数，不包含 room 标识。中继已初始化
+`tracing` subscriber，默认级别为 `info`，可通过 `RUST_LOG` 调整。
 
-M0 之后推荐的健康检查：
+健康检查：
 
 ```bash
 curl -fsS http://127.0.0.1:8787/healthz     # 存活 + 版本 + room 数
@@ -344,7 +349,7 @@ ss -ltnp | grep 8787                        # 端口是否真的在听
 journalctl -u drdsh-relay -f                  # 或: docker compose logs -f relay
 ```
 
-M0 之后应当关注的内容：
+应当关注的内容：
 
 | 观察对象 | 为什么 | 异常时的样子 |
 | :--- | :--- | :--- |
@@ -358,7 +363,7 @@ M0 之后应当关注的内容：
 
 中继重启的代价很小：room 表在内存里，重启后 daemon 会按抖动指数退避重连（`crates/dr-dsh-daemon/src/uplink.rs`：`base` 500ms、倍增、上限 30s），所以不会形成惊群。daemon 在隧道断开期间继续监管本地 DSH，本机会话不受影响（[`../architecture.md`](../architecture.md) § 4）。
 
-M4 计划把"反向代理超时能被启动期检测并警告"作为部署检测的一部分（[`../product/mvp.md`](../product/mvp.md) § 五）。在那之前，超时只能靠人工核对本文的取值。
+部署检测与保活已经实现，见本文「部署检测」；仍需按整条代理链核对超时。
 
 ## 容量与上限
 

@@ -99,6 +99,19 @@
 
 ## 2. 数据流
 
+### 本机安装与服务入口
+
+`relay/install.sh` / `drdsh-relayctl` 与 `daemon/install.sh` / `drdsh-daemonctl` 是两个独立入口。
+各自在 `<prefix>/lib/dr.dsh/relay`、`<prefix>/lib/dr.dsh/daemon` 安装程序，使用独立的
+`relay.json` / `daemon.json`、服务身份、日志与更新锁。PWA 归 relay，插件归 daemon；
+更新仅重启相关宿主。源码中的 CLI 与服务管理实现共享，安装后的管理文件各自保存，见
+[ADR-0015](decisions/0015-independent-relay-and-daemon.md)。
+
+`install.sh` / `drdsh` 从源码安装各组件，保存 DSH 的绝对路径、工作目录和状态目录，
+通过用户级 launchd / systemd 启停 Rust 二进制。PWA 随中继分发；插件通过 DSH 的 web profile
+安装命令注册。该运维入口不增加网络接口或协议消息，见
+[ADR-0014](decisions/0014-installation-and-services.md) 与[命令说明](operations/cli.md)。该统一入口保留为旧安装兼容路径。
+
 ### 2.1 启动与就绪
 
 ```

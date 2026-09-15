@@ -19,6 +19,8 @@
 | [0011](0011-hosting-rules.md) | 托管中继 | 自托管是唯一支持形态；中继不预埋任何为托管化的数据收集，限流留在自托管默认上 |
 | [0012](0012-audit-log-retention.md) | 审计日志 | 本机 `audit.jsonl`（0600）、30 天 / 10 000 行滚动、只记事件不记内容、永不上送 |
 | [0013](0013-room-key-provisioning.md) | 房间密钥 | 首次运行生成并落盘 0600，`run`/`pair` 都从那里读；命令行可覆盖但不写盘 |
+| [0014](0014-installation-and-services.md) | 安装与服务 | 统一 CLI 安装各组件，使用用户级系统服务管理器，配置与设备身份在卸载时保留 |
+| [0015](0015-independent-relay-and-daemon.md) | 组件独立管理 | Relay 与 Daemon 各自安装、配置、更新和卸载，保留共享源码和旧入口兼容 |
 
 ## 什么时候需要写一条新 ADR
 

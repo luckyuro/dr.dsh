@@ -10,8 +10,12 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
+    "drdsh": "node scripts/drdsh.mjs",
+    "test:cli": "node --test scripts/drdsh.test.mjs",
+    "smoke:services": "node scripts/service-smoke.mjs",
+    "smoke:systemd": "node scripts/systemd-smoke.mjs",
     "build:rs": "cargo build --workspace",
-    "check:rs": "cargo check --workspace --all-targets",
+    "check:rs": "pnpm run gen:vectors && cargo check --workspace --all-targets",
     "gen:vectors": "node scripts/ws-conformance.mjs",
     "test:rs": "pnpm run gen:vectors && cargo test --workspace",
     "lint:rs": "cargo clippy --workspace --all-targets -- -D warnings",
@@ -20,7 +24,7 @@
     "test:ts": "pnpm -r --if-present run test",
     "lint:imports": "node scripts/check-dsh-isolation.mjs",
     "docs:check": "node scripts/check-doc-links.mjs",
-    "verify": "pnpm run check:rs && pnpm run lint:rs && pnpm run test:rs && pnpm run typecheck:ts && pnpm run test:ts && pnpm run lint:imports && pnpm run docs:check"
+    "verify": "pnpm run check:rs && pnpm run lint:rs && pnpm run test:rs && pnpm run typecheck:ts && pnpm run test:ts && pnpm run test:cli && pnpm run lint:imports && pnpm run docs:check"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

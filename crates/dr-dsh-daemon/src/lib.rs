@@ -102,9 +102,15 @@ pub async fn run_command(
 ) -> anyhow::Result<ExitCode> {
     use anyhow::Context as _;
 
+    // Register before spawning DSH: service managers can stop us during startup,
+    // and the default SIGTERM action would leave our child behind.
+    let shutdown_signal = termination_signal().context("cannot listen for shutdown signals")?;
+    tokio::pin!(shutdown_signal);
     let supervisor_config = dsh::SupervisorConfig {
         port: port.unwrap_or_else(|| dsh::SupervisorConfig::default().port),
-        ..dsh::SupervisorConfig::default()
+        executable: std::env::var_os("DSHD_DSH")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| dsh::SupervisorConfig::default().executable),
     };
     if attach_token.is_some() && attach.is_none() {
         anyhow::bail!(
@@ -219,9 +225,17 @@ pub async fn run_command(
             // holds the port forever. Naming that, and naming `--attach`, turns twenty minutes
             // of reading logs into one sentence.
             ensure_port_free(supervisor_config.port)?;
-            let supervisor = dsh::Supervisor::start(supervisor_config.clone())
-                .await
-                .context("cannot supervise DSH")?;
+            let supervisor = tokio::select! {
+                result = dsh::Supervisor::start(supervisor_config.clone()) => {
+                    result.context("cannot supervise DSH")?
+                }
+                result = &mut shutdown_signal => {
+                    result.context("cannot listen for shutdown signals")?;
+                    // Supervisor::start owns a kill-on-drop child until readiness.
+                    println!("drdshd stopped during DSH startup");
+                    return Ok(ExitCode::SUCCESS);
+                }
+            };
             let ready = supervisor.ready().clone();
             println!(
                 "DSH is listening on {}:{} (pid {})",
@@ -459,12 +473,12 @@ pub async fn run_command(
     };
 
     let mut lifecycle_watch_for_loop = lifecycle_task;
-    // Ctrl-C is the operator's stop signal for the daemon. The exit watch that used to live
+    // SIGTERM and Ctrl-C share teardown. The exit watch that used to live
     // here belongs to the lifecycle driver now: it is what turns an unexpected exit into a
     // restart, and two watchers would race to decide whether DSH comes back.
     tokio::select! {
-        signal = tokio::signal::ctrl_c() => {
-            signal.context("cannot listen for Ctrl-C")?;
+        signal = &mut shutdown_signal => {
+            signal.context("cannot listen for shutdown signals")?;
             println!("\nstopping DSH");
         }
         // The driver task ending means it has given up — its policy ran out, or it was
@@ -503,6 +517,26 @@ pub async fn run_command(
     lifecycle_watch_for_loop.abort();
     println!("drdshd stopped");
     Ok(ExitCode::SUCCESS)
+}
+
+#[cfg(unix)]
+fn termination_signal() -> std::io::Result<impl std::future::Future<Output = std::io::Result<()>>> {
+    use tokio::signal::unix::{SignalKind, signal};
+
+    let mut interrupt = signal(SignalKind::interrupt())?;
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(async move {
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+        Ok(())
+    })
+}
+
+#[cfg(not(unix))]
+fn termination_signal() -> std::io::Result<impl std::future::Future<Output = std::io::Result<()>>> {
+    Ok(tokio::signal::ctrl_c())
 }
 
 /// Decodes a room key from unpadded base64url.

@@ -3,14 +3,30 @@
 本文覆盖 **Linux、macOS、Windows** 三个平台。中继的部署（含 Docker）在
 [`self-hosting.md`](self-hosting.md)；这里只讲 daemon——那台**运行着 DSH 的电脑**上常驻的进程。
 
+## 推荐：Daemon 独立安装与命令
+
+macOS / Linux 可以直接在源码目录运行：
+
+```sh
+sh daemon/install.sh --start
+export PATH="$HOME/.local/bin:$PATH"
+drdsh-daemonctl status
+drdsh-daemonctl restart
+drdsh-daemonctl logs --follow
+```
+
+先准备可连接的中继；Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.zh.md)，
+两侧配置和旧安装迁移见 [`cli.md`](cli.md)。下面保留手工构建、旧 CPU 与附着模式说明。
+Windows 的一键路径是启用 systemd 的 WSL2；原生 Windows 仍需手工运行二进制。
+
 ## 先决条件（三个平台相同）
 
 | 需要的 | 为什么 | 怎么确认 |
 | :--- | :--- | :--- |
 | **Rust stable** | 目前从源码构建；预编译产物是 M4 的交付物 | `cargo --version` |
-| **Node.js 20+** | DSH 本身是一个 Node 程序 | `node --version` |
+| **Node.js 22.19+ 或 24+** | DSH 本身是一个 Node 程序 | `node --version` |
 | **DSH 已安装** | daemon 监督它，不替代它 | `dsh --version` |
-| **一个中继地址与房间密钥** | 远端设备靠它找到你的电脑 | 见 [`self-hosting.md`](self-hosting.md) |
+| **一个中继地址** | 远端设备靠它找到你的电脑 | 见 [`self-hosting.md`](self-hosting.md) |
 
 **房间密钥不用你管**：第一次运行 `drdshd run`（或 `drdshd pair`）时它会自动生成，写到状态目录里的
 `room-key`（0600），之后两个命令都从那里读。它不会打印出来——配对是把密钥交给设备的唯一方式，打印
@@ -90,142 +106,41 @@ drdshd run --relay wss://relay.example     # 房间密钥自动读/生成，见�
 
 ---
 
-## Linux：systemd（用户级单元）
+## Linux 与 macOS 常驻
 
-用户级（`--user`）而不是系统级：daemon 要启动的是**你**的 DSH、读**你**的配置，
-而系统级单元跑在另一个用户下，会以那个用户的身份启动一个空的 DSH。
-
-`~/.config/systemd/user/drdshd.service`：
-
-```ini
-[Unit]
-Description=dr.dsh daemon
-After=network-online.target
-
-[Service]
-Type=simple
-# 用绝对路径：systemd 的 PATH 与你 shell 里的不是同一个。
-ExecStart=%h/.local/bin/drdshd run --relay wss://relay.example --room-key %h/.config/drdshd/room-key
-Restart=on-failure
-RestartSec=2
-
-[Install]
-WantedBy=default.target
-```
-
-密钥放在只有你能读的文件里（`chmod 600`），而不是写在单元文件里——单元文件会被
-`systemctl cat` 打印出来，也会进入日志。
+独立入口自动生成用户级 systemd / LaunchAgent 定义，并保存 DSH 的绝对路径、工作目录和状态目录：
 
 ```sh
-install -d -m 700 ~/.config/drdshd
-cargo run -p dr-dsh-daemon -- room-key > ~/.config/drdshd/room-key
-chmod 600 ~/.config/drdshd/room-key
-
-systemctl --user daemon-reload
-systemctl --user enable --now drdshd
-systemctl --user status drdshd
+drdsh-daemonctl enable      # 下次登录自动启动
+drdsh-daemonctl start       # 现在启动
+drdsh-daemonctl stop
+drdsh-daemonctl disable     # 取消下次登录自启动
 ```
 
-**让它在你不登录时也运行**（否则注销即停止）：
+细节见 [`cli.md`](cli.md)。Linux 注销后保留用户服务需要管理员运行
+`loginctl enable-linger <用户>`；macOS LaunchAgent 依赖 GUI 登录，合盖休眠仍会使网络不可用。
 
-```sh
-sudo loginctl enable-linger "$USER"
-```
+**服务参数不需要房间密钥。** daemon 自动从状态目录读/生成 `room-key`；`--room-key` 接受密钥本身，
+不接受文件路径。不要把密钥写进 unit、plist、任务定义或命令日志。
 
-日志：
+原始 `drdshd` 仍可交给自己的进程管理器，命令为 `drdshd run --relay ws://127.0.0.1:8787`。
+设置 `DSHD_DSH=/绝对路径/dsh` 与 `DSHD_STATE_DIR=/绝对路径/state`，明确工作目录与 PATH。
+Unix 上 SIGTERM 与 Ctrl-C 共用停止流程，会清理托管的 DSH。
 
-```sh
-journalctl --user -u drdshd -f
-```
+## Windows
 
----
+一键安装与服务命令在启用 systemd 的 WSL2 内使用；DSH、Node 和 Rust 也应安装在同一 WSL2 环境中。
 
-## macOS：launchd（LaunchAgent）
-
-LaunchAgent 在**你登录时**启动。若要在未登录时也运行，需要 LaunchDaemon 加 `UserName`，
-但那会带来权限与钥匙串的额外问题，而 daemon 只需要在你有会话时可用。
-
-`~/Library/LaunchAgents/dev.dshremote.drdshd.plist`：
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key>
-  <string>dev.dshremote.drdshd</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/YOURNAME/.local/bin/drdshd</string>
-    <string>run</string>
-    <string>--relay</string>
-    <string>wss://relay.example</string>
-    <string>--room-key</string>
-    <string>REPLACE_WITH_THE_KEY</string>
-  </array>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>StandardOutPath</key>
-  <string>/Users/YOURNAME/Library/Logs/drdshd.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/YOURNAME/Library/Logs/drdshd.log</string>
-</dict>
-</plist>
-```
-
-```sh
-launchctl bootstrap gui/"$(id -u)" ~/Library/LaunchAgents/dev.dshremote.drdshd.plist
-launchctl print gui/"$(id -u)"/dev.dshremote.drdshd | head -20
-```
-
-改完 plist 之后：`launchctl bootout` 再 `bootstrap`。**`launchctl load` 不会重新读取已改动的文件**，
-这是 macOS 上最常见的「我改了配置但没生效」。
-
-**`launchd` 不会展开 `~`**，也不读你的 shell 配置：路径写绝对路径，`PATH` 上的东西（比如 `dsh`）
-要么写全路径，要么在 plist 里给 `EnvironmentVariables` 加一条 `PATH`。
-
-### 让 macOS 在合盖时不睡（可选）
-
-笔记本合盖后 daemon 仍然活着但网络会断，远端会看到中继不可达。这属于预期行为；
-如果你需要它一直在线，用 `caffeinate` 或系统设置的「电源适配器」策略，而不是改 daemon。
-
----
-
-## Windows：计划任务或 NSSM
-
-Windows 没有与 SIGTERM 对应的东西，daemon 的停止逻辑在 Windows 上会走强杀路径。
-**因此 Windows 是 M2 的收尾项而非阻塞项**（见 [`../product/mvp.md`](../product/mvp.md) 的平台优先级）。
-
-### 方案 A：计划任务（无额外依赖）
+原生 Windows 可以手工构建并前台运行：
 
 ```powershell
-$action  = New-ScheduledTaskAction -Execute "$env:USERPROFILE\.local\bin\drdshd.exe" `
-  -Argument "run --relay wss://relay.example --room-key $env:DSHD_ROOM_KEY"
-$trigger = New-ScheduledTaskTrigger -AtLogOn
-Register-ScheduledTask -TaskName drdshd -Action $action -Trigger $trigger -RunLevel Limited
+cargo build --release -p dr-dsh-daemon
+$env:DSHD_STATE_DIR = "$env:LOCALAPPDATA\dr.dsh"
+.\target\release\drdshd.exe run --relay ws://127.0.0.1:8787
 ```
 
-密钥用**用户环境变量**（`setx DSHD_ROOM_KEY <key>`）比写在任务参数里好：任务定义能被
-`Get-ScheduledTask` 读出来，也会出现在事件日志里。
-
-### 方案 B：NSSM（把它当一个真正的服务）
-
-```powershell
-nssm install drdshd "$env:USERPROFILE\.local\bin\drdshd.exe" `
-  run --relay wss://relay.example --room-key <key>
-nssm set drdshd AppStdout "$env:USERPROFILE\.local\drdshd.log"
-nssm set drdshd AppStderr "$env:USERPROFILE\.local\drdshd.log"
-nssm start drdshd
-```
-
-**Windows 上已知的差异**：`drdshd run` 停止时无法向 DSH 发送优雅信号，DSH 会被直接终止。
-DSH 的插件树因此不会走销毁流程。这是行为差异，不是数据损坏风险，但值得知道。
+原生 Windows 计划任务/NSSM 的自动生成尚未实现。daemon 停止 DSH 时会走强杀路径，插件树不会走
+Unix 上的优雅销毁流程；这是已有平台限制。
 
 ---
 

@@ -31,7 +31,7 @@ TypeScript 侧不需要构建步骤：`node --test` 直接跑 `src/*.test.ts`，
 
 ## 验证命令
 
-`pnpm run verify` 是唯一的准入门槛，按顺序执行以下七步（定义见 `package.json`）：
+`pnpm run verify` 是唯一的准入门槛，按顺序执行以下八步（定义见 `package.json`）：
 
 | 命令 | 实际执行 | 覆盖什么 |
 | :--- | :--- | :--- |
@@ -40,6 +40,7 @@ TypeScript 侧不需要构建步骤：`node --test` 直接跑 `src/*.test.ts`，
 | `pnpm run test:rs` | `cargo test --workspace` | Rust 单元测试 + `crates/dr-dsh-proto/tests/conformance.rs` 的共享向量 |
 | `pnpm run typecheck:ts` | `pnpm -r --if-present run typecheck` | 每个 TS 包跑 `tsc -b`；`apps/pwa` 跑两个项目（页面 + Service Worker） |
 | `pnpm run test:ts` | `pnpm -r --if-present run test` | 每个 TS 包的 `node --test` |
+| `pnpm run test:cli` | `node --test scripts/drdsh.test.mjs` | 独立组件命令与配置边界、路径转义、服务定义 |
 | `pnpm run lint:imports` | `node scripts/check-dsh-isolation.mjs` | 硬规则 2：除 `dsh-surface.ts` 外任何文件 import `@deepseek-ai/*` 都失败（type-only 与动态 import 同样被拒） |
 | `pnpm run docs:check` | `node scripts/check-doc-links.mjs` | 硬规则 5：所有 Markdown 的相对链接必须指向存在的文件；外部 URL 只记录、不抓取 |
 
@@ -58,7 +59,7 @@ pnpm run fmt:rs          # cargo fmt --all
 
 说明两点：
 
-- `AGENTS.md` 的命令注释与这里的七步一致；两者若出现分歧，以 `package.json` 的 `verify` 为准。
+- 命令说明若出现分歧，以 `package.json` 的 `verify` 为准。
 - `pnpm-workspace.yaml` 的 `allowBuilds: {}` 表示依赖的生命周期脚本默认被拒绝。确实需要某个依赖的构建脚本时，要显式加进这个列表——这是刻意让"引入一个会跑脚本的依赖"成为一次可见的改动。
 
 ## 仓库布局
@@ -217,6 +218,10 @@ DSH 每次版本变更后，必须执行 [`../integration/dsh-surface.md`](../in
 本仓库侧随之要动的只有两处记录：`plugins/dr.dsh/src/dsh-surface.ts` 的 `VERIFIED_DSH_VERSION`（实际核对的版本）与 `plugins/dr.dsh/package.json` 的 `engines.dsh`（兼容范围）。两者都改了之后，`pnpm run test:ts` 是验证守卫与窄化逻辑是否仍成立的最短路径。
 
 ## 提交与 PR 期望
+
+安装与服务管理入口在 [`../operations/cli.md`](../operations/cli.md)。修改该入口时，除了
+`pnpm run test:cli`，还应运行对应平台的 `pnpm run smoke:services` 或 `pnpm run smoke:systemd`。
+`check:rs` 会先生成 WebSocket 测试向量，确保干净检出的 `verify` 不依赖旧 `target/` 内容。
 
 - **小步、一个 PR 一个关注点。** 不要把"顺手重构 + 协议改动"混在一起：协议改动需要对照向量与版本规则逐条核对，混在一起会让评审无法判断哪一处是行为变化。
 - **`pnpm run verify` 全绿。** 在 PR 描述里贴出你跑的命令与结果。红着的检查不要靠"本地环境问题"解释——`docs:check` 与 `lint:imports` 都是离线的、无依赖的。

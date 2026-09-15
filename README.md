@@ -2,150 +2,139 @@
 
 English | [中文](README.zh.md)
 
-**dr.dsh puts your own DeepSeek Harness in your pocket — without exposing your computer to the internet, and without anyone in the middle being able to read your sessions.**
+**Use the DeepSeek Harness on your own computer from a phone or another computer's browser.**
 
----
+dr.dsh provides remote access to the real DSH interface, process management, and device pairing.
+DSH runs on your computer. Session traffic is encrypted end to end between the browser and daemon,
+through a relay you host.
 
-## Status: self-hostable, not released
+## Two independent components
 
-| | |
-| :--- | :--- |
-| Version | `0.0.0` — nothing is released (no artifacts, no npm package) |
-| What works today | One typed pairing code on a new device, and the **real DSH interface** is one click away: the daemon supervises the local DSH, keeps it bound to loopback, and carries an end-to-end encrypted tunnel through a **self-hosted relay** (binary or Docker image). Remote start/stop/restart, attach mode for a DSH you started yourself, keepalive, a local audit log (`drdshd audit`) and local crash reports (`drdshd crashes`) — the last two never leave your machine |
-| What is not done | The release pipeline (reproducible builds, artifact digests — the first gap listed in [`docs/audit-scope.md`](docs/audit-scope.md)), the third-party audit, the new-user field test, and push (off by default per [ADR-0006](docs/decisions/0006-notifications.md) and not implemented). **Per-item status lives in [`docs/product/mvp.md`](docs/product/mvp.md)** |
-| Upstream dependency | DeepSeek Harness `0.1.5-rc.2`, a developer preview that has announced compatibility-breaking changes |
-
-The product definition this project is built against is the dr.dsh definition document, version 0.1 draft. Where it leaves a question open, this repository records the decision rather than the intention: see [`docs/product/mvp.md`](docs/product/mvp.md) and [`docs/decisions/`](docs/decisions/).
-
-## The name
-
-**dr.dsh** = **d**aemon & **r**elay **of** **dsh**. The name is also the prefix used everywhere, and changing it means changing all of these together:
-
-| Where | Form | Why |
+| | Relay: your server | Daemon: your DSH computer |
 | :--- | :--- | :--- |
-| Project and npm scope | `dr.dsh`, `@dr.dsh/*` | dotted; npm allows `.` in a package name |
-| Rust crates | `dr-dsh-proto`, `dr-dsh-crypto`, `dr-dsh-daemon`, `dr-dsh-relay` | hyphenated; a crate name cannot contain `.` |
-| Executables | `drdshd` (daemon), `drdsh-relay` (relay) | hyphenated: a binary's name is both a file name and a crate name, so it can contain neither `.` nor the name of its package's library |
-| Wire labels | `dsh-remote/v1/...` | **deliberately unchanged** — see below |
+| Features | Serves the browser client (PWA), forwards encrypted traffic, provides keepalive and health checks | Manages local DSH, pairs devices, establishes encrypted tunnels, records audit and crash reports |
+| Where to install | Your server, or the same host as the daemon | A computer with DSH installed |
+| Install | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
+| Management command | `drdsh-relayctl` | `drdsh-daemonctl` |
+| Separate guide | **[Relay setup and usage](relay/README.md)** | **[Daemon setup and usage](daemon/README.md)** |
 
-**Why the labels stay.** The labels in `docs/protocol.md` § 9 are *wire* identifiers: both ends derive the room id, session keys, frame AAD and the enrolment MAC from them. Renaming them is a wire-breaking change that would need both implementations, both conformance corpora and a protocol version bump (`AGENTS.md` rule 3), with no functional gain. The protocol's label prefix records the name the project had when the protocol was frozen; that is allowed to differ from the project's name.
+Each has its own configuration, program directory, logs, services, and update lock. Updating or
+uninstalling one does not restart or uninstall the other. Restarting the relay interrupts connections
+and requires reconnection; the DSH process keeps running.
 
-## What it does
-
-You run DSH on your own computer. dr.dsh adds a small daemon next to it that lets you, from your phone or another machine:
-
-- **use the real DSH interface**, not a reduced remote-control panel;
-- **start, stop, and restart DSH**, and see whether it is running, starting, stopped, or broken;
-- **get told when something needs you** — a turn finished, an approval is waiting, a goal completed;
-- **see the truth when things fail** — which side is down, and why.
-
-Nothing is port-forwarded, no public IP is needed, and no router configuration is involved: the daemon dials out, and the relay in the middle only ever holds ciphertext.
-
-## How it works
-
-```
-┌──────────────┐          ┌─────────────────┐          ┌──────────────────┐
-│  phone /     │  static  │                 │  opaque  │  your computer   │
-│  laptop      │◀────────▶│   relay         │◀────────▶│                  │
-│  (PWA)       │  shell   │  (zero-knowledge│  frames  │  drdshd  (daemon)  │
-│              │ +cipher- │   forwarder)    │          │    │             │
-│              │  text    │                 │          │    ▼             │
-└──────────────┘          └─────────────────┘          │  dsh web         │
-                                                       │  127.0.0.1 only  │
-                                                       └──────────────────┘
+```text
+Phone / browser ⇄ Relay (server + PWA) ⇄ Daemon (your computer) → DSH
 ```
 
-Four components, and each one has a boundary it does not cross:
-
-| Component | Language | What it is | What it cannot do |
-| :--- | :--- | :--- | :--- |
-| **`drdsh-relay`** | Rust | Routes opaque frames between a daemon and its paired clients | Read a payload, hold a key, persist anything |
-| **`drdshd`** (daemon) | Rust | Supervises DSH, proxies it, terminates end-to-end encryption | Execute a peer-named command, bind DSH to a non-loopback address |
-| **`@dr.dsh/dsh-plugin`** | TypeScript | Reports in-process harness events to the local daemon | Encrypt, proxy, or manage DSH lifecycle |
-| **PWA** | TypeScript | The remote client: pairing, tunnel, and the real DSH UI | Reach DSH by any path other than the tunnel |
-
-Three decisions explain most of the design:
-
-1. **The relay cannot decrypt, because it cannot link a decryption library.** That is enforced by the dependency graph, not by policy — see [ADR-0002](docs/decisions/0002-zero-knowledge-relay.md).
-2. **DSH is never exposed and never forked.** It stays bound to loopback, exactly as upstream intends; the daemon performs DSH's own authentication and proxies it, preserving the authority that DSH's session cookie is bound to — see [ADR-0003](docs/decisions/0003-no-fork-integration.md).
-3. **The protocol exists twice and is compared mechanically.** Rust owns the definition, TypeScript mirrors it, and both must pass the same conformance corpus — see [ADR-0004](docs/decisions/0004-wire-protocol.md).
+**Version `0.0.0`: available to build from source and self-host.** There are no prebuilt installers,
+published npm packages, or official hosted relay. Both components remain in this repository and
+share protocol definitions, with independent builds and deployments.
 
 ## Quick start
 
-On the machine that runs DSH (the relay can be the same machine or another one):
+Try both on one computer first, or deploy them separately. Run the following on each machine that
+needs a source checkout:
 
 ```sh
-cargo build --workspace
-pnpm install && pnpm --filter @dr.dsh/pwa build
-
-# The relay: loopback, serving the built client to the browser. See the self-hosting doc for TLS.
-DSH_RELAY_BIND=127.0.0.1:8787 DSH_RELAY_CLIENT_DIR=apps/pwa/dist ./target/debug/drdsh-relay
-
-drdshd doctor                                          # check this machine before anything else
-drdshd run --relay ws://<host>:8787                    # supervise DSH, dial the relay (a room key is generated and stored 0600)
-drdshd pair --relay ws://<host>:8787                   # print a single-use pairing code
+git clone https://github.com/luckyuro/dr.dsh.git
+cd dr.dsh
 ```
 
-Then open the relay's address in a browser, type that code once, and the DSH interface is one click
-away. You never handle the room key: `drdshd run` and `drdshd pair` read the same generated file.
-The relay also runs from [`compose.yaml`](compose.yaml); the full systemd / launchd / Task Scheduler
-and Docker versions are in [`docs/operations/install.md`](docs/operations/install.md) and
-[`docs/operations/self-hosting.md`](docs/operations/self-hosting.md).
+Source installation needs Node.js 24+ (or 22.19+ on the 22.x line), Rust stable, and your platform's
+compiler toolchain. Relay also needs pnpm 12.3.4. Daemon needs DSH with a model configured; its base
+installation does not require pnpm. Services support a macOS desktop login, a Linux
+`systemctl --user` session, or WSL2 with systemd enabled on Windows.
 
-Every change is expected to keep this green:
+### 1. Install Relay
+
+Run on the relay server, or on your current computer for a same-host trial:
 
 ```sh
-pnpm run verify                  # cargo check/clippy/test + tsc + node --test + import isolation + doc links
-pnpm run fmt:rs
+sh relay/install.sh --start
+export PATH="$HOME/.local/bin:$PATH"
+drdsh-relayctl status
 ```
 
-Claims about *behaviour* (the tunnel, pairing, keepalive, crash reporting, several rooms, old CPUs)
-are measured by the scripts in [`scripts/`](scripts/) — the list is in [`AGENTS.md`](AGENTS.md).
+When status says `relay health: responding`, the relay is ready. It listens on `127.0.0.1:8787` by
+default. For phones and other computers, configure a [reachable HTTPS entry point](relay/README.md#make-it-reachable).
 
-## Repository layout
+### 2. Install Daemon
 
-```
-crates/
-  dr-dsh-proto/        wire protocol: framing, multiplexing, control messages (normative)
-  dr-dsh-crypto/       pairing and session crypto (Rust side)
-  dr-dsh-daemon/       drdshd — supervision, proxying, encryption endpoint
-  dr-dsh-relay/        drdsh-relay — the zero-knowledge forwarder
-packages/
-  protocol/        TypeScript mirror + the shared conformance corpus
-  crypto/          browser-side WebCrypto implementation
-plugins/
-  dr.dsh/          the DSH bundle plugin, and the only DSH-aware TypeScript
-apps/
-  pwa/             the remote client
-docs/
-  product/         scope, MVP, milestones
-  architecture.md  components, data flow, session bootstrap
-  security.md      threat model, guarantees, and what is not guaranteed
-  protocol.md      the normative wire description
-  decisions/       ADRs — why, and what was rejected
-  operations/      self-hosting, troubleshooting
-  development/     contributing, and the DSH upgrade ritual
-  integration/     the exact DSH surface relied on, and how it is verified
+Run on the DSH computer. The address below works for a **relay on the same host**. For a relay on
+another server, establish a [secure forward](daemon/README.md#connect-to-a-remote-relay) first and
+use its local address. Replace the project path with an existing directory:
+
+```sh
+sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+export PATH="$HOME/.local/bin:$PATH"
+drdsh-daemonctl status
 ```
 
-## Principles
+Add `--dsh /absolute/path/to/dsh` if DSH is outside PATH, or `--port 3081` if an existing DSH uses
+`3080`. The installer does not install or configure upstream DSH. The integration baseline is DSH
+`0.1.5-rc.2`; check compatibility after upstream updates.
 
-- **Local first.** dr.dsh is an amplifier for a local tool, never a replacement for it. Losing the relay must never cost you a local session.
-- **Zero knowledge by construction.** The relay's inability to read your sessions is a property of what it is built from.
-- **No fork, no patch, no plugin that weakens DSH.** We use the seams upstream documents, and we ask upstream for new ones instead of reaching around it.
-- **Least privilege, closed whitelist.** Four lifecycle operations, no general command execution, no file transfer, no remote shell.
-- **Failure transparency.** Every "it did not work" names which side failed and why. A silent spinner is a bug.
-- **Security defaults, auditable configuration.** Nothing that weakens a guarantee is a default, and every such option is documented as what it costs.
+Both management commands install under `~/.local/bin` by default. The `export` affects only the
+current terminal; add it to your shell configuration for later use.
 
-## Contributing
+### 3. Pair and open DSH
 
-Start with [`docs/development/contributing.md`](docs/development/contributing.md). It lists the verification commands, the layout, the five rules reviewers enforce, and why each exists. `pnpm run verify` must be green before a PR is reviewed.
+Run on the DSH computer and leave the command waiting:
 
-If you are here to report a problem rather than fix one, [`docs/operations/troubleshooting.md`](docs/operations/troubleshooting.md) starts with what to collect so the report is answerable.
+```sh
+drdsh-daemonctl pair
+```
 
-## Security
+1. Open the relay's HTTPS address in your browser. For a same-host trial, use the [local relay](http://127.0.0.1:8787).
+2. Enter the terminal's code under **Pairing code or room key** and click **Connect**.
+3. After **Paired** appears, click **Connect** again to establish the tunnel.
+4. Click **Open the DeepSeek Harness interface** to use DSH in a new tab.
 
-Read [`docs/security.md`](docs/security.md) before trusting this project with anything. It states what is guaranteed, what is not, and where the remaining risk sits — including the honest weaknesses, such as the relay's position in the client's trust base and the traffic-analysis metadata that a byte-forwarding relay inevitably observes.
+**Keep the original dr.dsh tab open:** it maintains the connection. Codes are single-use and valid
+for about five minutes; generate a new one after failure or expiry. Your browser remembers pairings
+for later visits and can add several computers.
+
+## Everyday management
+
+| Operation | Relay | Daemon |
+| :--- | :--- | :--- |
+| Start | `drdsh-relayctl start` | `drdsh-daemonctl start` |
+| Stop | `drdsh-relayctl stop` | `drdsh-daemonctl stop` |
+| Restart | `drdsh-relayctl restart` | `drdsh-daemonctl restart` |
+| Status | `drdsh-relayctl status` | `drdsh-daemonctl status` |
+| Follow logs | `drdsh-relayctl logs --follow` | `drdsh-daemonctl logs --follow` |
+| Login autostart | `drdsh-relayctl enable` | `drdsh-daemonctl enable` |
+| Install from updated source | `drdsh-relayctl install --source /path/to/dr.dsh` | `drdsh-daemonctl install --source /path/to/dr.dsh` |
+| Uninstall | `drdsh-relayctl uninstall` | `drdsh-daemonctl uninstall` |
+
+Use `disable` to cancel login autostart and `stop` to stop a running service. Uninstalling preserves
+each component's configuration and logs, and the daemon's pairing data. Relay includes the PWA;
+install the optional plugin on the daemon side with `drdsh-daemonctl install plugin`.
+
+The original `sh install.sh` / `drdsh` commands remain available for legacy installation records,
+which use a different layout. Existing users should follow the
+[migration guide](docs/operations/cli.md#从旧版安装迁移) to preserve pairings.
+
+## Current requirements and limits
+
+- Keep the DSH computer powered on, awake, and online.
+- Remote browsers need HTTPS. The daemon cannot dial WSS directly yet; use a secure forward such as SSH for separate hosts, as described in the Daemon guide.
+- Background push and the receiver for supplementary plugin notifications are not implemented. Handle approvals and questions in the real DSH interface while connected.
+- The relay also distributes client code, so its infrastructure must be trusted. There has been no third-party security audit; see the [security model](docs/security.md).
+
+## Documentation and development
+
+- **[Relay guide](relay/README.md)**: independent installation, commands, configuration, and Docker.
+- **[Daemon guide](daemon/README.md)**: independent installation, remote connections, pairing, plugins, and state backups.
+- [Full CLI and migration](docs/operations/cli.md), [troubleshooting](docs/operations/troubleshooting.md), [MVP status](docs/product/mvp.md).
+- [Architecture](docs/architecture.md), [design decisions](docs/decisions/README.md), [contributing](docs/development/contributing.md), [repository rules](AGENTS.md).
+
+Detailed documentation under `docs/` is currently in Chinese.
+
+```sh
+pnpm install
+pnpm run verify
+```
 
 ## License
 

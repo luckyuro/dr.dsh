@@ -24,6 +24,11 @@ dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 Deep
 
 ## 命令
 
+安装与运维有两个独立入口：`relay/install.sh` / `drdsh-relayctl`、
+`daemon/install.sh` / `drdsh-daemonctl`。各自的配置、程序、日志、服务与更新锁独立；
+PWA 属于 relay，插件属于 daemon。旧 `install.sh` / `drdsh` 保留兼容。
+修改管理逻辑时，保持更新和卸载一侧不改变另一侧 PID 或配置，见 ADR-0015。
+
 ```sh
 pnpm install
 pnpm run verify        # check:rs + lint:rs + test:rs + typecheck:ts + test:ts + lint:imports + docs:check
@@ -49,6 +54,8 @@ pnpm run test:ts
 
 | 脚本 | 它实测什么 | 需要什么 |
 | :--- | :--- | :--- |
+| `scripts/service-smoke.mjs` | 两侧独立安装/更新/卸载、另一侧 PID 与配置不变、旧入口兼容、配对状态保留 | 已构建的二进制与 PWA；macOS launchd 或 Linux systemd 用户会话；DSH 使用替身 |
+| `scripts/systemd-smoke.mjs` | Linux 用户服务的特殊路径、首次启动、自启动开关、停止与重启 | systemd 用户会话 + Node；使用真实替身进程，不需要 Rust/DSH |
 | `scripts/browser-pairing-smoke.mjs <relay-url>` | 真实浏览器里用配对码走通、刷新后免输入、崩溃上报落盘 | 已构建的客户端 + 运行中的中继 + Playwright Chromium |
 | `scripts/browser-task-smoke.mjs <relay-url> [--full]` | 浏览器里跑真实任务；`--full` 含审批与长输出 | 同上（`--full` 需要一个会触发审批的提示词） |
 | `scripts/browser-offline-smoke.mjs` / `-soak-` / `-perf-` | 离线外壳、崩溃率（rule of three）、滚动性能 | 同上 |
