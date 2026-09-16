@@ -24,7 +24,7 @@ DSH 在你的电脑上运行，会话流量在浏览器与 daemon 之间端到�
 手机 / 浏览器 ⇄ Relay（中继 + PWA） ⇄ Daemon（你的电脑） → DSH
 ```
 
-**当前版本 `0.1.0`，提供 GitHub Release 二进制包。** Linux x86_64 musl 提供混合包、relay 包与 daemon 包；
+**当前版本 `0.1.1`，提供 GitHub Release 二进制包。** Linux x86_64 musl 提供混合包、relay 包与 daemon 包；
 macOS Apple Silicon 提供 daemon 包。三个包使用同一套原生 CLI，同平台各包共用逐字节相同的二进制，包清单决定可用组件。
 `drdsh-relay` / `drdsh-daemon` 是按名字选择组件的别名，详见[发布与安装](docs/operations/releases.md)。
 没有 npm 发布包、官方托管中继或第三方安全审计。

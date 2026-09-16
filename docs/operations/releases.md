@@ -107,3 +107,9 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 - `scripts/nginx-static-smoke.mjs` 使用 release 优化构建的统一 CLI，通过 11 项 nginx、
   Chromium 配对、Service Worker、加密隧道、页面刷新与离线检查。DSH 使用鉴权进程替身；
   这不是一次新的真实上游 DSH 全量验收。
+
+## v0.1.1 补丁
+
+修复版本选项的名称分派：`drdsh-daemon --version` 与 `drdsh daemon --version`（relay 同理）
+现在输出相同内容，`version` 与 `--help` 也经过同一分派。`multicall-smoke.mjs` 新增真实命令
+输出对比，共 16 项通过。平台矩阵和同平台二进制同一性保持不变；默认安装/更新获取最新 Release。

@@ -56,7 +56,8 @@ try {
   execFileSync('sh', [join(repo, 'scripts/package-release.sh'), '--target', process.platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-unknown-linux-musl', '--flavor', 'mixed', '--binary', binary, '--output', tar]);
   mkdirSync(bundle); execFileSync('tar', ['-xzf', tar, '-C', bundle]);
   const version = await command(join(bundle, 'bin/drdsh'), ['--version']);
-  assert.match(version.stdout, /^drdsh 0\.1\.0 \(relay \+ daemon\)\n$/u);
+  const releaseVersion = JSON.parse(readFileSync(join(bundle, 'bundle.json'), 'utf8')).version;
+  assert.equal(version.stdout, `drdsh ${releaseVersion} (relay + daemon)\n`);
   assert.match(version.stderr, /dr\.dsh/u); assert.equal(version.stderr.match(/dr\.dsh/gu).length, 1);
   assert.equal(readlinkSync(join(bundle, 'bin/drdsh-relay')), 'drdsh');
   assert.equal(readlinkSync(join(bundle, 'bin/drdsh-daemon')), 'drdsh');
@@ -66,6 +67,16 @@ try {
     assert.match(result.stderr, /selects/u);
   }
   check('aliases reject the opposite component before help or installation');
+  for (const scope of ['relay', 'daemon']) {
+    for (const flag of ['--help', '--version', 'version']) {
+      const named = await command(join(bundle, `bin/drdsh-${scope}`), [flag]);
+      const subcommand = await command(join(bundle, 'bin/drdsh'), [scope, flag]);
+      assert.equal(named.stdout, subcommand.stdout);
+      assert.equal(named.stderr, subcommand.stderr);
+    }
+  }
+  check('name aliases and explicit components have identical help and version behavior');
+
   for (const scope of ['relay', 'daemon']) {
     const archive = join(scratch, `${scope}.tar.gz`);
     execFileSync('sh', [join(repo, 'scripts/package-release.sh'), '--target', process.platform === 'darwin' ? 'aarch64-apple-darwin' : 'x86_64-unknown-linux-musl', '--flavor', scope, '--binary', binary, '--output', archive]);

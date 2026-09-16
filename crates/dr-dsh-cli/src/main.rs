@@ -140,17 +140,6 @@ fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
         );
         return runtime(&args[1], args[2..].to_vec());
     }
-    if args
-        .first()
-        .is_some_and(|a| a == "--version" || a == "version")
-    {
-        println!(
-            "drdsh {} ({})",
-            env!("CARGO_PKG_VERSION"),
-            components()?.join(" + ")
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
     if let Some(scope) = alias(name) {
         // Accept an explicit matching component too; reject an explicit opposite component
         // before examining help or options so aliases cannot switch roles accidentally.
@@ -163,6 +152,17 @@ fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
             args.remove(0);
         }
         args.insert(0, scope.into());
+    }
+    if args
+        .first()
+        .is_some_and(|a| a == "--version" || a == "version")
+    {
+        println!(
+            "drdsh {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            components()?.join(" + ")
+        );
+        return Ok(ExitCode::SUCCESS);
     }
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h") {
         print!("{HELP}\nIncluded: {}\n", components()?.join(" + "));
@@ -217,6 +217,14 @@ fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
         }
     }
     unavailable(&scope)?;
+    if args
+        .first()
+        .is_some_and(|a| a == "--version" || a == "version")
+    {
+        println!("drdsh {} ({scope})", env!("CARGO_PKG_VERSION"));
+        return Ok(ExitCode::SUCCESS);
+    }
+
     if args.is_empty() || matches!(args[0].as_str(), "--help" | "-h") {
         print!("{}", management::help(&scope));
         return Ok(ExitCode::SUCCESS);

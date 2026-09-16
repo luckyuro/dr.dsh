@@ -26,7 +26,7 @@ and requires reconnection; the DSH process keeps running.
 Phone / browser ⇄ Relay (server + PWA) ⇄ Daemon (your computer) → DSH
 ```
 
-**Version `0.1.0` is available as GitHub Release binaries.** Linux x86_64 musl has mixed, relay-only and
+**Version `0.1.1` is available as GitHub Release binaries.** Linux x86_64 musl has mixed, relay-only and
  daemon-only packages; macOS Apple Silicon has a daemon package. All use the same native CLI source,
 with identical executable bytes per platform and package metadata selecting available commands. `drdsh-relay` / `drdsh-daemon` are name-based aliases.
 See [release installation](docs/operations/releases.md). No npm package, hosted relay or third-party audit is available.
