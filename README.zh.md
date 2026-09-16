@@ -1,5 +1,10 @@
 # dr.dsh
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+  <img src="assets/brand/logo.svg" alt="dr.dsh 鲸鱼隧道标志" width="360" height="96">
+</picture>
+
 [English](README.md) | 中文
 
 **在手机或另一台电脑的浏览器里，继续使用自己电脑上的 DeepSeek Harness。**

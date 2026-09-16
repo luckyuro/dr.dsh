@@ -1,5 +1,10 @@
 # dr.dsh
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/brand/logo-dark.svg">
+  <img src="assets/brand/logo.svg" alt="dr.dsh whale and tunnel logo" width="360" height="96">
+</picture>
+
 English | [中文](README.zh.md)
 
 **Use the DeepSeek Harness on your own computer from a phone or another computer's browser.**
