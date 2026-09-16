@@ -21,6 +21,8 @@
 | [0013](0013-room-key-provisioning.md) | 房间密钥 | 首次运行生成并落盘 0600，`run`/`pair` 都从那里读；命令行可覆盖但不写盘 |
 | [0014](0014-installation-and-services.md) | 安装与服务 | 统一 CLI 安装各组件，使用用户级系统服务管理器，配置与设备身份在卸载时保留 |
 | [0015](0015-independent-relay-and-daemon.md) | 组件独立管理 | Relay 与 Daemon 各自安装、配置、更新和卸载，保留共享源码和旧入口兼容 |
+| [0016](0016-native-relay-management.md) | Relay 原生管理与静态分发 | 服务器无需 Node 的本地离线包、独立 Rust 管理命令与 nginx 静态 PWA |
+| [0017](0017-multicall-release-packages.md) | 统一原生 CLI 与分组件 Release | 已接受 |
 
 ## 什么时候需要写一条新 ADR
 

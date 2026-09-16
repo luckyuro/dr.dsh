@@ -235,7 +235,7 @@ curl -i -N \
 
 **症状**：`drdshd` 或 `drdsh-relay` 一运行就立刻退出，报 `Illegal instruction (core dumped)`；或者内核日志里出现 `invalid opcode`；或者动态链接器报 `GLIBC_2.xx not found`。老 NAS、老 ARM 板子上尤其常见。
 
-**可能原因**：你拿到的预编译二进制是用更高的 CPU 目标构建的（例如要求 AVX2），或者它链接的 glibc 比目标机器上的新。旧 CPU 的替代安装路径是 **M5** 的交付项（[`../product/mvp.md`](../product/mvp.md) § 一与 § 五），当前还没有发布的产物。
+**可能原因**：你拿到的预编译二进制是用更高的 CPU 目标构建的（例如要求 AVX2），或者它链接的 glibc 比目标机器上的新。旧 CPU 的替代安装路径是 **M5** 的交付项（[`../product/mvp.md`](../product/mvp.md) § 一与 § 五），当前 Release 提供 x86_64 musl；排查时核对目标与 SHA256SUMS，见[发布说明](releases.md)。
 
 **如何确认**
 

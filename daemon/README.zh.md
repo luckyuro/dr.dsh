@@ -1,5 +1,9 @@
 # dr.dsh Daemon
 
+> v0.1.0：`drdsh daemon ...` 与 `drdsh-daemon ...` 等价。Release 安装和管理由 Rust 完成；
+> 服务器不需要 Cargo 或 pnpm，Node 仅供 DSH。支持 macOS arm64 与 Linux x86_64 musl。
+> 见[发布与安装](../docs/operations/releases.md)。
+
 [English](README.md) · [项目首页](../README.zh.md) · [Relay](../relay/README.zh.md)
 
 **安装在运行 DSH 的电脑上，负责管理 DSH 并建立远程加密连接。**
@@ -18,7 +22,7 @@ Daemon 独立安装和运行，主动连接已有的 relay。
 
 - 已安装并配置好 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，能在本机运行任务。
   本仓库的集成核对基准是 DSH **`0.1.5-rc.2`**；上游更新后需重新核对兼容性。
-- Node.js 24+（或 22 系列的 22.19+）、Rust stable 与平台编译工具链。基础 daemon 安装不需要 pnpm。
+- DSH 需要 Node.js 24+（或 22 系列的 22.19+）。Release 安装不需要 Rust、编译工具链或 pnpm。
 - macOS 图形登录会话或 Linux `systemctl --user` 会话；Windows 使用启用 systemd 的 WSL2，DSH 也安装在同一 WSL2 环境。
 - 一个运行中的中继。同机中继使用 `ws://127.0.0.1:8787`；远端中继先按下文建立安全转接。
 
@@ -31,21 +35,21 @@ git clone https://github.com/luckyuro/dr.dsh.git
 cd dr.dsh
 sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-daemonctl status
+drdsh-daemon status
 ```
 
-安装器只构建 daemon，默认安装到 `~/.local`，无需 sudo。
+安装器从 Release 下载 daemon，默认安装到 `~/.local`，无需 sudo。
 DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有进程占用默认端口 `3080` 时可加 `--port 3081`。
 省略 `--workdir` 会使用当前目录。检查状态时，等待 DSH HTTP 显示 `responding`；
-持续失败时用 `drdsh-daemonctl logs` 查看原因。
+持续失败时用 `drdsh-daemon logs` 查看原因。
 
-`export` 只影响当前终端；可加入 shell 配置，也可直接运行 `~/.local/bin/drdsh-daemonctl`。
+`export` 只影响当前终端；可加入 shell 配置，也可直接运行 `~/.local/bin/drdsh-daemon`。
 电脑需要保持开机、联网且不休眠。
 
 ## 配对并使用 DSH
 
 ```sh
-drdsh-daemonctl pair
+drdsh-daemon pair
 ```
 
 保持命令运行，在约 5 分钟内使用配对码：
@@ -56,7 +60,7 @@ drdsh-daemonctl pair
 4. 点击 **Open the DeepSeek Harness interface**，在新标签页使用 DSH。
 
 **保留原来的 dr.dsh 标签页**，它维持隧道。浏览器会保存配对，下次选择已登记电脑并连接即可。
-配对失败或过期后重新运行 `drdsh-daemonctl pair`。手机访问中继地址，DSH 的本机端口不对外开放。
+配对失败或过期后重新运行 `drdsh-daemon pair`。手机访问中继地址，DSH 的本机端口不对外开放。
 
 ## 连接远端中继
 
@@ -71,7 +75,7 @@ ssh -N -o ExitOnForwardFailure=yes \
 `--relay ws://127.0.0.1:8788`。例如，已有安装可运行：
 
 ```sh
-drdsh-daemonctl install --relay ws://127.0.0.1:8788 --start
+sh daemon/install.sh --relay ws://127.0.0.1:8788 --start
 ```
 
 浏览器继续打开服务器的 HTTPS 地址。两种地址必须到达同一个中继。
@@ -81,15 +85,15 @@ SSH 连接由你维护，daemon 的登录自启动不会自动启动 SSH。
 
 | 操作 | 命令 |
 | :--- | :--- |
-| 启动 / 停止 / 重启 daemon 及其托管的 DSH | `drdsh-daemonctl start` / `drdsh-daemonctl stop` / `drdsh-daemonctl restart` |
-| 状态 / 最近日志 | `drdsh-daemonctl status` / `drdsh-daemonctl logs` |
-| 跟随日志 | `drdsh-daemonctl logs --follow` |
-| 开启 / 关闭登录自启动 | `drdsh-daemonctl enable` / `drdsh-daemonctl disable` |
-| 新设备配对 / 查看设备 | `drdsh-daemonctl pair` / `drdsh-daemonctl devices` |
-| 撤销设备 | `drdsh-daemonctl devices --revoke <id>` |
-| 审计 / 崩溃记录 | `drdsh-daemonctl audit` / `drdsh-daemonctl crashes` |
-| 从更新后的源码安装 | `drdsh-daemonctl install --source /path/to/dr.dsh` |
-| 卸载 daemon 与可选插件 | `drdsh-daemonctl uninstall` |
+| 启动 / 停止 / 重启 daemon 及其托管的 DSH | `drdsh-daemon start` / `drdsh-daemon stop` / `drdsh-daemon restart` |
+| 状态 / 最近日志 | `drdsh-daemon status` / `drdsh-daemon logs` |
+| 跟随日志 | `drdsh-daemon logs --follow` |
+| 开启 / 关闭登录自启动 | `drdsh-daemon enable` / `drdsh-daemon disable` |
+| 新设备配对 / 查看设备 | `drdsh-daemon pair` / `drdsh-daemon devices` |
+| 撤销设备 | `drdsh-daemon devices --revoke <id>` |
+| 审计 / 崩溃记录 | `drdsh-daemon audit` / `drdsh-daemon crashes` |
+| 从 Release 更新 | `drdsh daemon update` |
+| 卸载 daemon 与可选插件 | `drdsh-daemon uninstall` |
 
 这些命令只管理 daemon。更新会重启原来运行的 daemon 及其 DSH，保留配对信息；relay 的进程与配置不变。
 `enable` / `disable` 只改变登录自启动，立即启停使用 `start` / `stop`。
@@ -97,8 +101,8 @@ SSH 连接由你维护，daemon 的登录自启动不会自动启动 SSH。
 
 ## 可选插件
 
-安装插件还需要 pnpm。使用 `drdsh-daemonctl install plugin` 单独安装，或首次安装时加 `--with-plugin`。
-卸载插件使用 `drdsh-daemonctl uninstall plugin`；安装或移除插件会重启原来运行的 DSH 宿主。
+Release 包已带插件源文件，无需 pnpm。使用 `drdsh daemon install plugin --source <bundle>` 注册，或安装时加 `--with-plugin`。
+卸载插件使用 `drdsh-daemon uninstall plugin`；安装或移除插件会重启原来运行的 DSH 宿主。
 
 插件的补充通知接收端和后台推送尚未实现。当前可在真实 DSH 界面中处理审批与提问。
 
@@ -108,9 +112,9 @@ SSH 连接由你维护，daemon 的登录自启动不会自动启动 SSH。
 
 | 路径 | 内容 |
 | :--- | :--- |
-| `bin/drdsh-daemonctl` | daemon 专用管理命令 |
+| `bin/drdsh-daemon` | daemon 专用管理命令 |
 | `etc/dr.dsh/daemon.json` | DSH 路径、工作目录、中继地址与安装记录 |
-| `lib/dr.dsh/daemon/bin/drdshd` | daemon 二进制 |
+| `lib/dr.dsh/daemon/bin/drdsh` | daemon 二进制 |
 | `lib/dr.dsh/daemon/plugin` | 可选插件 |
 | `lib/dr.dsh/daemon/services` | 系统服务定义 |
 | `lib/dr.dsh/daemon/logs` | macOS 日志；Linux 使用用户 journal |

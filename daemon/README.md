@@ -1,5 +1,9 @@
 # dr.dsh Daemon
 
+> v0.1.0: `drdsh daemon ...` and `drdsh-daemon ...` are equivalent. Release installation and
+> management are native Rust; Node is needed by DSH only. No Cargo or pnpm is needed on the host.
+> Packages support macOS arm64 and Linux x86_64 musl. See [release installation](../docs/operations/releases.md).
+
 [中文](README.zh.md) · [Project home](../README.md) · [Relay](../relay/README.md)
 
 **Runs on your DSH computer, manages DSH, and establishes encrypted remote connections.**
@@ -18,7 +22,7 @@ The [relay](../relay/README.md) distributes the browser client (PWA) and forward
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) installed and configured, with local tasks working.
   The integration baseline is DSH **`0.1.5-rc.2`**; check compatibility after upstream updates.
-- Node.js 24+ (or 22.19+ on the 22.x line), Rust stable, and your platform's compiler toolchain.
+- Node.js 24+ (or 22.19+ on the 22.x line) for DSH. Rust and a compiler are only needed for source builds.
   Installing the base daemon does not require pnpm.
 - A macOS desktop login or Linux `systemctl --user` session. On Windows, use WSL2 with systemd enabled
   and DSH installed inside the same WSL2 environment.
@@ -33,21 +37,21 @@ git clone https://github.com/luckyuro/dr.dsh.git
 cd dr.dsh
 sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-daemonctl status
+drdsh-daemon status
 ```
 
-The installer builds only the daemon, under `~/.local` by default, without sudo.
+The installer downloads a prebuilt daemon from Release, under `~/.local` by default, without sudo.
 Add `--dsh /absolute/path/to/dsh` if DSH is outside your PATH, or `--port 3081` if another process uses
 the default port `3080`. Omitting `--workdir` uses the current directory. Wait for DSH HTTP status
-to say `responding`; use `drdsh-daemonctl logs` if it stays unresponsive.
+to say `responding`; use `drdsh-daemon logs` if it stays unresponsive.
 
 The `export` affects the current terminal only. Add it to your shell configuration or run
-`~/.local/bin/drdsh-daemonctl` directly. Keep the computer powered on, awake, and online.
+`~/.local/bin/drdsh-daemon` directly. Keep the computer powered on, awake, and online.
 
 ## Pair and use DSH
 
 ```sh
-drdsh-daemonctl pair
+drdsh-daemon pair
 ```
 
 Leave the command running and use the code within about five minutes:
@@ -59,7 +63,7 @@ Leave the command running and use the code within about five minutes:
 4. Click **Open the DeepSeek Harness interface** to use DSH in a new tab.
 
 **Keep the original dr.dsh tab open:** it maintains the tunnel. The browser remembers pairings;
-select a saved computer and connect on later visits. Run `drdsh-daemonctl pair` again after a failed
+select a saved computer and connect on later visits. Run `drdsh-daemon pair` again after a failed
 or expired attempt. Your phone accesses the relay address; DSH's local port stays private.
 
 ## Connect to a remote relay
@@ -75,7 +79,7 @@ Replace the SSH user and server address and leave this running. In another termi
 update the daemon using `--relay ws://127.0.0.1:8788`. For an existing installation:
 
 ```sh
-drdsh-daemonctl install --relay ws://127.0.0.1:8788 --start
+sh daemon/install.sh --relay ws://127.0.0.1:8788 --start
 ```
 
 The browser still opens the server's HTTPS address. Both addresses must reach the same relay.
@@ -85,15 +89,15 @@ You maintain the SSH connection; daemon login autostart does not start SSH.
 
 | Operation | Command |
 | :--- | :--- |
-| Start / stop / restart daemon and its managed DSH | `drdsh-daemonctl start` / `drdsh-daemonctl stop` / `drdsh-daemonctl restart` |
-| Status / recent logs | `drdsh-daemonctl status` / `drdsh-daemonctl logs` |
-| Follow logs | `drdsh-daemonctl logs --follow` |
-| Enable / disable login autostart | `drdsh-daemonctl enable` / `drdsh-daemonctl disable` |
-| Pair / list devices | `drdsh-daemonctl pair` / `drdsh-daemonctl devices` |
-| Revoke a device | `drdsh-daemonctl devices --revoke <id>` |
-| Audit / crash records | `drdsh-daemonctl audit` / `drdsh-daemonctl crashes` |
-| Install from updated source | `drdsh-daemonctl install --source /path/to/dr.dsh` |
-| Uninstall daemon and optional plugin | `drdsh-daemonctl uninstall` |
+| Start / stop / restart daemon and its managed DSH | `drdsh-daemon start` / `drdsh-daemon stop` / `drdsh-daemon restart` |
+| Status / recent logs | `drdsh-daemon status` / `drdsh-daemon logs` |
+| Follow logs | `drdsh-daemon logs --follow` |
+| Enable / disable login autostart | `drdsh-daemon enable` / `drdsh-daemon disable` |
+| Pair / list devices | `drdsh-daemon pair` / `drdsh-daemon devices` |
+| Revoke a device | `drdsh-daemon devices --revoke <id>` |
+| Audit / crash records | `drdsh-daemon audit` / `drdsh-daemon crashes` |
+| Install from Release | `drdsh daemon update` |
+| Uninstall daemon and optional plugin | `drdsh-daemon uninstall` |
 
 These commands manage only the daemon. Updates restart a previously running daemon and its DSH,
 preserving pairings. The relay's process and configuration remain unchanged. `enable` / `disable`
@@ -102,8 +106,8 @@ only change login autostart; use `start` / `stop` for immediate action.
 
 ## Optional plugin
 
-The plugin also requires pnpm. Install it with `drdsh-daemonctl install plugin`, or add `--with-plugin`
-when first installing the daemon. Remove it with `drdsh-daemonctl uninstall plugin`.
+The Release bundle includes the plugin; no pnpm is needed. Register it with `drdsh daemon install plugin --source <bundle>`, or add `--with-plugin`
+when first installing the daemon. Remove it with `drdsh-daemon uninstall plugin`.
 Installing or removing the plugin restarts a previously running DSH host.
 
 The receiver for supplementary plugin notifications and background push are not implemented yet.
@@ -115,9 +119,9 @@ The default prefix is `~/.local`; override it with `--prefix /path/to/install`:
 
 | Path | Contents |
 | :--- | :--- |
-| `bin/drdsh-daemonctl` | Daemon management command |
+| `bin/drdsh-daemon` | Daemon management command |
 | `etc/dr.dsh/daemon.json` | DSH path, project directory, relay address, and installation record |
-| `lib/dr.dsh/daemon/bin/drdshd` | Daemon binary |
+| `lib/dr.dsh/daemon/bin/drdsh` | Daemon binary |
 | `lib/dr.dsh/daemon/plugin` | Optional plugin |
 | `lib/dr.dsh/daemon/services` | Service definitions |
 | `lib/dr.dsh/daemon/logs` | macOS logs; Linux uses the user journal |

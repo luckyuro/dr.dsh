@@ -213,6 +213,11 @@ fn next_value(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<S
 /// Entry point used by `main`.
 pub fn run() -> Result<ExitCode> {
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    run_with_args(args)
+}
+
+/// Runs daemon commands supplied by the multicall CLI, without changing process arguments.
+pub fn run_with_args(args: Vec<OsString>) -> Result<ExitCode> {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         print!("{}", help_text());
         return Ok(ExitCode::SUCCESS);

@@ -1,5 +1,8 @@
 # 安装 daemon
 
+v0.1.0 提供原生统一 CLI 与 Release 安装；平台矩阵和新命令见[二进制发布](releases.md)。
+本文后面的 raw binary 命令仍可用于源码调试。
+
 本文覆盖 **Linux、macOS、Windows** 三个平台。中继的部署（含 Docker）在
 [`self-hosting.md`](self-hosting.md)；这里只讲 daemon——那台**运行着 DSH 的电脑**上常驻的进程。
 
@@ -23,7 +26,7 @@ Windows 的一键路径是启用 systemd 的 WSL2；原生 Windows 仍需手工�
 
 | 需要的 | 为什么 | 怎么确认 |
 | :--- | :--- | :--- |
-| **Rust stable** | 目前从源码构建；预编译产物是 M4 的交付物 | `cargo --version` |
+| **Rust stable** | 仅源码构建需要；Release 安装不需要 | `cargo --version` |
 | **Node.js 22.19+ 或 24+** | DSH 本身是一个 Node 程序 | `node --version` |
 | **DSH 已安装** | daemon 监督它，不替代它 | `dsh --version` |
 | **一个中继地址** | 远端设备靠它找到你的电脑 | 见 [`self-hosting.md`](self-hosting.md) |
@@ -90,7 +93,7 @@ drdshd doctor     # 会打印这一台 CPU 的架构与扩展（present/absent�
 - **macOS 与 Windows 上的旧 CPU**：同一条 baseline 逻辑适用于这两个平台的目标三元组，但上面的
   模拟测试是在 Linux 上做的；那两个平台没有等价的实测证据。
 - **从源码构建**是旧机器上最稳的路径（用那台机器自己的 baseline），也是本文一直以来的默认路径；
-  预编译产物与 npm 包都还没有——发布流水线是审计范围里明确列为**未完成**的一项
+  预编译产物已通过 [Release](releases.md) 提供；npm、签名与可复现构建仍未完成
   （[`../audit-scope.md`](../audit-scope.md) § 2.4），也是定义文档"提供 npm 等替代安装"这句承诺
   目前**没有兑现**的地方。
 

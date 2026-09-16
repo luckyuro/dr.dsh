@@ -6,7 +6,7 @@
 | | Relay | Daemon |
 | :--- | :--- | :--- |
 | 安装 | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
-| 命令 | `drdsh-relayctl` | `drdsh-daemonctl` |
+| 命令 | `drdsh relay` | `drdsh daemon` |
 | 管理范围 | relay + PWA | daemon + 可选插件 |
 | 配置 | `<prefix>/etc/dr.dsh/relay.json` | `<prefix>/etc/dr.dsh/daemon.json` |
 | 程序目录 | `<prefix>/lib/dr.dsh/relay` | `<prefix>/lib/dr.dsh/daemon` |
@@ -16,26 +16,37 @@
 默认 prefix 是 `~/.local`；两个管理命令都安装到 `<prefix>/bin`。将此目录加入 PATH 后：
 
 ```sh
-drdsh-relayctl status
-drdsh-daemonctl status
-drdsh-relayctl restart
-drdsh-daemonctl restart
+drdsh relay status
+drdsh daemon status
+drdsh relay restart
+drdsh daemon restart
 ```
 
 两侧都支持 `start`、`stop`、`restart`、`status`、`logs [--follow]`、`enable`、`disable`、
-`install`、`uninstall`。Daemon 额外支持 `pair`、`doctor`、`devices`、`audit`、`crashes`。
-只更新 PWA 使用 `drdsh-relayctl install client`；可选插件使用
-`drdsh-daemonctl install plugin` / `uninstall plugin`，或首次安装时加 `--with-plugin`。
+`install`、`update`、`uninstall`。Daemon 额外支持 `pair`、`doctor`、`devices`、`audit`、`crashes`。
+只更新 PWA 使用 `drdsh relay install client --source <bundle>`；可选插件使用
+`drdsh daemon install plugin --source <bundle>` / `uninstall plugin`，或首次安装时加 `--with-plugin`。
 
 重复安装保留未覆盖的配置，只重启对应的宿主。卸载保留自身配置和数据，不影响另一侧程序。
 Relay 不接受 DSH 的 `--dsh`、`--workdir`、`--state-dir` 等选项；Daemon 不接受中继监听用的 `--bind`。
-基础 daemon 安装只需要 Node.js、Rust 和 DSH；pnpm 只用于 PWA 或可选插件。
+Relay 管理由独立 Rust 程序实现。离线包安装、更新和运维无需 Node、pnpm 或 Rust；源码安装只编译
+Rust，PWA 必须在构建机预先准备，可通过 `--client-dir` 指定。打包与静态 nginx 部署见
+[Relay 说明](../../relay/README.zh.md) 和 [ADR-0016](../decisions/0016-native-relay-management.md)。
+两侧 Release 安装和管理都不需要 Node、Rust 或 pnpm；DSH 自身需要 Node。
+根 `install.sh` 可选择混合包，两侧管理仍隔离。别名为 `drdsh-relay` / `drdsh-daemon`，
+原 `*ctl` 名字保留。平台矩阵与更新见[二进制发布](releases.md)。
 
 实现与兼容决策见 [ADR-0015](../decisions/0015-independent-relay-and-daemon.md)。
 
 ## 从旧版安装迁移
 
-旧入口 `sh install.sh` / `drdsh` 继续管理 `<prefix>/etc/dr.dsh/config.json`，
+已有**独立** `relay.json` 安装可直接运行新 relay 包里的 `sh install.sh --prefix <原前缀>`。
+配置、服务身份与端口保持兼容，正在运行的 relay 在更新后恢复；JS 管理文件替换为原生程序。
+以后更新使用 `drdsh relay install --source /path/to/new-bundle`。这条路径无需 Node，也不修改 daemon。
+
+下面的步骤仅用于更早的**统一**安装：
+
+旧入口 `sh scripts/install-legacy.sh` / 旧 `drdsh` 继续管理 `<prefix>/etc/dr.dsh/config.json`，
 新命令管理上表的独立配置。它们不会自动接管彼此的进程或复制配对身份。
 
 如需保留旧配对迁移，在原安装机器上操作：
@@ -50,7 +61,7 @@ Relay 不接受 DSH 的 `--dsh`、`--workdir`、`--state-dir` 等选项；Daemon
    drdsh uninstall all
    ```
 
-3. 从源码分别运行 `sh relay/install.sh` 和 `sh daemon/install.sh`，传入原来的设置。
+3. 分别运行 Release 下载脚本 `sh relay/install.sh` 和 `sh daemon/install.sh`，传入原来的设置。
    **Daemon 的 `--state-dir` 必须指向旧 `state` 目录**才能沿用配对；`--dsh-home` 沿用原来的 DSH home。
    原来使用非默认 prefix 的安装，两侧命令也传入原 `--prefix`。
 4. 按需重新安装插件，使用新命令 `start` / `status` 并从浏览器连接确认，再用 `enable` 恢复登录自启动。
@@ -60,9 +71,9 @@ Relay 不接受 DSH 的 `--dsh`、`--workdir`、`--state-dir` 等选项；Daemon
 
 ## 旧版统一入口
 
-`drdsh` 负责安装和管理本项目各组件。当前提供 **macOS launchd、Linux systemd 用户服务**；
+本节只说明旧 Node CLI 的历史命令；新安装使用前面的原生入口。旧 `drdsh` 负责统一安装记录。当前提供 **macOS launchd、Linux systemd 用户服务**；
 Windows 可在启用 systemd 的 WSL2 内运行同一套命令，原生 Windows 服务安装尚未实现。
-安装器从当前源码构建，没有依赖尚未发布的 npm 包或二进制下载地址。
+安装器从当前源码构建，仅用于旧统一记录；新的 Release 下载入口见上文。
 
 ## 准备
 
@@ -77,22 +88,22 @@ daemon 和插件还需要已经安装好的 DSH；可用 `--dsh /绝对路径/ds
 
 ```sh
 # 在本机一起安装 daemon、中继和 PWA，并立即启动
-sh install.sh all --start
+sh scripts/install-legacy.sh all --start
 
 # 运行 DSH 的电脑：使用本机中继或已转接到本机的中继入口
-sh install.sh daemon --relay ws://127.0.0.1:8787 --start
+sh scripts/install-legacy.sh daemon --relay ws://127.0.0.1:8787 --start
 
 # 中继服务器：自动构建和安装 PWA
-sh install.sh relay --start
+sh scripts/install-legacy.sh relay --start
 
 # 单独构建/更新 PWA 静态资源
-sh install.sh client
+sh scripts/install-legacy.sh client
 
 # 安装可选插件，调用 DSH 的 web profile 插件管理命令
-sh install.sh plugin
+sh scripts/install-legacy.sh plugin
 
 # 全部组件，包括可选插件
-sh install.sh all --with-plugin --start
+sh scripts/install-legacy.sh all --with-plugin --start
 ```
 
 首次安装后，把命令目录加进当前 shell 的 PATH：
@@ -168,7 +179,7 @@ drdsh install all --source /path/to/dr.dsh
 自定义安装目录形成独立的一组服务，服务名称包含目录的哈希：
 
 ```sh
-sh install.sh all --prefix "$HOME/drdsh-work" --port 3082 --bind 127.0.0.1:8789 \
+sh scripts/install-legacy.sh all --prefix "$HOME/drdsh-work" --port 3082 --bind 127.0.0.1:8789 \
   --relay ws://127.0.0.1:8789 --start
 "$HOME/drdsh-work/bin/drdsh" status
 ```
@@ -215,12 +226,28 @@ pnpm run smoke:systemd
 已有构建产物可用 `--skip-build --build-profile debug` 安装，正式自用默认 `release`；
 缺少任何必要文件都会在停止已有服务前报错。
 
+`node scripts/nginx-static-smoke.mjs` 还可验证 nginx 直接托管 PWA：需要 nginx、Playwright Chromium
+和已构建的产物。可用 `NGINX_BIN`、`PLAYWRIGHT_MODULE` 与 `CHROMIUM_BIN` 指定测试机的工具位置。
+这些工具只用于开发验收，不是 relay 服务器依赖。
+
+### 原生 Relay 与静态 PWA 验证（2026-09-17）
+
+- macOS launchd：`service-smoke.mjs` **41 项真实进程检查通过**。Relay 命令 PATH 不含 Node、pnpm
+  或 Cargo，覆盖离线包、完整/PWA 更新、损坏包不停止服务、操作锁、另一侧 PID/配置与配对状态保留。
+  另验证旧的独立 Node relay 管理器与新程序沿用同一服务身份，迁移后 daemon 不被重启。
+- Debian 12 / ARM64 / systemd 252 容器：`relay-bundle-smoke.sh` **7 项通过**。容器未安装 Node、pnpm、
+  Cargo、Python 或 jq，使用真实 relay 与原生管理器验证特殊路径、首次安装不启动、重复启停、自启动、
+  PWA/完整更新、日志、卸载重装和端口保留。测试使用用户服务会话，curl 仅用于断言 HTTP 响应。
+- nginx 1.31.5 + Chromium：`nginx-static-smoke.mjs` **11 项通过**。Relay 未配置有效客户端目录，
+  nginx 直接提供静态资源，浏览器完成配对、隧道、鉴权后的 DSH 替身页面与离线外壳。HTTP 回环用于
+  本地验收；远端部署仍需配置示例中的 HTTPS 与可信证书。
+
 ### 本次验证（2026-09-15）
 
 - `pnpm run verify` 通过，包括新增 CLI 参数/配置/转义测试与文档链接检查。
 - macOS launchd：`service-smoke.mjs` **21 项通过**，使用真实 daemon、中继、PWA 与 DSH 替身，
   包括启动中取消、插件独立卸载/重装、失败不打断原有服务，以及卸载保留密钥。
-- macOS：从源码按默认 release 路径执行 `sh install.sh relay --start`，完成健康检查、重启与卸载。
+- macOS：从源码按默认 release 路径执行 `sh scripts/install-legacy.sh relay --start`，完成健康检查、重启与卸载。
 - Debian 12 / systemd 252 容器：`systemd-smoke.mjs` **10 项通过**。使用真实 systemd 用户管理器
   与替身进程验证模板和管理命令；未在该环境运行完整 Rust/DSH 链路。测试目录若挂载为 `noexec`，
   需把 `TMPDIR` 指向可执行的临时目录。

@@ -5,7 +5,8 @@
 自托管不是省钱的选择，而是本项目安全叙事的一部分：中继提供远端页面所需的静态应用壳，因此它位于客户端的可信计算基里；由你自己的基础设施提供这个壳，中继运营者与用户就是同一个人（见 [`../security.md`](../security.md) § 5.1）。
 
 中继已经实现 HTTP/WebSocket 路由、`/healthz` 与静态客户端服务。macOS / Linux 可以运行
-`sh relay/install.sh --start` 独立构建、安装并启动中继与 PWA，随后使用 `drdsh-relayctl restart`、
+relay 离线包中的 `sh install.sh --start` 安装并启动中继与 PWA，服务器无需 Node、pnpm 或 Rust。
+源码入口 `sh relay/install.sh --start` 只构建 Rust，需要提前准备 PWA。随后使用 `drdsh-relayctl restart`、
 `drdsh-relayctl status`、`drdsh-relayctl logs --follow`。完整入口见
 [`../../relay/README.zh.md`](../../relay/README.zh.md)，旧安装迁移见 [`cli.md`](cli.md)。
 
@@ -78,7 +79,7 @@ DSH_RELAY_CLIENT_DIR=/usr/share/dr.dsh/client drdsh-relay    # 绑默认的 127.
 | `GET /ws/daemon?room=<id>` | daemon → 中继 | 注册 room 并接收该 room 的全部客户端流量 |
 | `GET /ws/client?room=<id>` | 客户端 → 中继 | 加入 room；中继把它与房间内 daemon 的流对接 |
 | `GET /` | 浏览器 | 静态应用壳（无用户数据，可缓存、可审计） |
-| `/__dr/control/…`、`/__dr/dsh/…` | 浏览器 → 中继 | Service Worker 改写后的隧道路径：前者是应用自己的控制面，后者是要转发给 daemon 的 DSH 路径（[`../decisions/0005-pwa-and-service-worker.md`](../decisions/0005-pwa-and-service-worker.md)） |
+| `/__dr/interface`、`/__dr/dsh/…` | 浏览器内部 → 加密隧道 | Service Worker 拦截后交给页面隧道，不是 relay 的 HTTP 端点；未被 worker 接管时返回 404 |
 
 room id 是 128 位随机数（`b64u`），它是**路由句柄而不是凭据**：知道它只能让你敲到门，进门需要完成端到端握手。room 在 daemon 重新注册时轮换，所以不要把 room id 当成需要长期记住的标识。
 
@@ -330,6 +331,19 @@ Caddy 这一侧还有两个与超时有关的事实值得记住：`stream_timeou
 - **仍然必须用 TLS。** 中继只装密文，但 room id、帧长与时序是明文的路由元数据；TLS 保护的是这些元数据以及"你连的确实是那台中继"这件事。
 - **需要的可以让中继只监听回环**，反向代理与它同机；容器部署则绑 `0.0.0.0` 但只把端口发布到 `127.0.0.1`。
 - 证书过期在这套结构里的表现是"客户端连不上、代理返回 502 或证书错误"，而中继日志一切正常——这是排查时最容易走错方向的一类故障。
+
+### nginx 直接读取静态文件
+
+PWA 构建输出包含首页 `index.html`、JS、manifest 与图标，都是静态文件；JS 由浏览器执行。
+可将构建目录作为 `client/` 复制到单独的公开目录，使用仓库的
+[nginx 配置示例](../../relay/nginx.conf.example)。该示例直接提供 `/` 与 `/client/*`，只把 `/ws/*`
+和 `/healthz` 转发到 Rust relay。Relay 本身仍可提供静态页面，现有全站反向代理方式继续可用。
+
+保持同一个 HTTPS origin，设置正确的 Content-Type 与 CSP，并为 `/client/service-worker.js`
+返回 `Service-Worker-Allowed: /`。不要用首页兜底 `/__dr/*`；DSH 内容应由浏览器通过隧道获取。
+nginx worker 需要公开资源目录的读取与遍历权限，私有安装目录和配置目录不要整体开放。
+更新 relay/PWA 后也要同步替换这份公开资源副本。当前文件名没有内容哈希，示例使用 `no-cache`
+进行 HTTP 重新验证；浏览器自己的离线缓存策略仍由 Service Worker 管理。
 
 ### 关于应用壳的缓存
 

@@ -324,8 +324,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "dr-dsh-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "dr-dsh-daemon",
+ "dr-dsh-relay",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+]
+
+[[package]]
 name = "dr-dsh-crypto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "aes-gcm",
  "base64",
@@ -349,7 +362,7 @@ dependencies = [
 
 [[package]]
 name = "dr-dsh-daemon"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -378,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "dr-dsh-proto"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
@@ -389,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "dr-dsh-relay"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -406,6 +419,17 @@ dependencies = [
  "tower",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "dr-dsh-relayctl"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
 ]
 
 [[package]]

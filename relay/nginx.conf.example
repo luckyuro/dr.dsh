@@ -1,0 +1,68 @@
+# Include in nginx's http {} context. Set paths, hostname and certificate files before use.
+map $http_upgrade $drdsh_connection_upgrade {
+    default upgrade;
+    '' close;
+}
+
+server {
+    listen 443 ssl;
+    server_name relay.example.com;
+    ssl_certificate /etc/letsencrypt/live/relay.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/relay.example.com/privkey.pem;
+
+    # A public copy of the bundle's client/ directory, readable by nginx's worker user.
+    # Keep this separate from the private installation/configuration directories.
+    root /srv/dr.dsh-relay;
+    types {
+        text/html html;
+        application/javascript js;
+        application/manifest+json webmanifest;
+        image/png png;
+    }
+    default_type application/octet-stream;
+
+    location = / {
+        try_files /client/index.html =404;
+        add_header Cache-Control "no-cache" always;
+        add_header Content-Security-Policy "default-src 'none'; script-src 'self'; worker-src 'self'; style-src 'unsafe-inline'; img-src 'self'; manifest-src 'self'; connect-src 'self' https://$http_host wss://$http_host; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" always;
+    }
+
+    location = /client/service-worker.js {
+        try_files $uri =404;
+        # The worker is under /client/ but must handle DSH interface paths at the origin root.
+        add_header Service-Worker-Allowed "/" always;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    # Serve the entry only through /, which applies the homepage's CSP.
+    location = /client/index.html { return 404; }
+
+    location /client/ {
+        try_files $uri =404;
+        add_header Cache-Control "no-cache" always;
+        add_header X-Content-Type-Options "nosniff" always;
+    }
+
+    location /ws/ {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_http_version 1.1;
+        proxy_set_header Host $http_host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $drdsh_connection_upgrade;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_next_upstream off;
+    }
+
+    location = /healthz {
+        proxy_pass http://127.0.0.1:8787;
+        proxy_cache off;
+        add_header Cache-Control "no-store" always;
+    }
+
+    # DSH interface requests are handled in the browser by its Service Worker and tunnel.
+    # An uncontrolled request must fail instead of being answered with the PWA's index.html.
+    location / { return 404; }
+}

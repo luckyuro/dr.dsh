@@ -44,6 +44,7 @@ WORKDIR /src
 # binary.
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
+COPY apps/pwa/static/index.html ./apps/pwa/static/index.html
 RUN cargo build --release --locked -p dr-dsh-relay \
  && strip target/release/drdsh-relay
 

@@ -7,17 +7,9 @@
 //! * **The shell** — the page a visitor sees. Static, identical for every visitor.
 //! * **The client modules** — the PWA's own sources, served so the page can import them.
 //!
-//! The shell is compiled into the relay. The modules are read from a directory at startup,
-//! because they are TypeScript that has to be transpiled by `pnpm --filter @dr.dsh/pwa
-//! build` and embedding build output would mean committing it.
-//!
-//! # Why the modules are served as sources
-//!
-//! They are written in the subset a browser can run without transpiling: no enums, no
-//! decorators, no parameter properties, no type-only runtime syntax. That subset is a
-//! standing rule of this repository (`AGENTS.md`), chosen for the Node test runner, and it
-//! happens to make the client servable verbatim. A browser without type-stripping support
-//! will refuse the module and the page will say so, which is the honest failure.
+//! The source HTML is shared with the PWA build, so nginx and the relay serve the same
+//! shell. Browser JavaScript is emitted by the PWA build and read from a supplied directory;
+//! neither serving path executes JavaScript on the server. Generated assets are not committed.
 //!
 //! # When the directory is missing
 //!
@@ -28,90 +20,7 @@
 use std::path::{Component, Path, PathBuf};
 
 /// The shell page, with no user data and no per-visitor variation.
-pub const SHELL: &str = r#"<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dr.dsh</title>
-<!-- Installable: a manifest, two icons, and the service worker the page already registers. The
-     manifest lives under /client/ because that is the one directory the relay serves files from,
-     and it is same-origin so the app's scope is the whole relay. -->
-<link rel="manifest" href="/client/manifest.webmanifest">
-<meta name="theme-color" content='#2563eb'>
-<link rel="icon" href="/client/icon-192.png" sizes="192x192" type="image/png">
-<link rel="apple-touch-icon" href="/client/icon-192.png">
-<style>
-  :root { color-scheme: light dark; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #e5e7eb; --muted: #9ca3af; --accent: #60a5fa; } }
-  body { font: 16px/1.6 system-ui, sans-serif; color: var(--fg); margin: 0; padding: 3rem 1.5rem; }
-  main { max-width: 34rem; margin: 0 auto; }
-  h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
-  p { color: var(--muted); }
-  label { display: block; font-weight: 600; margin: 1.5rem 0 .35rem; }
-  input { width: 100%; padding: .6rem .7rem; font: inherit; font-family: ui-monospace, monospace;
-          border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); border-radius: .4rem;
-          background: transparent; color: inherit; }
-  button { margin-top: 1rem; padding: .6rem 1.1rem; font: inherit; font-weight: 600; border: 0;
-           border-radius: .4rem; background: var(--accent); color: #fff; cursor: pointer; }
-  button[disabled] { opacity: .55; cursor: progress; }
-  #state { margin-top: 1.25rem; min-height: 2.5rem; }
-  #state[data-phase="failed"] { color: #dc2626; }
-  #state[data-phase="offline"] { color: #b45309; }
-  #panel { margin-top: 1.5rem; }
-  #panel[hidden] { display: none; }
-  #headline { font-weight: 600; margin: 0; }
-  #detail { margin: .25rem 0 0; font-size: .9rem; }
-  #panel[data-tone="ok"] #headline { color: #15803d; }
-  #panel[data-tone="warn"] #headline { color: #b45309; }
-  #panel[data-tone="error"] #headline { color: #dc2626; }
-  #actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
-  #actions button { margin-top: 0; }
-  #actions p { flex-basis: 100%; margin: .25rem 0 0; font-size: .85rem; color: var(--muted); }
-  #open[hidden] { display: none; }
-  #forget { background: transparent; color: var(--muted);
-            border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); }
-  #forget[hidden] { display: none; }
-  #device { font-size: .9rem; }
-  code { background: color-mix(in srgb, currentColor 12%, transparent); padding: .1em .35em; border-radius: .25rem; }
-  a { color: var(--accent); }
-</style>
-</head>
-<body>
-<main>
-  <h1>dr.dsh</h1>
-  <p>This page connects your browser to the DeepSeek Harness running on your own computer.
-     Traffic is end-to-end encrypted: this relay forwards it without being able to read it.</p>
-
-  <label for="key">Pairing code or room key</label>
-  <input id="key" autocomplete="off" spellcheck="false" placeholder="the code `drdshd pair` printed">
-  <button id="connect" type="button">Connect</button>
-  <button id="forget" type="button" hidden>Forget this device</button>
-  <div id="state" data-phase="idle"></div>
-  <p id="device" hidden></p>
-
-  <!-- One machine per paired room (ADR-0007). Hidden until there is at least one, so a first-time
-       visitor sees the code field and nothing else. -->
-  <section id="rooms" hidden>
-    <h2 style="font-size:1rem">Your computers</h2>
-    <ul id="room-list" style="list-style:none;padding:0;margin:0"></ul>
-  </section>
-
-  <section id="panel" hidden>
-    <p id="headline"></p>
-    <p id="detail"></p>
-    <div id="actions"></div>
-    <button id="open" type="button" hidden>Open the DeepSeek Harness interface</button>
-  </section>
-
-  <p style="margin-top:2rem;font-size:.9rem">Either credential is a secret and neither leaves
-     this browser except inside the encrypted tunnel. A paired device is remembered in this
-     browser, so the code is only ever typed once.</p>
-</main>
-<script type="module" src="/client/shell.js"></script>
-</body>
-</html>
-"#;
+pub const SHELL: &str = include_str!("../../../apps/pwa/static/index.html");
 
 /// The page shown when the client modules are not installed.
 pub const SHELL_WITHOUT_CLIENT: &str = r#"<!doctype html>

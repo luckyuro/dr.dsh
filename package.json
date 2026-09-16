@@ -1,6 +1,6 @@
 {
   "name": "dr.dsh",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "type": "module",
   "license": "MIT",
@@ -12,6 +12,8 @@
   "scripts": {
     "drdsh": "node scripts/drdsh.mjs",
     "test:cli": "node --test scripts/drdsh.test.mjs",
+    "smoke:multicall": "node scripts/multicall-smoke.mjs",
+    "smoke:release": "node scripts/release-installer-smoke.mjs",
     "smoke:services": "node scripts/service-smoke.mjs",
     "smoke:systemd": "node scripts/systemd-smoke.mjs",
     "build:rs": "cargo build --workspace",

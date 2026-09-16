@@ -1,0 +1,31 @@
+[package]
+name = "dr-dsh-cli"
+description = "dr.dsh multicall binary and native component installation"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "drdsh"
+path = "src/main.rs"
+
+[features]
+default = ["relay", "daemon"]
+relay = ["dep:dr-dsh-relay"]
+daemon = ["dep:dr-dsh-daemon"]
+
+[dependencies]
+dr-dsh-relay = { path = "../dr-dsh-relay", optional = true }
+dr-dsh-daemon = { path = "../dr-dsh-daemon", optional = true }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Local service identity only; never a dependency of the relay crate (ADR-0017).
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

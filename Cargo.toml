@@ -17,6 +17,8 @@ members = [
   "crates/dr-dsh-crypto",
   "crates/dr-dsh-daemon",
   "crates/dr-dsh-relay",
+  "crates/dr-dsh-relayctl",
+  "crates/dr-dsh-cli",
 ]
 # `cargo build` at the root builds the audit-critical pair only; the daemon and
 # relay are built explicitly so a contributor never accidentally links a
@@ -24,7 +26,7 @@ members = [
 default-members = ["crates/dr-dsh-proto", "crates/dr-dsh-crypto"]
 
 [workspace.package]
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"

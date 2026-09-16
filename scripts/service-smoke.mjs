@@ -6,7 +6,7 @@
  * Exits 0 passed, 1 failed, 2 missing prerequisites. Removes its services in finally.
  */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
@@ -17,7 +17,7 @@ import { managerAvailable, paths, serviceState, shellQuote, stopService, setAuto
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 try {
   managerAvailable();
-  for (const file of ['target/debug/drdshd', 'target/debug/drdsh-relay', 'apps/pwa/dist/shell.js']) {
+  for (const file of ['target/debug/drdshd', 'target/debug/drdsh-relay', 'target/debug/drdsh-relayctl', 'apps/pwa/dist/index.html']) {
     if (!existsSync(join(repo, file))) throw new Error(`Missing ${file}; build the workspace and PWA first.`);
   }
 } catch (error) { console.error(error.message); process.exit(2); }
@@ -26,15 +26,17 @@ const prefix = join(scratch, "install space & % $literal ' quote");
 const p = paths(prefix);
 let config;
 let checks = 0;
+const serverPath = '/usr/bin:/bin:/usr/sbin:/sbin';
 
 async function command(args, expected = 0, installed = true, scope) {
   const scoped = paths(prefix, scope);
   const executable = installed ? scoped.command : scope ? '/bin/sh' : process.execPath;
   const argv = installed ? args : scope
-    ? [join(repo, scope, 'install.sh'), ...args.slice(1), '--prefix', prefix]
+    ? [join(repo, scope, 'install-source.sh'), ...args.slice(1), '--prefix', prefix]
     : [join(repo, 'scripts/drdsh.mjs'), ...args, '--prefix', prefix];
   const result = await new Promise((accept, reject) => {
-    const child = spawn(executable, argv, { cwd: scratch, env: { ...process.env, DSHD_STATE_DIR: scoped.state } });
+    const child = spawn(executable, argv, { cwd: scratch, env: { ...process.env, DSHD_STATE_DIR: scoped.state,
+      ...(scope === 'relay' ? { PATH: serverPath } : {}) } });
     let text = '';
     const timeout = setTimeout(() => { child.kill('SIGTERM'); reject(new Error(`Timed out: ${args.join(' ')}`)); }, 120_000);
     child.stdout.on('data', chunk => { text += chunk; });
@@ -155,7 +157,14 @@ else if (args[0] === 'plugin') {
   check('uninstall removes commands, services, PWA and plugin registration', !existsSync(join(p.bin, 'drdsh')) && !existsSync(join(p.root, 'client')) && !existsSync(join(config.dshHome, 'fixture-plugin.json')));
   check('uninstall preserves the room key and configuration', readFileSync(keyFile, 'utf8') === key && existsSync(p.config));
 
-  await command(['install', '--source', repo, '--skip-build', '--build-profile', 'debug',
+  const bundle = join(scratch, 'extracted relay bundle');
+  const archive = join(scratch, 'relay.tar.gz');
+  execFileSync('/bin/sh', [join(repo, 'relay/package.sh'), '--skip-build', '--build-profile', 'debug', '--output', archive], { env: { ...process.env, PATH: serverPath } });
+  mkdirSync(bundle);
+  execFileSync('tar', ['-xzf', archive, '-C', bundle]);
+  check('relay bundle is assembled from prebuilt artifacts without Node or Cargo',
+    existsSync(join(bundle, 'bin/drdsh-relayctl')) && existsSync(join(bundle, 'client/index.html')));
+  await command(['install', '--source', bundle,
     '--bind', `127.0.0.1:${relayPort}`, '--start'], 0, false, 'relay');
   const rp = paths(prefix, 'relay');
   let relayConfig = JSON.parse(readFileSync(rp.config, 'utf8'));
@@ -165,6 +174,9 @@ else if (args[0] === 'plugin') {
     !['dsh', 'dshHome', 'relay', 'port', 'workdir', 'state', 'path'].some(field => field in relayConfig));
   await command(['status'], 0, true, 'relay');
   check('relay command uses its saved prefix from outside the source directory');
+  check('relay installation ships native management and no JS management files',
+    !readFileSync(rp.command, 'utf8').includes('node') && !existsSync(join(rp.root, 'component-cli.mjs')) &&
+    existsSync(join(rp.bin, 'drdsh-relayctl')));
 
   await command(['install', '--source', repo, '--skip-build', '--build-profile', 'debug',
     '--dsh', wrapper, '--dsh-home', join(scratch, 'dsh home'), '--workdir', scratch,
@@ -188,6 +200,32 @@ else if (args[0] === 'plugin') {
   check('PWA update restarts only relay and leaves daemon configuration and PID intact',
     serviceState(relayConfig, 'relay').pid !== relayPid && serviceState(daemonConfig, 'daemon').pid === scopedDaemonPid &&
     readFileSync(dp.config, 'utf8') === daemonSettings);
+  const beforeIncompleteBundle = serviceState(relayConfig, 'relay').pid;
+  const incompleteBundle = join(scratch, 'incomplete relay bundle');
+  mkdirSync(join(incompleteBundle, 'bin'), { recursive: true });
+  writeFileSync(join(incompleteBundle, 'bin/drdsh-relayctl'), 'incomplete');
+  await command(['install', '--source', incompleteBundle], 1, true, 'relay');
+  check('incomplete bundle is rejected before stopping either service',
+    serviceState(relayConfig, 'relay').pid === beforeIncompleteBundle && serviceState(daemonConfig, 'daemon').pid === scopedDaemonPid &&
+    readFileSync(dp.config, 'utf8') === daemonSettings);
+  mkdirSync(join(rp.root, '.operation-lock'));
+  await command(['restart'], 1, true, 'relay');
+  rmSync(join(rp.root, '.operation-lock'), { recursive: true });
+  check('native relay manager honours the existing operation lock', serviceState(relayConfig, 'relay').pid === beforeIncompleteBundle);
+  await command(['install'], 0, true, 'relay');
+  relayConfig = JSON.parse(readFileSync(rp.config, 'utf8'));
+  check('full relay bundle update keeps daemon PID and configuration',
+    serviceState(relayConfig, 'relay').pid !== beforeIncompleteBundle && serviceState(daemonConfig, 'daemon').pid === scopedDaemonPid &&
+    readFileSync(dp.config, 'utf8') === daemonSettings);
+  execFileSync(process.execPath, [join(repo, 'scripts/component-cli.mjs'), 'relay', 'install', '--prefix', prefix,
+    '--source', repo, '--skip-build', '--build-profile', 'debug']);
+  const oldScopedConfig = JSON.parse(readFileSync(rp.config, 'utf8'));
+  check('former Node relay manager still uses the same service identity', serviceState(oldScopedConfig, 'relay').running);
+  await command(['install', '--source', bundle], 0, false, 'relay');
+  relayConfig = JSON.parse(readFileSync(rp.config, 'utf8'));
+  check('Node-to-native scoped migration preserves settings and the daemon', relayConfig.bind === oldScopedConfig.bind &&
+    serviceState(relayConfig, 'relay').running && !existsSync(join(rp.root, 'component-cli.mjs')) &&
+    serviceState(daemonConfig, 'daemon').pid === scopedDaemonPid && readFileSync(dp.config, 'utf8') === daemonSettings);
   const relayAfterUpdate = serviceState(relayConfig, 'relay').pid;
   const relaySettings = readFileSync(rp.config, 'utf8');
   await command(['install', '--skip-build', '--build-profile', 'debug'], 0, true, 'daemon');

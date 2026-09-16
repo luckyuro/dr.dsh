@@ -1160,5 +1160,13 @@ M2 结束要求的**实现评审**已做完并记录在 `docs/security.md` § 5.
 - **反向代理之外的入口形态**：CDN、云负载均衡、隧道服务（Cloudflare Tunnel 之类）都被文档讨论过，
   但没有一条被实测过（`operations/self-hosting.md` 只覆盖 nginx 与 Caddy）。它们各自会引入自己的
   空闲超时与头部改写，实测之前不写进"支持"。
-- **发布产物与可复现构建**：目前没有发布流水线，也就没有可核对的产物摘要与签名。它是审计范围的
-  第一节（`docs/audit-scope.md` § 2.4），也是 M6 之后第一个该补的工程缺口。
+- **发布产物与可复现构建**：v0.1.0 提供四个 Release tar 与 SHA256SUMS，见[发布说明](../operations/releases.md)。
+  独立签名、自动 CI 发布和可复现构建仍是审计范围 § 2.4 的工程缺口。
+
+
+### v0.1.0 原生统一 CLI 与分发
+
+新增 `drdsh relay` / `drdsh daemon`、名称别名和包清单组件限制。CLI 打印 ASCII Logo；
+两侧安装运维使用 Rust。Linux x86_64 musl 发布 mixed/relay/daemon，macOS arm64 发布 daemon。
+安装脚本从 GitHub Release 下载并校验摘要，`update` 保持组件服务隔离；PWA 可由 nginx 静态托管。
+设计与边界见 [ADR-0017](../decisions/0017-multicall-release-packages.md)。

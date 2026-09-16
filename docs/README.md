@@ -9,6 +9,7 @@
 | [`../README.zh.md`](../README.zh.md) | 功能概览、Relay / Daemon 两个入口、快速安装与配对 |
 | [`product/mvp.md`](product/mvp.md) | MVP 包含什么、不包含什么、目标平台优先级、里程碑的完成标准 |
 | [`product/overview.md`](product/overview.md) | 定义文档的每条承诺落在本仓库的哪个位置 |
+| [`../assets/brand/README.md`](../assets/brand/README.md) | Logo SVG、深浅色版本、应用图标与使用说明 |
 
 ## 我要把它跑起来
 
@@ -71,6 +72,7 @@ docs/
     0013-room-key-provisioning.md 房间密钥：生成并落盘
     0014-installation-and-services.md 统一安装与系统服务管理
     0015-independent-relay-and-daemon.md 两侧独立安装、配置与服务
+    0016-native-relay-management.md Relay 无 Node 管理、离线包与 nginx 静态托管
   integration/
     dsh-surface.md                依赖的 DSH 接口面、证据、失效表现、升级仪式
   operations/
@@ -88,3 +90,6 @@ docs/
 - **未决定的事情要被显式列出**，而不是留白。见 [`product/mvp.md`](product/mvp.md) § 六与 [`architecture.md`](architecture.md) § 6。
 - **不夸大安全性。** [`security.md`](security.md) § 5 列出的弱点与保证同样重要；任何"我们很安全"式的表述都应当被改成"我们保证 X，不保证 Y"。
 - **交叉引用的链接必须可解析。** `pnpm run docs:check` 会检查相对链接是否指向存在的文件（见 [`development/contributing.md`](development/contributing.md)）。
+
+- [二进制发布与安装](operations/releases.md)：混合/独立包、平台矩阵、下载、更新与构建。
+- [ADR-0017](decisions/0017-multicall-release-packages.md)：统一原生 CLI 与分组件发布边界。

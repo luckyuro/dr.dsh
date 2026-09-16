@@ -18,6 +18,7 @@
 | :--- | :--- | :--- | :--- |
 | 中继 | `crates/dr-dsh-relay` | Rust（axum/tokio） | 唯一面向公网的组件；零知识是它的全部卖点，也是它唯一值得被攻击的地方 |
 | daemon | `crates/dr-dsh-daemon` | Rust | 持有本机权限：监督 DSH 进程、代理其 HTTP/WS 面、保管设备登记表与房间密钥 |
+| 本地管理与分发 | `crates/dr-dsh-cli`、`scripts/release-install.sh`、`scripts/package-release.sh`；旧 `dr-dsh-relayctl` 回归路径 | Rust / Shell | 统一命令、按包分派、本地安装与用户服务；不携带 JS 管理运行时 |
 | 协议与密码学 | `crates/dr-dsh-proto`、`crates/dr-dsh-crypto` | Rust（规范） | 帧编解码、密钥派生、SPAKE2 配对、设备身份 |
 | 浏览器客户端 | `apps/pwa`、`packages/protocol`、`packages/crypto` | TypeScript | 与 Rust 端各自实现同一套协议（**跨语言分叉是这份清单里最现实的风险**） |
 
@@ -65,8 +66,12 @@
   在模拟的 Core 2 / Nehalem / Westmere 上实测（13/13）。
 - 容器镜像：`Dockerfile` 三阶段（客户端 → 只编 `-p dr-dsh-relay` → debian-slim 非 root + `read_only`），
   构建命令与 `compose.yaml` 在 [`operations/self-hosting.md`](operations/self-hosting.md)。
-- **已知不足**：目前没有发布流水线，也就没有可核对的构建产物摘要与签名。这是这条审计线的第一节，
-  而不是已解决的问题。
+- **发布现状**：v0.1.0 提供四个 Release tar.gz 与 SHA256SUMS，脚本和构建目标见
+  [二进制发布](operations/releases.md)。**已知不足**：没有独立签名、自动 CI 发布或可复现构建认证；
+  同源下载的摘要只校验传输内容，不提供独立供应链信任。
+
+统一 CLI 的混合二进制同时包含 daemon 与 relay；relay 包使用同一份二进制，包清单禁用 daemon 命令；CLI 管理层
+使用 SHA-256 保持服务名兼容。以下依赖约束针对网络 relay crate，不能声称混合二进制无密码学能力。
 
 ### 2.5 零知识是**构建期**属性
 

@@ -15,7 +15,7 @@ through a relay you host.
 | Features | Serves the browser client (PWA), forwards encrypted traffic, provides keepalive and health checks | Manages local DSH, pairs devices, establishes encrypted tunnels, records audit and crash reports |
 | Where to install | Your server, or the same host as the daemon | A computer with DSH installed |
 | Install | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
-| Management command | `drdsh-relayctl` | `drdsh-daemonctl` |
+| Management command | `drdsh relay` | `drdsh daemon` |
 | Separate guide | **[Relay setup and usage](relay/README.md)** | **[Daemon setup and usage](daemon/README.md)** |
 
 Each has its own configuration, program directory, logs, services, and update lock. Updating or
@@ -26,9 +26,10 @@ and requires reconnection; the DSH process keeps running.
 Phone / browser ⇄ Relay (server + PWA) ⇄ Daemon (your computer) → DSH
 ```
 
-**Version `0.0.0`: available to build from source and self-host.** There are no prebuilt installers,
-published npm packages, or official hosted relay. Both components remain in this repository and
-share protocol definitions, with independent builds and deployments.
+**Version `0.1.0` is available as GitHub Release binaries.** Linux x86_64 musl has mixed, relay-only and
+ daemon-only packages; macOS Apple Silicon has a daemon package. All use the same native CLI source,
+with identical executable bytes per platform and package metadata selecting available commands. `drdsh-relay` / `drdsh-daemon` are name-based aliases.
+See [release installation](docs/operations/releases.md). No npm package, hosted relay or third-party audit is available.
 
 ## Quick start
 
@@ -40,19 +41,19 @@ git clone https://github.com/luckyuro/dr.dsh.git
 cd dr.dsh
 ```
 
-Source installation needs Node.js 24+ (or 22.19+ on the 22.x line), Rust stable, and your platform's
-compiler toolchain. Relay also needs pnpm 12.3.4. Daemon needs DSH with a model configured; its base
-installation does not require pnpm. Services support a macOS desktop login, a Linux
-`systemctl --user` session, or WSL2 with systemd enabled on Windows.
+Release installation needs no Rust, pnpm or management-time Node. The daemon host still needs Node
+and a configured DSH. Services use Linux systemd user sessions or macOS desktop login sessions.
+Install relay on Linux x86_64 below; daemon can run there or on an Apple Silicon Mac.
+For both components on Linux, use `sh install.sh --component mixed --start`.
 
 ### 1. Install Relay
 
-Run on the relay server, or on your current computer for a same-host trial:
+The installer downloads relay and its prebuilt PWA from Release, then verifies SHA-256:
 
 ```sh
 sh relay/install.sh --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-relayctl status
+drdsh relay status
 ```
 
 When status says `relay health: responding`, the relay is ready. It listens on `127.0.0.1:8787` by
@@ -67,7 +68,7 @@ use its local address. Replace the project path with an existing directory:
 ```sh
 sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-daemonctl status
+drdsh daemon status
 ```
 
 Add `--dsh /absolute/path/to/dsh` if DSH is outside PATH, or `--port 3081` if an existing DSH uses
@@ -82,7 +83,7 @@ current terminal; add it to your shell configuration for later use.
 Run on the DSH computer and leave the command waiting:
 
 ```sh
-drdsh-daemonctl pair
+drdsh daemon pair
 ```
 
 1. Open the relay's HTTPS address in your browser. For a same-host trial, use the [local relay](http://127.0.0.1:8787).
@@ -98,21 +99,21 @@ for later visits and can add several computers.
 
 | Operation | Relay | Daemon |
 | :--- | :--- | :--- |
-| Start | `drdsh-relayctl start` | `drdsh-daemonctl start` |
-| Stop | `drdsh-relayctl stop` | `drdsh-daemonctl stop` |
-| Restart | `drdsh-relayctl restart` | `drdsh-daemonctl restart` |
-| Status | `drdsh-relayctl status` | `drdsh-daemonctl status` |
-| Follow logs | `drdsh-relayctl logs --follow` | `drdsh-daemonctl logs --follow` |
-| Login autostart | `drdsh-relayctl enable` | `drdsh-daemonctl enable` |
-| Install from updated source | `drdsh-relayctl install --source /path/to/dr.dsh` | `drdsh-daemonctl install --source /path/to/dr.dsh` |
-| Uninstall | `drdsh-relayctl uninstall` | `drdsh-daemonctl uninstall` |
+| Start | `drdsh relay start` | `drdsh daemon start` |
+| Stop | `drdsh relay stop` | `drdsh daemon stop` |
+| Restart | `drdsh relay restart` | `drdsh daemon restart` |
+| Status | `drdsh relay status` | `drdsh daemon status` |
+| Follow logs | `drdsh relay logs --follow` | `drdsh daemon logs --follow` |
+| Login autostart | `drdsh relay enable` | `drdsh daemon enable` |
+| Update from Release | `drdsh relay update` | `drdsh daemon update` |
+| Uninstall | `drdsh relay uninstall` | `drdsh daemon uninstall` |
 
 Use `disable` to cancel login autostart and `stop` to stop a running service. Uninstalling preserves
 each component's configuration and logs, and the daemon's pairing data. Relay includes the PWA;
-install the optional plugin on the daemon side with `drdsh-daemonctl install plugin`.
+add `--with-plugin` during installation, or use `drdsh daemon install plugin --source <bundle>`.
 
-The original `sh install.sh` / `drdsh` commands remain available for legacy installation records,
-which use a different layout. Existing users should follow the
+Legacy unified installations use `scripts/install-legacy.sh` and their existing command.
+The new `install.sh` installs from Release. Existing users should follow the
 [migration guide](docs/operations/cli.md#从旧版安装迁移) to preserve pairings.
 
 ## Current requirements and limits

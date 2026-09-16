@@ -101,11 +101,17 @@
 
 ### 本机安装与服务入口
 
-`relay/install.sh` / `drdsh-relayctl` 与 `daemon/install.sh` / `drdsh-daemonctl` 是两个独立入口。
+`relay/install.sh` / `daemon/install.sh` 从 Release 安装对应组件；统一入口为 `drdsh relay ...` /
+`drdsh daemon ...`，名称别名为 `drdsh-relay` / `drdsh-daemon`。混合包也运行两个独立服务进程。
 各自在 `<prefix>/lib/dr.dsh/relay`、`<prefix>/lib/dr.dsh/daemon` 安装程序，使用独立的
 `relay.json` / `daemon.json`、服务身份、日志与更新锁。PWA 归 relay，插件归 daemon；
-更新仅重启相关宿主。源码中的 CLI 与服务管理实现共享，安装后的管理文件各自保存，见
-[ADR-0015](decisions/0015-independent-relay-and-daemon.md)。
+更新仅重启相关宿主，见 [ADR-0015](decisions/0015-independent-relay-and-daemon.md)。
+两侧的新安装管理都由 `dr-dsh-cli` Rust 程序实现；Node 仅供 DSH、插件和构建/测试。
+各包共用同平台的同一二进制，通过包清单和调用名限制组件；该二进制包含 daemon 密码学实现，
+不能声称整个 CLI 满足 relay crate 的密码学依赖约束。具体分发边界见 [ADR-0017](decisions/0017-multicall-release-packages.md)。
+`relay/package.sh` 在构建机组装原生程序与 PWA。首页源文件由 Rust 与 PWA 构建共享，nginx 也可直接
+托管静态客户端，只把 WebSocket 与健康检查转交 relay，见
+[ADR-0016](decisions/0016-native-relay-management.md)。
 
 `install.sh` / `drdsh` 从源码安装各组件，保存 DSH 的绝对路径、工作目录和状态目录，
 通过用户级 launchd / systemd 启停 Rust 二进制。PWA 随中继分发；插件通过 DSH 的 web profile

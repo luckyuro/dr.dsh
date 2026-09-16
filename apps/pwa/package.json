@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "tsc -b && tsc -b tsconfig.worker.json",
     "test": "node --test 'src/*.test.ts'",
-    "build": "rm -rf dist dist-worker && tsc -p tsconfig.build.json && npx tsc -p tsconfig.worker.json && cp src/shell.js src/ws-bootstrap.js dist/ && cp static/manifest.webmanifest static/icon-192.png static/icon-512.png dist/"
+    "build": "rm -rf dist dist-worker && tsc -p tsconfig.build.json && npx tsc -p tsconfig.worker.json && cp src/shell.js src/ws-bootstrap.js dist/ && cp static/index.html static/manifest.webmanifest static/icon-192.png static/icon-512.png dist/"
   },
   "dependencies": {
     "@dr.dsh/crypto": "workspace:*",

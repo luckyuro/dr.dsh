@@ -6,9 +6,9 @@
 
 dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 DeepSeek Harness。**它不是 DSH 的 fork**，也不修改 DSH 核心。上游 DSH 位于另一个目录（`~/dsh-x/deepseek-harness`），只作参考与集成对象。
 
-当前阶段：**可自托管使用，尚未发布**。配对码 → 加密隧道 → 真实 DSH 界面这条链路已经在真实浏览器里跑通，
+当前阶段：**可自托管使用，提供 v0.1.0 二进制发布**。配对码 → 加密隧道 → 真实 DSH 界面这条链路已经在真实浏览器里跑通，
 中继可以自托管（二进制或 Docker），daemon 侧还有审计日志、崩溃报告、保活与多房间客户端。
-没有的东西同样重要，而且都写在文档里：**没有发布流水线**（因此没有产物、没有 npm 包、没有可复现构建，
+没有的东西同样重要，而且都写在文档里：**没有自动签名/可复现构建流水线**（已有手动构建脚本、Release tar 与 SHA-256；没有 npm 包，
 见 [`docs/audit-scope.md`](docs/audit-scope.md) § 2.4）、**没有第三方审计**、**没有托管中继**。
 逐条状态见 [`docs/product/mvp.md`](docs/product/mvp.md) 的进度行。
 
@@ -24,9 +24,9 @@ dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 Deep
 
 ## 命令
 
-安装与运维有两个独立入口：`relay/install.sh` / `drdsh-relayctl`、
-`daemon/install.sh` / `drdsh-daemonctl`。各自的配置、程序、日志、服务与更新锁独立；
-PWA 属于 relay，插件属于 daemon。旧 `install.sh` / `drdsh` 保留兼容。
+安装使用 Release 下载入口 `relay/install.sh` / `daemon/install.sh`，运维统一为
+`drdsh relay ...` / `drdsh daemon ...`；别名 `drdsh-relay` / `drdsh-daemon` 选择对应组件。各自的配置、程序、日志、服务与更新锁独立；
+PWA 属于 relay，插件属于 daemon。根 `install.sh` 可安装混合包，旧统一源码入口保留为 `scripts/install-legacy.sh`。
 修改管理逻辑时，保持更新和卸载一侧不改变另一侧 PID 或配置，见 ADR-0015。
 
 ```sh
@@ -81,6 +81,7 @@ pnpm run test:ts
 | 中继路由、房间、限制 | `crates/dr-dsh-relay` |
 | DSH 事件订阅与上报 | `plugins/dr.dsh`（只碰 `dsh-surface.ts` 里的契约假设） |
 | 远端页面、隧道改写 | `apps/pwa`（`routing.ts` 是纯函数，改它必须带测试） |
+| 统一 CLI、Release 安装与本机管理 | `crates/dr-dsh-cli` + `scripts/*release*.sh` |
 | 决策依据 | `docs/decisions/`（新增 ADR，而不是改旧 ADR 的结论） |
 
 ## 写代码时的取向

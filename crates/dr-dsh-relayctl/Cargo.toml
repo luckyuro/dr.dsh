@@ -1,0 +1,25 @@
+[package]
+name = "dr-dsh-relayctl"
+description = "Native local installer and service management for dr.dsh relay"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "drdsh-relayctl"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Only identifies an existing installation's system service (ADR-0016).
+# This CLI is separate from, and is never linked into, dr-dsh-relay.
+sha2.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

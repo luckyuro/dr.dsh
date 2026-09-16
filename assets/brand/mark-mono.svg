@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="currentColor" role="img" aria-labelledby="drdsh-mono-title drdsh-mono-desc">
+  <title id="drdsh-mono-title">dr.dsh monochrome mark</title>
+  <desc id="drdsh-mono-desc">A single-color whale with an upturned tail, a transparent eye, and paired ports around a central tunnel.</desc>
+  <path fill-rule="evenodd" d="M28 18H23C11.954 18 3 26.954 3 38C3 49.046 11.954 58 23 58H28V46H23C18.582 46 15 42.418 15 38C15 33.582 18.582 30 23 30H28V18ZM14.5 29A2.5 2.5 0 1 1 9.5 29A2.5 2.5 0 1 1 14.5 29Z"/>
+  <path d="M36 18C42 18 46 20 49 25C54 23 56 18 56 13H63C63 33 57 49 42 55V61C39.5 60.8 37.5 59.6 36 58V46H37C43 46 47 43 48 37C46 32 41 30 36 30V18Z"/>
+  <path d="M55 22C47 20 43 13 44 5C50 6 54 9 57 14C58 9 60 6 63 5C64 13 62 20 55 22Z"/>
+  <path d="M26 34H38A4 4 0 0 1 38 42H26A4 4 0 0 1 26 34Z"/>
+</svg>

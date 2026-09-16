@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="600" height="160" viewBox="0 0 600 160" fill="none" role="img" aria-labelledby="drdsh-logo-title drdsh-logo-desc">
+  <title id="drdsh-logo-title">dr.dsh</title>
+  <desc id="drdsh-logo-desc">A whale formed from paired ports and a central tunnel beside a custom lowercase dr.dsh wordmark. Encrypted access to the DeepSeek Harness on your own computer.</desc>
+  <g transform="translate(16 16) scale(2)">
+    <path fill="#2563EB" fill-rule="evenodd" d="M28 18H23C11.954 18 3 26.954 3 38C3 49.046 11.954 58 23 58H28V46H23C18.582 46 15 42.418 15 38C15 33.582 18.582 30 23 30H28V18ZM14.5 29A2.5 2.5 0 1 1 9.5 29A2.5 2.5 0 1 1 14.5 29Z"/>
+    <path fill="#0891B2" d="M36 18C42 18 46 20 49 25C54 23 56 18 56 13H63C63 33 57 49 42 55V61C39.5 60.8 37.5 59.6 36 58V46H37C43 46 47 43 48 37C46 32 41 30 36 30V18Z"/>
+    <path fill="#0891B2" d="M55 22C47 20 43 13 44 5C50 6 54 9 57 14C58 9 60 6 63 5C64 13 62 20 55 22Z"/>
+    <path fill="#2563EB" d="M26 34H38A4 4 0 0 1 38 42H26A4 4 0 0 1 26 34Z"/>
+  </g>
+  <g transform="translate(180 34) scale(1.2)" fill="#0F172A">
+    <path fill-rule="evenodd" d="M40 0H52V76H40V70C36 74.5 30.5 77 24 77C9.8 77 0 65.8 0 50.5C0 35.2 9.8 24 24 24C30.5 24 36 26.5 40 31V0ZM40 50.5C40 41.6 34.4 35.5 26.4 35.5C18.4 35.5 12 41.6 12 50.5C12 59.4 18.4 65.5 26.4 65.5C34.4 65.5 40 59.4 40 50.5Z"/>
+    <path transform="translate(70 0)" d="M0 25H12V34C15.5 27.5 21.3 24 29.1 24H34V36H27.7C17.6 36 12 42.5 12 52.7V76H0V25Z"/>
+    <path fill="#0891B2" d="M126 70A7 7 0 1 1 112 70A7 7 0 1 1 126 70Z"/>
+    <path transform="translate(140 0)" fill-rule="evenodd" d="M40 0H52V76H40V70C36 74.5 30.5 77 24 77C9.8 77 0 65.8 0 50.5C0 35.2 9.8 24 24 24C30.5 24 36 26.5 40 31V0ZM40 50.5C40 41.6 34.4 35.5 26.4 35.5C18.4 35.5 12 41.6 12 50.5C12 59.4 18.4 65.5 26.4 65.5C34.4 65.5 40 59.4 40 50.5Z"/>
+    <path transform="translate(210 0)" d="M43 29.5L38 39C33.4 36 28.4 34.5 22.8 34.5C15.7 34.5 12 36.5 12 39.9C12 43.4 16 44.7 23.9 46.3C36.4 48.8 44 52.5 44 61.7C44 71.8 35.5 77 22 77C13.6 77 5.8 74.7 0 70.7L5.4 60.8C10.6 64.4 16.2 66.5 22.8 66.5C29 66.5 32.4 64.8 32.4 61.6C32.4 58.4 28.6 56.9 20.9 55.3C8.4 52.7 0.4 49.2 0.4 39.6C0.4 29.7 8.8 24 22.9 24C30.7 24 37.4 25.8 43 29.5Z"/>
+    <path transform="translate(270 0)" d="M0 0H12V32.2C15.9 26.8 21.3 24 28.1 24C41 24 48 32.4 48 45.4V76H36V47.4C36 39.5 32.4 35.5 26 35.5C17.6 35.5 12 41.2 12 49.5V76H0V0Z"/>
+  </g>
+</svg>

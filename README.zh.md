@@ -14,7 +14,7 @@ DSH 在你的电脑上运行，会话流量在浏览器与 daemon 之间端到�
 | 功能 | 提供浏览器客户端（PWA）、转发加密流量、连接保活与健康检查 | 管理本机 DSH、设备配对、加密隧道、审计与崩溃记录 |
 | 安装位置 | 你的服务器，也可与 daemon 同机 | 已安装 DSH 的电脑 |
 | 一键安装 | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
-| 管理命令 | `drdsh-relayctl` | `drdsh-daemonctl` |
+| 管理命令 | `drdsh relay` | `drdsh daemon` |
 | 独立说明 | **[Relay 安装与使用](relay/README.zh.md)** | **[Daemon 安装与使用](daemon/README.zh.md)** |
 
 两侧各自拥有配置、程序目录、日志、系统服务和更新锁。更新或卸载一侧，不会重启或卸载另一侧。
@@ -24,8 +24,10 @@ DSH 在你的电脑上运行，会话流量在浏览器与 daemon 之间端到�
 手机 / 浏览器 ⇄ Relay（中继 + PWA） ⇄ Daemon（你的电脑） → DSH
 ```
 
-**当前版本 `0.0.0`，可从源码构建并自托管。** 尚无预编译安装包、npm 发布包或官方托管中继。
-两个组件仍在同一仓库维护，共享协议定义；各自可以独立构建和部署。
+**当前版本 `0.1.0`，提供 GitHub Release 二进制包。** Linux x86_64 musl 提供混合包、relay 包与 daemon 包；
+macOS Apple Silicon 提供 daemon 包。三个包使用同一套原生 CLI，同平台各包共用逐字节相同的二进制，包清单决定可用组件。
+`drdsh-relay` / `drdsh-daemon` 是按名字选择组件的别名，详见[发布与安装](docs/operations/releases.md)。
+没有 npm 发布包、官方托管中继或第三方安全审计。
 
 ## 快速开始
 
@@ -36,18 +38,18 @@ git clone https://github.com/luckyuro/dr.dsh.git
 cd dr.dsh
 ```
 
-源码安装需要 Node.js 24+（或 22 系列的 22.19+）、Rust stable 与平台编译工具链。
-Relay 还需要 pnpm 12.3.4；Daemon 需要已配置好模型的 DSH，基础安装不需要 pnpm。
-支持 macOS 图形登录会话、Linux 的 `systemctl --user` 会话；Windows 使用启用 systemd 的 WSL2。
+Release 安装不需要 Rust、pnpm 或管理用 Node。Daemon 所在机器仍需 Node 和已配置好模型的 DSH。
+Linux 使用 `systemctl --user`，macOS 使用图形登录会话。下面 relay 安装在 Linux x86_64 服务器；
+daemon 可安装在该服务器或 Apple Silicon Mac。Linux 同机安装可用 `sh install.sh --component mixed --start`。
 
 ### 1. 安装 Relay
 
-在中继服务器上执行；同机试用时就在当前电脑执行：
+安装器从 Release 下载 relay 和已经构建好的 PWA，并核对 SHA-256：
 
 ```sh
 sh relay/install.sh --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-relayctl status
+drdsh relay status
 ```
 
 看到 `relay health: responding` 后，中继已就绪。默认监听 `127.0.0.1:8787`。
@@ -62,7 +64,7 @@ drdsh-relayctl status
 ```sh
 sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-daemonctl status
+drdsh daemon status
 ```
 
 DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有 DSH 占用 `3080` 时可加 `--port 3081`。
@@ -75,7 +77,7 @@ DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有 DSH 占用 `3080
 在 DSH 电脑上运行，并保持命令等待：
 
 ```sh
-drdsh-daemonctl pair
+drdsh daemon pair
 ```
 
 1. 浏览器打开中继的 HTTPS 地址；同机试用可打开 [本机中继](http://127.0.0.1:8787)。
@@ -90,19 +92,19 @@ drdsh-daemonctl pair
 
 | 操作 | Relay | Daemon |
 | :--- | :--- | :--- |
-| 启动 | `drdsh-relayctl start` | `drdsh-daemonctl start` |
-| 停止 | `drdsh-relayctl stop` | `drdsh-daemonctl stop` |
-| 重启 | `drdsh-relayctl restart` | `drdsh-daemonctl restart` |
-| 状态 | `drdsh-relayctl status` | `drdsh-daemonctl status` |
-| 跟随日志 | `drdsh-relayctl logs --follow` | `drdsh-daemonctl logs --follow` |
-| 登录自启动 | `drdsh-relayctl enable` | `drdsh-daemonctl enable` |
-| 从更新后的源码安装 | `drdsh-relayctl install --source /path/to/dr.dsh` | `drdsh-daemonctl install --source /path/to/dr.dsh` |
-| 卸载 | `drdsh-relayctl uninstall` | `drdsh-daemonctl uninstall` |
+| 启动 | `drdsh relay start` | `drdsh daemon start` |
+| 停止 | `drdsh relay stop` | `drdsh daemon stop` |
+| 重启 | `drdsh relay restart` | `drdsh daemon restart` |
+| 状态 | `drdsh relay status` | `drdsh daemon status` |
+| 跟随日志 | `drdsh relay logs --follow` | `drdsh daemon logs --follow` |
+| 登录自启动 | `drdsh relay enable` | `drdsh daemon enable` |
+| 从 Release 更新 | `drdsh relay update` | `drdsh daemon update` |
+| 卸载 | `drdsh relay uninstall` | `drdsh daemon uninstall` |
 
 `disable` 取消登录自启动，`stop` 停止当前服务。卸载保留各自配置、日志及 daemon 的配对数据。
-PWA 随 Relay 安装；可选插件由 `drdsh-daemonctl install plugin` 安装在 Daemon 侧。
+PWA 随 Relay 安装；可选插件在安装时加 `--with-plugin`，或从解压包运行 `drdsh daemon install plugin --source <bundle>`。
 
-原有 `sh install.sh` / `drdsh` 入口继续支持旧安装记录；它们与独立命令使用不同布局。
+旧统一安装使用 `scripts/install-legacy.sh` 和已有旧命令；新 `install.sh` 使用 Release。
 已有用户请按[迁移说明](docs/operations/cli.md#从旧版安装迁移)保留配对状态。
 
 ## 使用前了解

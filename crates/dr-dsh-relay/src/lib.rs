@@ -55,6 +55,18 @@ pub mod rooms;
 /// sockets per room has nothing to gain from a current-thread runtime.
 #[must_use]
 pub fn run() -> ExitCode {
+    match config::Config::from_env_and_args() {
+        Ok(config) => run_with_config(config),
+        Err(error) => {
+            eprintln!("drdsh-relay: {error:#}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// Runs the relay with settings supplied by a local CLI.
+#[must_use]
+pub fn run_with_config(config: config::Config) -> ExitCode {
     let runtime = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -65,7 +77,7 @@ pub fn run() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    match runtime.block_on(run_async()) {
+    match runtime.block_on(run_async(config)) {
         Ok(code) => code,
         Err(error) => {
             eprintln!("drdsh-relay: {error:#}");
@@ -74,8 +86,7 @@ pub fn run() -> ExitCode {
     }
 }
 
-async fn run_async() -> anyhow::Result<ExitCode> {
-    let config = config::Config::from_env_and_args()?;
+async fn run_async(config: config::Config) -> anyhow::Result<ExitCode> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
