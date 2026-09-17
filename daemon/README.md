@@ -26,15 +26,17 @@ The [relay](../relay/README.md) distributes the browser client (PWA) and forward
   Installing the base daemon does not require pnpm.
 - A macOS desktop login or Linux `systemctl --user` session. On Windows, use WSL2 with systemd enabled
   and DSH installed inside the same WSL2 environment.
-- A running relay. Use `ws://127.0.0.1:8787` on the same host; establish the secure forward below for a remote relay.
+- A running relay, reachable through a `ws://` or `wss://` address.
 
 ## Install and start
 
-Run on the DSH computer, replacing the project path with an existing directory:
+Run on the DSH computer. Replace `/absolute/path/to/dsh` with the installed **DeepSeek Harness
+executable**; `command -v dsh` shows its path when it is on PATH. See
+[DSH installation methods](#dsh-installation-methods) for Git clone and npm examples:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
-  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+  --dsh /absolute/path/to/dsh --relay ws://127.0.0.1:8787 --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh-daemon status
 ```
@@ -42,12 +44,89 @@ drdsh-daemon status
 The installer detects your OS and CPU, downloads a prebuilt daemon from Release and verifies SHA-256.
 It installs under `~/.local` by default, without sudo. No source checkout is needed.
 Add `--version v0.1.1` to pin the binary version or `--prefix /path/to/install` for a custom directory.
-Add `--dsh /absolute/path/to/dsh` if DSH is outside your PATH, or `--port 3081` if another process uses
-the default port `3080`. Omitting `--workdir` uses the current directory. Wait for DSH HTTP status
-to say `responding`; use `drdsh-daemon logs` if it stays unresponsive.
+
+| Option | Purpose | Default on first installation |
+| :--- | :--- | :--- |
+| `--dsh /absolute/path/to/dsh` | The executable used to launch DeepSeek Harness; the installer saves its absolute path | Find `dsh` on PATH |
+| `--workdir /path/to/your/project` | Optional startup working directory for DSH; must already exist | The directory where you run the installer |
+| `--dsh-home /path/to/dsh-home` | DSH's own configuration and data directory | `DSH_HOME`, or `~/.dsh` |
+
+For `--dsh`, use the executable file, not the Harness source directory. If `dsh` is a shell alias or
+function, supply an executable file that the background service can run. The installer does not install
+or configure upstream DSH. Reinstallation preserves omitted options. Add `--port 3081` if another
+process uses the default port `3080`. Wait for DSH HTTP status to say `responding`;
+use `drdsh-daemon logs` if it stays unresponsive.
 
 The `export` affects the current terminal only. Add it to your shell configuration or run
 `~/.local/bin/drdsh-daemon` directly. Keep the computer powered on, awake, and online.
+
+## DSH installation methods
+
+`--dsh` accepts one executable file path. The daemon appends `web --no-open --port …` when launching it.
+In these examples, `/path/to/your/project` is an existing project directory; substitute your relay's
+actual `ws://` or `wss://` address.
+
+### Git clone
+
+For a Git checkout, complete the [upstream build steps](https://github.com/deepseek-ai/deepseek-harness#run-from-source)
+inside the cloned repository first:
+
+```sh
+cd /absolute/path/to/deepseek-harness
+pnpm install
+pnpm run build
+command -v node
+```
+
+The built CLI entry is `apps/cli/lib/bin.js`, as declared in the
+[upstream CLI manifest](https://github.com/deepseek-ai/deepseek-harness/blob/master/apps/cli/package.json).
+Create an executable launcher. **Replace both absolute paths below with the output of
+`command -v node` and your own DSH checkout path before running this block**:
+
+```sh
+mkdir -p "$HOME/.local/bin"
+cat > "$HOME/.local/bin/dsh-from-source" <<'SH'
+#!/bin/sh
+exec "/absolute/path/to/node" "/absolute/path/to/deepseek-harness/apps/cli/lib/bin.js" "$@"
+SH
+chmod +x "$HOME/.local/bin/dsh-from-source"
+"$HOME/.local/bin/dsh-from-source" --version
+
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --dsh "$HOME/.local/bin/dsh-from-source" --workdir /path/to/your/project \
+  --relay ws://127.0.0.1:8787 --start
+```
+
+Absolute paths locate Node and DSH; `exec` lets the daemon supervise Node directly, and `"$@"`
+forwards every argument. The launcher preserves the daemon's working directory, so `--workdir`
+can select your project. Keep the build output and `node_modules`; cloning alone is insufficient.
+`--dsh` cannot take a command string such as `pnpm dsh`.
+
+### npm
+
+For a global npm installation, verify the executable in the same terminal, then pass it to the
+daemon. Skip the first line if DSH is already installed:
+
+```sh
+npm install -g @deepseek-ai/dsh
+"$(npm prefix -g)/bin/dsh" --version
+
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --dsh "$(npm prefix -g)/bin/dsh" --workdir /path/to/your/project \
+  --relay ws://127.0.0.1:8787 --start
+```
+
+On macOS, Linux, and WSL2, npm places global executable links in `$(npm prefix -g)/bin`; see
+[npm's directory documentation](https://docs.npmjs.com/cli/v11/configuring-npm/folders#executables).
+You can also locate the installed entry with `command -v dsh` and pass its absolute path to `--dsh`.
+For a local npm installation, use `--dsh /absolute/path/to/npm-project/node_modules/.bin/dsh`.
+Running only `npx @deepseek-ai/dsh web` may leave no persistent `dsh` on PATH; install it globally
+or locally first.
+
+Install the daemon from the terminal where Node works; the installer saves its PATH.
+After changing Node versions or moving DSH, update the launcher if applicable and reinstall the
+daemon with an explicit `--dsh` to refresh both the executable path and PATH.
+Select DSH's configuration directory with `--dsh-home`; `--workdir` remains your startup directory.
 
 ## Pair and use DSH
 
@@ -69,23 +148,62 @@ or expired attempt. Your phone accesses the relay address; DSH's local port stay
 
 ## Connect to a remote relay
 
-The daemon cannot connect directly to `wss://` yet. Use SSH on the DSH computer to forward the server's relay:
+WSS is available in the updated source build and has not been published to Release yet;
+see [build and release notes](../docs/operations/releases.md).
 
-```sh
-ssh -N -o ExitOnForwardFailure=yes \
-  -L 127.0.0.1:8788:127.0.0.1:8787 user@relay-host
-```
+`--relay` belongs to the daemon: it identifies the relay to connect to. Supply the scheme the
+endpoint actually serves; the daemon keeps `ws://` as WS and uses TLS for `wss://`.
 
-Replace the SSH user and server address and leave this running. In another terminal, install or
-update the daemon using `--relay ws://127.0.0.1:8788`. For an existing installation:
+| Relay endpoint | Daemon option |
+| :--- | :--- |
+| Local WS listener | `--relay ws://127.0.0.1:8787` |
+| WS listener reached by hostname | `--relay ws://relay.example.com:8787` |
+| WSS behind an HTTPS proxy | `--relay wss://relay.example.com` |
+
+For an existing installation, select a relay by running the installer again:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
-  --relay ws://127.0.0.1:8788 --start
+  --relay wss://relay.example.com --start
 ```
 
-The browser still opens the server's HTTPS address. Both addresses must reach the same relay.
-You maintain the SSH connection; daemon login autostart does not start SSH.
+Use an origin without `/ws/daemon` or `/ws/client`; the daemon adds its endpoint path.
+WSS verifies the server certificate and hostname against the system's trusted roots.
+The browser opens `https://relay.example.com`; both addresses must reach the same relay.
+See the [domain setup](../relay/README.md#custom-domain).
+
+### Optional SSH forwarding
+
+To reach relay through SSH, forward its remote WS listener to the DSH computer.
+This example assumes relay listens on `127.0.0.1:8787` on the SSH server and the server allows
+TCP forwarding. Run in a terminal on the **DSH / daemon computer**:
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:8788:127.0.0.1:8787 user@relay.example.com
+```
+
+Replace `user@relay.example.com` with your SSH account and server; add `-p <port>` for a custom
+SSH port. Local port `8788` must be free. The final `127.0.0.1:8787` identifies **relay on the SSH
+server**. Leave this terminal running. In a second terminal, check the forward and update an
+existing daemon installation:
+
+```sh
+curl -fsS http://127.0.0.1:8788/healthz
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8788 --start
+drdsh-daemon pair
+```
+
+For a first installation, also supply `--dsh` and optional `--workdir` as above. The daemon and
+pairing command use the saved local WS address. Browsers can continue reaching the same relay
+at `https://relay.example.com`. To forward a browser connection from another computer too,
+run a separate SSH forward there and open `http://127.0.0.1:8788`; the loopback address belongs
+to the computer running that forward.
+
+Keep SSH running yourself. Exiting it closes the forward; the daemon waits to reconnect.
+dr.dsh does not start or manage SSH processes. See the [OpenSSH local forwarding reference](https://man.openbsd.org/ssh.1#L).
 
 ## Everyday commands
 

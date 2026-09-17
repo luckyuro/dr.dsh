@@ -323,7 +323,7 @@ pub fn help_text() -> String {
          \n\
          OPTIONS:\n\
          \x20   --config <path>   configuration file (default: the platform config dir)\n\
-         \x20   --relay <url>     relay to dial, overriding the configuration file\n\
+         \x20   --relay <url>     ws:// or wss:// relay to dial, overriding the configuration file\n\
          \x20   --room-key <key>  the shared key that encrypts the tunnel; by default it is read\n\
          \x20                     from, or generated into, the state directory (ADR-0013)\n\
          \x20   --port <port>     port DSH is started on (default 3080)\n\

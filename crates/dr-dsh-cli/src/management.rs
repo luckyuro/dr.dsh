@@ -606,7 +606,31 @@ pub(crate) fn help(scope: &str) -> String {
     let specific = if scope == "relay" {
         "  run [--bind <ip:port>] [--client-dir <path>]\n  install [client] [--bind <ip:port>] [--client-dir <path>]\n"
     } else {
-        "  run [--relay <ws-origin>] [--port <port>] [--config <path>]\n  pair [--wait <seconds>] | doctor | devices [--revoke <id>]\n  audit|crashes [--clear] | room-key\n  install [plugin] [--with-plugin] [--dsh <executable>]\n      [--relay <ws-origin>] [--port <port>] [--dsh-home <path>]\n      [--state-dir <path>] [--workdir <path>]\n  uninstall plugin\n"
+        r#"  run [--relay <ws(s)-origin>] [--port <port>] [--config <path>]
+  pair [--wait <seconds>] | doctor | devices [--revoke <id>]
+  audit|crashes [--clear] | room-key
+  install [plugin] [--with-plugin] [--dsh <executable>]
+      [--relay <ws(s)-origin>] [--port <port>] [--dsh-home <path>]
+      [--state-dir <path>] [--workdir <path>]
+  uninstall plugin
+
+  --relay uses the supplied ws:// or wss:// origin (for example wss://relay.example.com).
+  --dsh selects one executable; --workdir selects the startup project directory.
+  npm: npm install -g @deepseek-ai/dsh, then --dsh "$(npm prefix -g)/bin/dsh".
+  Git clone: run pnpm install and pnpm run build in the DSH checkout, then create
+  an executable launcher with an absolute Node path and pass its path to --dsh:
+    exec "/absolute/path/to/node" "/path/to/deepseek-harness/apps/cli/lib/bin.js" "$@"
+  Full examples: https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md#dsh-installation-methods
+
+  Optional SSH forwarding (run on the daemon computer; keep SSH running):
+    ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+      -L 127.0.0.1:8788:127.0.0.1:8787 user@relay.example.com
+  This forwards local port 8788 to the relay on the SSH server's 127.0.0.1:8787.
+  Check: curl -fsS http://127.0.0.1:8788/healthz
+  Then use --relay ws://127.0.0.1:8788. SSH is managed by you.
+  Details: https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md#optional-ssh-forwarding
+
+"#
     };
     format!(
         "drdsh {scope}\n\n{specific}  install --source <bundle-or-checkout> [--start] [--enable]\n      [--skip-build] [--build-profile release|debug]\n  update [--version <release-tag>]\n  start|stop|restart|status|enable|disable|uninstall\n  logs [--follow]\n\n  --prefix <path>   installation prefix (default ~/.local; saved by installed commands)\n\nNo service starts or gains login autostart unless requested. Updates preserve settings,\nkeys and the other component's process. PWA belongs to relay; plugin belongs to daemon.\nRelease installation and management do not need Node, pnpm or Rust. DSH itself needs Node.\n"

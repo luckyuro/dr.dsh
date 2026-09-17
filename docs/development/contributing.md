@@ -57,6 +57,11 @@ pnpm run docs:check
 pnpm run fmt:rs          # cargo fmt --all
 ```
 
+Daemon 的 WS/WSS 连接还需真实进程验证：先 `cargo build -p dr-dsh-cli`，再执行
+`pnpm run smoke:transport`。脚本需要 Node 和 OpenSSL，自带中继、TLS 代理和临时 CA，
+覆盖 WS/WSS 加密控制往返、WSS 配对、拒绝不受信任证书与主机名不匹配；不会修改系统信任库。
+安装器参数归属使用 `pnpm run smoke:release` 验证，包括 relay 帮助不显示 daemon 的 `--relay`。
+
 说明两点：
 
 - 命令说明若出现分歧，以 `package.json` 的 `verify` 为准。

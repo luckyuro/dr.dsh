@@ -11,14 +11,21 @@ v0.1.0 提供原生统一 CLI 与 Release 安装；平台矩阵和新命令见[�
 macOS Apple Silicon / Linux x86_64 可在任意目录直接运行：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --dsh /absolute/path/to/dsh --relay ws://127.0.0.1:8787 --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh daemon status
 drdsh daemon restart
 drdsh daemon logs --follow
 ```
 
-先准备可连接的中继；Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.zh.md)，
+将 `--dsh` 替换为 DeepSeek Harness 可执行程序的路径，可用 `command -v dsh` 查找。
+Git clone 安装使用指向构建后 `apps/cli/lib/bin.js` 的可执行启动脚本；npm 全局安装可用
+`--dsh "$(npm prefix -g)/bin/dsh"`，完整命令见 [DSH 安装方式说明](../../daemon/README.zh.md#按安装方式指定-dsh)。
+`--workdir` 是可选的启动工作目录，首次安装默认使用当前目录，重新安装沿用已保存值。
+上例连接同机中继；其他中继按其实际协议填写 `--relay ws://主机:端口` 或 `--relay wss://域名`。
+若自行使用 SSH，可参考 [SSH 转发辅助说明](../../daemon/README.zh.md#ssh-转发可选)。
+Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.zh.md)，
 两侧配置和旧安装迁移见 [`cli.md`](cli.md)。下面保留手工构建、旧 CPU 与附着模式说明。
 Windows 的一键路径是启用 systemd 的 WSL2；原生 Windows 仍需手工运行二进制。
 
@@ -101,8 +108,11 @@ drdshd doctor     # 会打印这一台 CPU 的架构与扩展（present/absent�
 
 ```sh
 drdshd doctor            # 检查 DSH 是否可执行、端口是否可用、回环绑定是否正常、CPU 与扩展
-drdshd run --relay wss://relay.example     # 房间密钥自动读/生成，见下
+drdshd run --relay ws://127.0.0.1:8787    # 同机中继；房间密钥自动读/生成，见下
 ```
+
+本文 `run` 和 `pair` 的 `--relay` 都应指向同一个中继，支持 `ws://` 和 `wss://`，
+例如 `wss://relay.example.com`；浏览器访问对应的 HTTPS 域名。
 
 **先把 `drdshd run` 在前台跑通**，看到它打印 `room: …` 且远端能打开界面，再交给进程管理器。
 一个起不来的 systemd 单元只会给你一行 `failed`，而前台运行会告诉你原因。
@@ -156,7 +166,7 @@ Unix 上的优雅销毁流程；这是已有平台限制。
 dsh web --no-open --port 3080
 
 # 2. 让 daemon 附着上去
-drdshd run --attach 3080 --attach-token '<token>' --relay wss://relay.example --room-key <key>
+drdshd run --attach 3080 --attach-token '<token>' --relay ws://127.0.0.1:8787 --room-key <key>
 ```
 
 **为什么需要 token。** DSH 只把界面发给持有「用它自己保管的密钥签名过的 cookie」的浏览器。daemon 在托管模式下能换到这个 cookie，
@@ -178,7 +188,7 @@ drdshd run --attach 3080 --attach-token '<token>' --relay wss://relay.example --
 
 1. **配对设备**（推荐）：
    ```sh
-   drdshd pair --relay wss://relay.example        # 房间密钥不存在时会自动生成并落盘
+   drdshd pair --relay ws://127.0.0.1:8787       # 房间密钥不存在时会自动生成并落盘
    ```
    把打印出来的码输入到远端设备。配对回执把房间密钥**密封**后交给设备，设备之后按它推导房间；
    而 `drdshd run` 与 `drdshd pair` 默认读**同一个文件**，所以"两个命令给了不同的密钥"这个曾经

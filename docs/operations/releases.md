@@ -1,5 +1,8 @@
 # 二进制发布与安装
 
+当前源码新增 daemon 的 WSS 支持；此改动尚未发布到 Release。使用下面的 WSS 示例需先
+[从源码构建](#开发与发布步骤)，或安装后续包含此修复的二进制。安装脚本更新不会给旧二进制增加 TLS 能力。
+
 从 `v0.1.0` 起，GitHub [Releases](https://github.com/luckyuro/dr.dsh/releases) 提供下列 `.tar.gz`。
 版本尚处早期自托管阶段；没有第三方审计、代码签名或可复现构建保证。`SHA256SUMS` 用于校验下载内容，
 与压缩包通过同一 GitHub HTTPS 来源取得，不等同于独立签名。
@@ -38,7 +41,7 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/instal
 
 # Linux x86_64 / macOS Apple Silicon：只安装 Daemon
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
-  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+  --dsh /absolute/path/to/dsh --relay ws://127.0.0.1:8787 --start
 
 # 自动选择：Linux 为混合包，macOS 为 daemon；只安装，不启动
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh
@@ -51,6 +54,13 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh |
 根 `install.sh` 默认在 Linux 选择混合包、macOS 选择 daemon；`relay/install.sh` 和
 `daemon/install.sh` 默认选择各自组件。所有安装参数放在 `sh -s --` 后面，例如
 `--bind 127.0.0.1:8787`、`--dsh /absolute/path/to/dsh`、`--with-plugin`、`--enable`。
+
+`--dsh` 指定已安装的 DeepSeek Harness **可执行文件**，可用 `command -v dsh` 查找；
+`--workdir /path/to/your/project` 只指定可选的启动工作目录。首次安装省略时，分别在 PATH 中查找
+`dsh`、使用当前目录；后续安装沿用已保存值。DSH 需事先安装并配置好，详见 [Daemon 参数说明](../../daemon/README.zh.md#一键安装并启动)。
+`--relay` 仅用于 daemon，按端点实际协议填写 `ws://` 或 `wss://`，例如 `wss://relay.example.com`。
+Relay 服务端用 `--bind` 配置监听 IP 和端口，不接受 `--relay`。
+浏览器可通过 `https://relay.example.com` 访问，DNS、证书和反向代理步骤见 [Relay 域名配置](../../relay/README.zh.md#使用域名)。
 
 也可使用环境变量，放在管道的 **`sh` 一侧**；显式命令行参数优先：
 
@@ -110,6 +120,7 @@ drdsh relay uninstall
 ## 开发与发布步骤
 
 构建机先运行 `pnpm install --frozen-lockfile`，再安装对应 Rust target。
+Daemon 的 TLS 后端 ring 需要目标平台的 C 编译工具链；预编译包的安装和管理仍不需要编译工具。
 `scripts/build-release.sh <target>` 编译并打包规定的组合；含 relay 的目标会先重新构建 PWA，
 确保页面、Service Worker 和图标一起更新。`scripts/package-release.sh` 可以单独打包已有二进制，
 此时需先运行 `pnpm --filter @dr.dsh/pwa build`。两个打包入口（含旧 `relay/package.sh`）都会
@@ -125,6 +136,14 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 开发机源码安装新 CLI：先 `cargo build -p dr-dsh-cli`，构建 PWA 后运行
 `target/debug/drdsh relay install --source "$PWD" --skip-build --build-profile debug`。
 旧管理路径的回归测试仍使用 `relay/install-source.sh`、`daemon/install-source.sh`。
+
+从当前源码构建并安装支持 WSS 的 daemon：
+
+```sh
+cargo build -p dr-dsh-cli
+target/debug/drdsh daemon install --source "$PWD" --skip-build --build-profile debug \
+  --dsh /absolute/path/to/dsh --relay wss://relay.example.com --start
+```
 
 发布前运行仓库 verify、包清单与名称分派检查及二进制同一性校验，以及真实进程的安装隔离和下载摘要失败测试；
 再把四个压缩包与 `SHA256SUMS` 上传同一个源码 tag 的 Release。构建记录应列出源码、Rust 版本、

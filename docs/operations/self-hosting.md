@@ -17,6 +17,12 @@ drdsh relay status
 随后使用 `drdsh relay restart`、`drdsh relay status`、`drdsh relay logs --follow`。完整入口见
 [`../../relay/README.zh.md`](../../relay/README.zh.md)，旧安装迁移见 [`cli.md`](cli.md)。
 
+域名部署如 `https://relay.example.com`，按 [Relay 域名配置](../../relay/README.zh.md#使用域名)
+完成 DNS、HTTPS 代理与健康检查；下文提供完整的 [nginx](#nginx) / [Caddy](#caddy) 配置。
+Relay 的 `--bind` 保持本机 IP 和端口，域名由反向代理接收。
+浏览器访问 HTTPS 域名；daemon 的 `--relay` 填写实际的 WS/WSS 端点，
+如 `ws://127.0.0.1:8787` 或 `wss://relay.example.com`。Relay 服务端不接受 `--relay` 参数。
+
 ## 中继是什么，不是什么
 
 `drdsh-relay` 的完整设计只有一句话：daemon 主动拨出并在一个 room 上停靠，客户端拨入并请求同一个 room，中继把两者的帧互相拼接（`crates/dr-dsh-relay/src/main.rs` 的模块文档）。这种"贫瘠"正是它的安全论据。
@@ -60,8 +66,10 @@ drdsh relay status
 
 ```
 手机 ──https──▶ 局域网内的反向代理 ──▶ 中继（绑局域网或回环）
-电脑 ──wss───▶ （同一个入口，或直连中继）
+电脑 ──wss───▶ 同一个 HTTPS 入口 ──▶ 中继
 ```
+
+Daemon 按 `--relay` 指定的 `ws://` 或 `wss://` 连接；与中继同机时也可使用回环 WS。
 
 **TLS 仍然必需，哪怕全程都在局域网内**：浏览器的 WebCrypto（隧道握手要用它）与 Service Worker（离线与
 拦截要用它）都只在**安全上下文**里可用，而安全上下文是 https（或 localhost）。所以这一节的 nginx / Caddy
@@ -334,7 +342,7 @@ Caddy 这一侧还有两个与超时有关的事实值得记住：`stream_timeou
 
 - **中继自己不终止 TLS。** 它的配置里没有 TLS 私钥字段（`crates/dr-dsh-relay/src/config.rs` 明确说明这是有意为之），`cargo tree -p dr-dsh-relay` 里也没有任何 TLS 实现，所以它既不读证书文件也不做 ACME。
 - **证书在反向代理上。** Caddy 自动 HTTPS 就够了；nginx 用 certbot 或你现有的签发流程。传输层要求是 WSS（TLS 1.2+，[`../protocol.md`](../protocol.md) § 1）。
-- **不需要客户端证书。** 设备身份是在端到端握手层用密钥证明的（配对时的 SPAKE2 与登记后的设备密钥挑战—应答，[`../protocol.md`](../protocol.md) § 6），不是靠 TLS 客户端证书。daemon 侧的 TLS 客户端依赖随 M0 的 uplink 落地：当前 `dr-dsh-daemon` 的依赖里还没有任何 TLS 实现，所以它现在还不能真的拨 `wss://`。
+- **不需要客户端证书。** 设备身份是在端到端握手层用密钥证明的（配对时的 SPAKE2 与登记后的设备密钥挑战—应答，[`../protocol.md`](../protocol.md) § 6），不是靠 TLS 客户端证书。Daemon 使用 rustls 与系统信任的根证书连接 WSS，校验证书和主机名；TLS 依赖只在 daemon 侧启用，relay crate 仍不终止 TLS。
 - **仍然必须用 TLS。** 中继只装密文，但 room id、帧长与时序是明文的路由元数据；TLS 保护的是这些元数据以及"你连的确实是那台中继"这件事。
 - **需要的可以让中继只监听回环**，反向代理与它同机；容器部署则绑 `0.0.0.0` 但只把端口发布到 `127.0.0.1`。
 - 证书过期在这套结构里的表现是"客户端连不上、代理返回 502 或证书错误"，而中继日志一切正常——这是排查时最容易走错方向的一类故障。

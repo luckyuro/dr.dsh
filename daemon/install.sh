@@ -9,6 +9,7 @@ umask 077
 drdsh_component=${DRDSH_COMPONENT:-auto}
 drdsh_version=${DRDSH_VERSION:-latest}
 drdsh_prefix=${DRDSH_PREFIX:-}
+drdsh_help=0
 drdsh_remaining=$#
 while [ "$drdsh_remaining" -gt 0 ]; do
   drdsh_arg=$1
@@ -31,7 +32,13 @@ while [ "$drdsh_remaining" -gt 0 ]; do
       exit 1
       ;;
     --help|-h)
-      cat <<'HELP'
+      drdsh_help=1
+      ;;
+    *) set -- "$@" "$drdsh_arg" ;;
+  esac
+done
+if [ "$drdsh_help" -eq 1 ]; then
+  cat <<'HELP'
 Install dr.dsh from GitHub Releases (no Node, pnpm or Rust needed).
 
   curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh
@@ -39,9 +46,53 @@ Install dr.dsh from GitHub Releases (no Node, pnpm or Rust needed).
 
   sh install.sh [--component mixed|relay|daemon] [--version v0.1.1]
       [--prefix <path>] [--start] [--enable]
-      [--bind <ip:port>] [--relay <ws-origin>] [--dsh <path>]
-      [--workdir <path>] [--state-dir <path>] [--with-plugin]
 
+HELP
+  case "$drdsh_component" in relay|mixed|auto|all)
+    cat <<'HELP'
+Relay server options:
+  --bind <ip:port>          Local listening address (default 127.0.0.1:8787).
+For https://relay.example.com, configure DNS and an HTTPS reverse proxy to relay.
+Domain setup: https://github.com/luckyuro/dr.dsh/blob/master/relay/README.md#custom-domain
+
+HELP
+    ;;
+  esac
+  case "$drdsh_component" in daemon|mixed|auto|all)
+    cat <<'HELP'
+Daemon options:
+  --relay <ws(s)-origin>    Relay to connect to; uses the supplied ws:// or wss:// scheme.
+                           Examples: ws://127.0.0.1:8787 or wss://relay.example.com.
+  --dsh <executable>       DeepSeek Harness program (locate it with command -v dsh).
+  --workdir <directory>    Optional DSH startup working directory.
+  --dsh-home <path>        DSH configuration and data directory (DSH_HOME or ~/.dsh).
+  --port <port>            DSH port (default 3080).
+  --state-dir <path>       Daemon state and pairing data directory.
+  --with-plugin            Install the optional DSH plugin.
+First install: find dsh on PATH and use the current directory if omitted.
+Reinstallation retains saved values for omitted options.
+
+DSH installed with npm:
+  npm install -g @deepseek-ai/dsh
+  --dsh "$(npm prefix -g)/bin/dsh"   (or the executable found by command -v dsh)
+DSH installed with git clone:
+  Run pnpm install and pnpm run build in the DSH checkout, then create an executable
+  launcher containing: exec "/absolute/path/to/node" "/path/to/deepseek-harness/apps/cli/lib/bin.js" "$@"
+  Pass --dsh /absolute/path/to/launcher; --workdir selects your project directory.
+  Full examples: https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md#dsh-installation-methods
+
+Optional SSH forwarding (run on the daemon computer and keep SSH running):
+  ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+    -L 127.0.0.1:8788:127.0.0.1:8787 user@relay.example.com
+  This forwards local port 8788 to the relay on the SSH server's 127.0.0.1:8787.
+  Check: curl -fsS http://127.0.0.1:8788/healthz
+  Then use --relay ws://127.0.0.1:8788. SSH is managed by you.
+  Details: https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md#optional-ssh-forwarding
+
+HELP
+    ;;
+  esac
+  cat <<'HELP'
 Environment defaults (command-line options take precedence):
   DRDSH_COMPONENT=auto|mixed|relay|daemon
   DRDSH_VERSION=latest|<release-tag>
@@ -49,16 +100,13 @@ Environment defaults (command-line options take precedence):
 Set variables on the sh side of a pipe, e.g. ... | DRDSH_COMPONENT=relay sh.
 
 Linux x86_64: mixed, relay or daemon (static musl).
-macOS arm64: daemon. Default selects mixed on Linux and daemon on macOS.
+macOS arm64: daemon. The root installer defaults to mixed on Linux and daemon on macOS.
 Without --start/--enable, services remain stopped without login autostart.
 Updates preserve saved settings, pairing keys and the other component's process.
 DSH must already be installed for daemon; DSH itself requires Node.
 HELP
-      exit 0
-      ;;
-    *) set -- "$@" "$drdsh_arg" ;;
-  esac
-done
+  exit 0
+fi
 case "$(uname -s):$(uname -m)" in
   Linux:x86_64|Linux:amd64) drdsh_target=x86_64-unknown-linux-musl ;;
   Darwin:arm64|Darwin:aarch64) drdsh_target=aarch64-apple-darwin ;;

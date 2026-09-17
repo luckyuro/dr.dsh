@@ -53,22 +53,29 @@ drdsh relay status
 ```
 
 看到 `relay health: responding` 后，中继已就绪。默认监听 `127.0.0.1:8787`。
-手机或其他电脑访问时，需要配置[可访问的 HTTPS 入口](relay/README.zh.md#对外提供访问)。
+手机或其他电脑可通过 `https://relay.example.com` 这样的域名访问：将 DNS 指向服务器，
+再由 HTTPS 反向代理转发到本机 relay，见[域名配置步骤](relay/README.zh.md#使用域名)。
+`--bind` 保持为本机监听 IP 和端口。
 
 ### 2. 安装 Daemon
 
-在 DSH 电脑上执行。以下地址适用于**同机中继**；中继位于服务器时，先按
-[远端中继连接说明](daemon/README.zh.md#连接远端中继)建立安全转接，再使用转接后的本机地址。
-将项目路径替换为已有目录：
+在 DSH 电脑上执行，`--relay` 填写中继实际的 WebSocket 地址，使用它提供的 `ws://` 或 `wss://`。
+以下地址适用于**同机中继**；使用 HTTPS 域名时可改为 `--relay wss://relay.example.com`，
+WSS 需使用[包含本次修复的 daemon 构建](daemon/README.zh.md#连接远端中继)。
+将 `/absolute/path/to/dsh` 替换为已安装的 **DeepSeek Harness 可执行程序**路径，可用 `command -v dsh` 查找：
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
-  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+  --dsh /absolute/path/to/dsh --relay ws://127.0.0.1:8787 --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh daemon status
 ```
 
-DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有 DSH 占用 `3080` 时可加 `--port 3081`。
+`--dsh` 指定程序；可选的 `--workdir /path/to/your/project` 指定它启动时的工作目录。
+首次安装省略这两项时，分别使用 PATH 中的 `dsh` 和当前目录；重新安装会沿用已保存的值。
+已有 DSH 占用 `3080` 时可加 `--port 3081`。
+具体路径见 [Git clone 与 npm 安装示例](daemon/README.zh.md#按安装方式指定-dsh)；
+需要时可参考 [SSH 转发辅助说明](daemon/README.zh.md#ssh-转发可选)。
 安装器不安装或配置上游 DSH。集成核对基准为 DSH `0.1.5-rc.2`，升级上游后需重新核对兼容性。
 
 两套命令默认安装在 `~/.local/bin`。`export` 只影响当前终端，可加入 shell 配置以便以后使用。
@@ -76,7 +83,8 @@ DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有 DSH 占用 `3080
 Linux 同机安装两个组件：
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- --component mixed --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- \
+  --component mixed --dsh /absolute/path/to/dsh --start
 ```
 
 省略 `--start` 只安装，不启动服务；加 `--enable` 开启登录自启动。根入口默认在 Linux 选择混合包，
@@ -132,7 +140,7 @@ PWA 随 Relay 安装；可选插件在安装时加 `--with-plugin`，或从解�
 ## 使用前了解
 
 - DSH 电脑需要保持开机、联网且不休眠。
-- 远程浏览器需要 HTTPS。当前 daemon 尚不能直连 WSS；分开部署时可使用 SSH 转接，详见 Daemon 文档。
+- 远程浏览器需要 HTTPS。Daemon 支持 WS 和 WSS，按 `--relay` 中的协议连接。
 - 目前没有后台推送，插件补充通知接收端也尚未实现；审批与提问在保持连接的真实 DSH 界面中处理。
 - 中继同时分发浏览器客户端，其基础设施需要可信。当前尚无第三方安全审计，见[安全模型](docs/security.md)。
 

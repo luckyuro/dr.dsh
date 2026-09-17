@@ -61,11 +61,28 @@ const pipe = (entrypoint, options, expected, env) => command('sh', [
 ], expected, env);
 try {
   for (const entrypoint of entrypoints.keys()) {
-    assert.match(await pipe(entrypoint.slice(1), ['--help'], 0), /DRDSH_PREFIX/);
+    const help = await pipe(entrypoint.slice(1), ['--help'], 0);
+    assert.match(help, /DRDSH_PREFIX/);
+    if (entrypoint === '/relay/install.sh') {
+      assert.match(help, /--bind <ip:port>/);
+      assert.doesNotMatch(help, /--relay\b|--dsh\b|--workdir\b/);
+    } else if (entrypoint === '/daemon/install.sh') {
+      assert.match(help, /--relay <ws\(s\)-origin>/);
+      assert.match(help, /wss:\/\/relay\.example\.com/);
+      assert.doesNotMatch(help, /--bind\b/);
+    } else {
+      assert.match(help, /Relay server options:/);
+      assert.match(help, /Daemon options:/);
+    }
   }
   assert.equal(requests.length, 3);
   assert.equal(existsSync(prefix), false);
-  check('all three curl entrypoints show help without downloading or installing a package');
+  check('curl help separates relay listening options from daemon connection options without installing');
+  const selectedHelp = await pipe('install.sh', ['--help', '--component', 'relay'], 0);
+  assert.match(selectedHelp, /--bind <ip:port>/);
+  assert.doesNotMatch(selectedHelp, /--relay\b|--dsh\b/);
+  assert.equal(existsSync(prefix), false);
+  check('help uses the explicitly selected component even when --help comes first');
   const beforeTruncation = requests.length;
   await pipe('truncated-install.sh', options, 2);
   assert.equal(requests.length, beforeTruncation + 1);

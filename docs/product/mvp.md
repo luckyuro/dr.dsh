@@ -1120,8 +1120,8 @@ M2 结束要求的**实现评审**已做完并记录在 `docs/security.md` § 5.
 
 验证：`pnpm run verify` 通过；macOS 真实二进制服务冒烟 **21 项**、默认 release 中继安装/重启/卸载
 通过；Debian 12/systemd 用户管理器替身进程验证 **10 项**。DSH 使用替身，真实插件升级仪式未测。
-此项补齐源码安装与运维入口，发布流水线、原生 Windows 服务、插件上报接收端与 daemon WSS
-仍未实现；不据此声称已达到新用户部署成功率目标。命令与边界见 [`../operations/cli.md`](../operations/cli.md)。
+此项补齐源码安装与运维入口；当时发布流水线、原生 Windows 服务、插件上报接收端与 daemon WSS
+仍未实现（WSS 后续进展见五点七三）。不据此声称已达到新用户部署成功率目标。命令与边界见 [`../operations/cli.md`](../operations/cli.md)。
 
 ## 五点七二、Relay 与 Daemon 独立入口（2026-09-16）
 
@@ -1132,6 +1132,18 @@ M2 结束要求的**实现评审**已做完并记录在 `docs/security.md` § 5.
 `pnpm run verify` 通过；CLI 检查 **7 项**、macOS 真实进程检查 **34 项**通过，包括两侧 PID/配置不受
 对方更新影响、独立卸载与重装、配对状态保留。DSH 与插件 CLI 使用替身，未新增上游 DSH 实测结论。
 见 [ADR-0015](../decisions/0015-independent-relay-and-daemon.md) 和[安装与迁移说明](../operations/cli.md)。
+
+## 五点七三、M4/M5 中继地址与安装参数（2026-09-17）
+
+Daemon 按 `--relay` 中的 `ws://` / `wss://` 协议连接；WSS 在 daemon 依赖中启用 rustls、
+ring 和系统根证书，复用原有拨号、配对与 carrier 实现，校验证书和主机名。
+独立构建 relay crate 的正常依赖闭包未引入 TLS；混合 CLI 仍遵守 ADR-0017 的分发边界。
+Relay 服务端只配置 `--bind`，不接受 `--relay`；组件安装器的帮助分别显示对应参数。
+DSH 安装示例显式指定 `--dsh`，`--workdir` 保留为可选启动目录。
+
+真实进程验证：`pnpm run smoke:transport` **5 项**通过，覆盖 WS/WSS 加密控制往返、WSS 配对、
+拒绝不受信任证书与主机名不匹配；`pnpm run smoke:release` **12 项**通过，含两侧安装帮助的参数隔离。
+这是源码改动，尚未发布到 Release；不改变协议或共享向量。
 
 ## 六、仍待决定的事项
 

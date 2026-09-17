@@ -21,7 +21,11 @@ futures-util.workspace = true
 hyper.workspace = true
 hyper-util.workspace = true
 http-body-util.workspace = true
-tokio-tungstenite.workspace = true
+# TLS belongs to the dialing daemon, not the workspace dependency shared by relay tests.
+tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
+# tokio-tungstenite leaves provider selection to its caller. Use ring without the
+# default AWS-LC build so the existing Linux musl release toolchain stays sufficient.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 async-trait.workspace = true
 bytes.workspace = true
 serde.workspace = true

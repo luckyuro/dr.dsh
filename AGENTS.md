@@ -65,6 +65,7 @@ pnpm run test:ts
 | `scripts/audit-smoke.mjs` | 审计日志：配对 / 会话 / 生命周期 / 撤销各留一行，且不含密钥 | 已构建的二进制（自带中继与 daemon） |
 | `scripts/browser-rooms-smoke.mjs` | 多房间：v1 存储迁移、第二次配对新增、切换连到被选中的机器 | 已构建的客户端与二进制 + Chromium |
 | `scripts/deploy-probe.mjs` | 中继的非回环警告、daemon 认出代理超时、保活救活 carrier | 已构建的两个二进制；可选 `qemu` |
+| `scripts/relay-transport-smoke.mjs` | daemon 按 WS/WSS 地址连接、WSS 配对、加密控制往返与证书拒绝 | 已构建的 `drdsh` + Node + OpenSSL；自带中继、TLS 代理与临时 CA，不需要 DSH |
 | `scripts/cpu-baseline-smoke.mjs` | 发布二进制与密码学在 2006/2008/2010 级 CPU 上可运行 | `qemu-user-static` + release 构建 |
 
 先 `cargo build --workspace`，再 `PATH=$PWD/target/test-bin:$PATH` 让 daemon 找到 `dsh` 包装脚本；

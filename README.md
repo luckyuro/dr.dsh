@@ -56,23 +56,31 @@ drdsh relay status
 ```
 
 When status says `relay health: responding`, the relay is ready. It listens on `127.0.0.1:8787` by
-default. For phones and other computers, configure a [reachable HTTPS entry point](relay/README.md#make-it-reachable).
+default. For phones and other computers, use a domain such as `https://relay.example.com`:
+point DNS at your server and proxy HTTPS to the local relay. See the
+[custom domain setup](relay/README.md#custom-domain). Keep `--bind` as the local IP and port.
 
 ### 2. Install Daemon
 
-Run on the DSH computer. The address below works for a **relay on the same host**. For a relay on
-another server, establish a [secure forward](daemon/README.md#connect-to-a-remote-relay) first and
-use its local address. Replace the project path with an existing directory:
+Run on the DSH computer. Set `--relay` to your relay's WebSocket origin, using its actual `ws://`
+or `wss://` scheme. The example uses a same-host relay; for an HTTPS domain, use
+`--relay wss://relay.example.com` with the [updated daemon build](daemon/README.md#connect-to-a-remote-relay).
+Replace `/absolute/path/to/dsh` with the installed **DeepSeek Harness executable**
+(use `command -v dsh` to locate it):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
-  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+  --dsh /absolute/path/to/dsh --relay ws://127.0.0.1:8787 --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh daemon status
 ```
 
-Add `--dsh /absolute/path/to/dsh` if DSH is outside PATH, or `--port 3081` if an existing DSH uses
-`3080`. The installer does not install or configure upstream DSH. The integration baseline is DSH
+`--dsh` selects the program; optional `--workdir /path/to/your/project` selects its startup working
+directory. On first installation, omitting these uses `dsh` from PATH and the current directory;
+reinstallation retains saved values. Add `--port 3081` if an existing DSH uses `3080`.
+See [Git clone and npm path examples](daemon/README.md#dsh-installation-methods) and
+[optional SSH forwarding](daemon/README.md#optional-ssh-forwarding).
+The installer does not install or configure upstream DSH. The integration baseline is DSH
 `0.1.5-rc.2`; check compatibility after upstream updates.
 
 Both management commands install under `~/.local/bin` by default. The `export` affects only the
@@ -81,7 +89,8 @@ current terminal; add it to your shell configuration for later use.
 For both components on Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- --component mixed --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- \
+  --component mixed --dsh /absolute/path/to/dsh --start
 ```
 
 Omit `--start` to install without starting services. Add `--enable` for login autostart.
@@ -142,7 +151,7 @@ The new `install.sh` installs from Release. Existing users should follow the
 ## Current requirements and limits
 
 - Keep the DSH computer powered on, awake, and online.
-- Remote browsers need HTTPS. The daemon cannot dial WSS directly yet; use a secure forward such as SSH for separate hosts, as described in the Daemon guide.
+- Remote browsers need HTTPS. The daemon supports both WS and WSS, selected by the scheme in `--relay`.
 - Background push and the receiver for supplementary plugin notifications are not implemented. Handle approvals and questions in the real DSH interface while connected.
 - The relay also distributes client code, so its infrastructure must be trusted. There has been no third-party security audit; see the [security model](docs/security.md).
 

@@ -55,9 +55,51 @@ The relay listens on `127.0.0.1:8787` by default. Other devices need a reachable
 with a trusted certificate**, reverse-proxying to this port on the same host.
 See the [self-hosting guide](../docs/operations/self-hosting.md) for configuration examples.
 
-Give users the browser's HTTPS address. A daemon on the same host uses `ws://127.0.0.1:8787`.
-On a separate host, the daemon currently needs a [secure forward such as SSH](../daemon/README.md#connect-to-a-remote-relay);
-it cannot connect directly to WSS yet.
+Give users the browser's HTTPS address. Configure the daemon's `--relay` with the actual WS or WSS
+origin, such as `ws://127.0.0.1:8787` or `wss://relay.example.com`.
+The relay server itself uses `--bind` for its listening address and has no `--relay` option.
+
+### Custom domain
+
+For `https://relay.example.com`, keep the relay listening on `127.0.0.1:8787`. `--bind` accepts a
+local IP and port; configure the public domain in DNS and your reverse proxy.
+
+1. Set the domain's DNS A record to your server's public IPv4 address. Add AAAA only if the server
+   is also reachable over IPv6. Allow inbound TCP ports 80 and 443 in the firewall and cloud security
+   group; keep relay port 8787 on loopback.
+2. Install [Caddy](https://caddyserver.com/docs/install) on the relay server. For its systemd service,
+   add the following site block to `/etc/caddy/Caddyfile`, replacing the domain with yours:
+
+```caddyfile
+relay.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+Caddy obtains and renews HTTPS certificates when the domain and ports are reachable, and handles
+WebSocket upgrades automatically. The relay installer does not install Caddy or change DNS.
+See Caddy's [HTTPS setup](https://caddyserver.com/docs/quick-starts/https) and
+[reverse proxy reference](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy).
+
+3. Validate and reload the running Caddy service, then check the domain:
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+curl -fsS https://relay.example.com/healthz
+```
+
+Open `https://relay.example.com` in the browser to pair. Use the domain root, with the PWA and
+WebSocket endpoints on the same origin. For nginx, use the
+[proxy configuration](../docs/operations/self-hosting.md#nginx); longer-lived connections and
+Caddy reload behavior are covered in the [self-hosting guide](../docs/operations/self-hosting.md#caddy).
+
+| Connection | Address in this example |
+| :--- | :--- |
+| Browser → HTTPS proxy | `https://relay.example.com` |
+| Proxy → local relay | `http://127.0.0.1:8787` |
+| Daemon on the relay server → relay | `--relay ws://127.0.0.1:8787` |
+| Daemon → domain's WSS endpoint | `--relay wss://relay.example.com` |
 
 ## Serve the PWA directly with nginx
 

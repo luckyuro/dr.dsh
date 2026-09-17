@@ -51,8 +51,49 @@ target/debug/drdsh relay install --source "$PWD" --skip-build --build-profile de
 中继默认只监听 `127.0.0.1:8787`。其他设备需要一个可访问、证书受信任的 **HTTPS 入口**，
 由同机反向代理转发到这个端口。配置例子见[自托管指南](../docs/operations/self-hosting.md)。
 
-把浏览器的 HTTPS 地址交给使用者。daemon 与中继同机时连接 `ws://127.0.0.1:8787`；
-分开部署时，当前 daemon 需要[通过 SSH 等安全连接转接](../daemon/README.zh.md#连接远端中继)，尚不能直连 WSS。
+把浏览器的 HTTPS 地址交给使用者。Daemon 的 `--relay` 填写实际的 WS 或 WSS 地址，
+例如 `ws://127.0.0.1:8787` 或 `wss://relay.example.com`。
+Relay 服务端自身通过 `--bind` 指定监听地址，没有 `--relay` 参数。
+
+### 使用域名
+
+以 `https://relay.example.com` 为例，relay 继续监听 `127.0.0.1:8787`。
+`--bind` 只接受本机监听 IP 和端口；对外域名配置在 DNS 和反向代理中。
+
+1. 将域名的 DNS A 记录指向服务器公网 IPv4；服务器也能通过 IPv6 访问时再添加 AAAA。
+   在防火墙和云安全组中放行 TCP 80、443，relay 的 8787 端口保持回环监听。
+2. 在 relay 服务器上安装 [Caddy](https://caddyserver.com/docs/install)。使用其 systemd 服务时，
+   将下面的站点块加入 `/etc/caddy/Caddyfile`，域名替换为你自己的：
+
+```caddyfile
+relay.example.com {
+    reverse_proxy 127.0.0.1:8787
+}
+```
+
+域名和端口可达后，Caddy 自动申请、续期 HTTPS 证书，并处理 WebSocket 升级。
+Relay 安装脚本不会安装 Caddy 或修改 DNS。参见 Caddy 的
+[HTTPS 配置说明](https://caddyserver.com/docs/quick-starts/https)与
+[反向代理说明](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy)。
+
+3. 校验配置、重载已运行的 Caddy 服务，再通过域名检查：
+
+```sh
+sudo caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl reload caddy
+curl -fsS https://relay.example.com/healthz
+```
+
+随后在浏览器打开 `https://relay.example.com` 配对。使用域名根路径，PWA 和 WebSocket 端点保持同源。
+已有 nginx 时可使用[整站代理配置](../docs/operations/self-hosting.md#nginx)；长连接参数和 Caddy
+重载时的连接处理见[自托管指南](../docs/operations/self-hosting.md#caddy)。
+
+| 连接 | 本例应填写的地址 |
+| :--- | :--- |
+| 浏览器 → HTTPS 代理 | `https://relay.example.com` |
+| 代理 → 本机 relay | `http://127.0.0.1:8787` |
+| 与 relay 同机的 daemon → relay | `--relay ws://127.0.0.1:8787` |
+| Daemon → 域名的 WSS 端点 | `--relay wss://relay.example.com` |
 
 ## nginx 直接托管 PWA
 

@@ -28,7 +28,8 @@ drdsh daemon restart
 `drdsh daemon install plugin --source <bundle>` / `uninstall plugin`，或首次安装时加 `--with-plugin`。
 
 重复安装保留未覆盖的配置，只重启对应的宿主。卸载保留自身配置和数据，不影响另一侧程序。
-Relay 不接受 DSH 的 `--dsh`、`--workdir`、`--state-dir` 等选项；Daemon 不接受中继监听用的 `--bind`。
+Relay 不接受 daemon 的 `--relay`、`--dsh`、`--workdir`、`--state-dir` 等选项；Daemon 不接受中继监听用的 `--bind`。
+`--relay` 指定 daemon 要连接的 WS/WSS 地址，`--bind` 指定 relay 服务端的监听 IP 和端口。
 Relay 管理由独立 Rust 程序实现。离线包安装、更新和运维无需 Node、pnpm 或 Rust；源码安装只编译
 Rust，PWA 必须在构建机预先准备，可通过 `--client-dir` 指定。打包与静态 nginx 部署见
 [Relay 说明](../../relay/README.zh.md) 和 [ADR-0016](../decisions/0016-native-relay-management.md)。
@@ -111,6 +112,9 @@ Windows 可在启用 systemd 的 WSL2 内运行同一套命令，原生 Windows 
 
 需要 Node.js 22.19+（22 系列）或 24+、Rust stable、pnpm（版本见根 `package.json`）。
 daemon 和插件还需要已经安装好的 DSH；可用 `--dsh /绝对路径/dsh` 指定它。
+Git clone 与 npm 安装的路径选择见 [DSH 安装方式说明](../../daemon/README.zh.md#按安装方式指定-dsh)。
+`drdsh daemon --help` 和 `daemon/install.sh --help` 也包含入口示例及可选的
+[SSH 转发说明](../../daemon/README.zh.md#ssh-转发可选)。
 中继单独安装不需要 DSH；基础 daemon 不需要 pnpm；插件单独安装不需要 Rust。
 
 先取得源码并进入仓库。默认安装到 `~/.local`，不需要 sudo；Linux 需要可用的
@@ -148,9 +152,8 @@ drdsh --help
 也可以直接运行 `~/.local/bin/drdsh`。安装器会打印实际路径，不改写 shell 启动文件。
 只有 `--start` 才会启动新服务，只有 `--enable` 才会开启登录自启动。
 默认中继只监听 `127.0.0.1:8787`；需要公开服务时配置反向代理，见
-[`self-hosting.md`](self-hosting.md)。当前 daemon 的 WebSocket 依赖未启用 TLS，直接拨
-`wss://` 仍不可用；跨机器的 daemon 链路需要现有的安全转接（例如 SSH 本地转发到中继）。
-本安装器不配置证书或 TLS 转接。
+[`self-hosting.md`](self-hosting.md)。Daemon 按 `--relay` 指定的协议连接：`ws://` 使用 WS，
+`wss://` 使用 TLS，并通过系统信任的根证书校验证书和主机名。安装器不配置服务器证书或反向代理。
 
 ## 日常命令
 
