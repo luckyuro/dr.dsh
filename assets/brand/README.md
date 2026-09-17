@@ -31,5 +31,29 @@
 保持原始宽高比，图形外留出至少一个主要笔画宽度的空白。深色版本适合 `#0F172A` 一类深底。
 单色版内联到 HTML 时可由 CSS `color` 控制颜色；通过 `<img>` 引入时不继承页面颜色。
 
-本目录保存设计素材。现有 PWA 图标仍由 `apps/pwa/static/` 中的 PNG 和 manifest 管理。
-`app-icon.svg` 是圆角展示图；制作 maskable 图标时使用铺满画布的背景，并保留中心图形的安全留白。
+## 产品中的使用
+
+中英文 README 使用本目录的深浅色 SVG。PWA 页头按系统主题切换完整字标；
+没有安装 PWA 的中继提示页直接嵌入同一份 `logo.svg`，无需额外图片请求。
+CLI 通过 `banner.txt` 使用鲸鱼与中央通道的 ASCII 表达。
+
+| 入口 | 分发素材 |
+| :--- | :--- |
+| 网页页头 | [logo.png](../../apps/pwa/static/logo.png)、[logo-dark.png](../../apps/pwa/static/logo-dark.png)，720 × 192 |
+| 浏览器标签页 | [favicon-16.png](../../apps/pwa/static/favicon-16.png)、[favicon-32.png](../../apps/pwa/static/favicon-32.png) |
+| iPhone / iPad 主屏幕 | [apple-touch-icon.png](../../apps/pwa/static/apple-touch-icon.png)，180 × 180，满底 |
+| PWA 安装图标 | [icon-192.png](../../apps/pwa/static/icon-192.png)、[icon-512.png](../../apps/pwa/static/icon-512.png) |
+| 支持裁切的启动器 | [icon-maskable-512.png](../../apps/pwa/static/icon-maskable-512.png)，满底，鲸鱼位于中心安全区域 |
+
+这些 PNG 均由本目录 SVG 导出并提交，正常构建与安装不需要图像工具。
+修改 SVG 后，在装有 librsvg（`rsvg-convert`）的开发机器上运行：
+
+```sh
+pnpm run brand:generate
+pnpm --filter @dr.dsh/pwa build
+```
+
+导出脚本为 Apple 与 maskable 图标去掉圆角，并缩小鲸鱼以保留裁切安全留白；
+网页与 PWA 素材随客户端一起打包，由中继的固定 PNG 白名单或 nginx 提供。
+两个主题的字标和所有平台图标都进入离线预缓存。缓存版本升级为 `dr.dsh-client-v2`，
+已有用户联网加载并刷新后使用新素材；已安装的桌面图标何时更新由浏览器或操作系统决定。

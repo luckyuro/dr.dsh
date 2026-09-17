@@ -9,7 +9,7 @@
 //!
 //! The source HTML is shared with the PWA build, so nginx and the relay serve the same
 //! shell. Browser JavaScript is emitted by the PWA build and read from a supplied directory;
-//! neither serving path executes JavaScript on the server. Generated assets are not committed.
+//! neither serving path executes JavaScript on the server. Generated JavaScript is not committed.
 //!
 //! # When the directory is missing
 //!
@@ -23,7 +23,8 @@ use std::path::{Component, Path, PathBuf};
 pub const SHELL: &str = include_str!("../../../apps/pwa/static/index.html");
 
 /// The page shown when the client modules are not installed.
-pub const SHELL_WITHOUT_CLIENT: &str = r#"<!doctype html>
+pub const SHELL_WITHOUT_CLIENT: &str = concat!(
+    r#"<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -31,11 +32,14 @@ pub const SHELL_WITHOUT_CLIENT: &str = r#"<!doctype html>
 <title>dr.dsh</title>
 <style>
   body { font: 16px/1.6 system-ui, sans-serif; margin: 0; padding: 3rem 1.5rem; max-width: 34rem; }
+  h1 svg { display: block; width: 18rem; max-width: 100%; height: auto; }
   code { background: color-mix(in srgb, currentColor 12%, transparent); padding: .1em .35em; border-radius: .25rem; }
 </style>
 </head>
 <body>
-<h1>dr.dsh relay</h1>
+<h1 aria-label="dr.dsh relay">"#,
+    include_str!("../../../assets/brand/logo.svg"),
+    r#"</h1>
 <p>This is a <strong>zero-knowledge relay</strong>. It forwards encrypted frames between your
    own computer and your own devices, and it cannot read them: it holds no keys, keeps no
    database, and writes no payload to disk.</p>
@@ -47,7 +51,8 @@ pub const SHELL_WITHOUT_CLIENT: &str = r#"<!doctype html>
 <p>Operators: <code>GET /healthz</code> reports counts only.</p>
 </body>
 </html>
-"#;
+"#
+);
 
 /// Where the client modules are read from.
 #[derive(Debug, Clone)]
@@ -96,12 +101,12 @@ impl Assets {
         Some(bytes)
     }
 
-    /// Reads one static client asset — the manifest and the icons it points at.
+    /// Reads one static client asset — the manifest, branding, and platform icons.
     ///
     /// A **named allowlist**, not a general static file server: the relay's job is forwarding
-    /// ciphertext, and every path it learns to serve is a path it must reason about. Four names that
-    /// a PWA cannot be installed without are worth reasoning about; a directory of arbitrary files is
-    /// not. MIME types are fixed by the same table, so a file cannot choose to be served as HTML.
+    /// ciphertext, and every path it learns to serve is a path it must reason about. Only the names
+    /// used by the shell and manifest are allowed. MIME types are fixed by the same table, so a file
+    /// cannot choose to be served as HTML.
     ///
     /// # Errors
     ///
@@ -129,6 +134,12 @@ pub const CLIENT_ASSETS: &[(&str, &str)] = &[
     ("manifest.webmanifest", "application/manifest+json"),
     ("icon-192.png", "image/png"),
     ("icon-512.png", "image/png"),
+    ("icon-maskable-512.png", "image/png"),
+    ("favicon-16.png", "image/png"),
+    ("favicon-32.png", "image/png"),
+    ("apple-touch-icon.png", "image/png"),
+    ("logo.png", "image/png"),
+    ("logo-dark.png", "image/png"),
 ];
 
 /// The content type for a client asset, or `None` when it is not one.
@@ -319,6 +330,16 @@ mod tests {
         );
         assert_eq!(asset_content_type("icon-192.png"), Some("image/png"));
         assert_eq!(asset_content_type("icon-512.png"), Some("image/png"));
+        for name in [
+            "icon-maskable-512.png",
+            "favicon-16.png",
+            "favicon-32.png",
+            "apple-touch-icon.png",
+            "logo.png",
+            "logo-dark.png",
+        ] {
+            assert_eq!(asset_content_type(name), Some("image/png"));
+        }
         for refused in [
             "index.html",
             "shell.js", // a module, served by the other path

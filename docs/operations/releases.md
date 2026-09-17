@@ -77,9 +77,13 @@ drdsh relay uninstall
 
 ## 开发与发布步骤
 
-构建机先运行 `pnpm install --frozen-lockfile`、`pnpm --filter @dr.dsh/pwa build`，再安装对应 Rust
-target。`scripts/build-release.sh <target>` 编译并打包规定的组合；`scripts/package-release.sh`
-可以单独打包已有二进制。Linux 在 blade 上使用 `x86_64-unknown-linux-musl`，不启用 `target-cpu=native`。
+构建机先运行 `pnpm install --frozen-lockfile`，再安装对应 Rust target。
+`scripts/build-release.sh <target>` 编译并打包规定的组合；含 relay 的目标会先重新构建 PWA，
+确保页面、Service Worker 和图标一起更新。`scripts/package-release.sh` 可以单独打包已有二进制，
+此时需先运行 `pnpm --filter @dr.dsh/pwa build`。两个打包入口（含旧 `relay/package.sh`）都会
+检查静态资源与源码一致、必要模块存在，拒绝漏图标、旧页面或混入测试文件的构建目录。
+应先完成 verify 再构建发布 PWA，因为 typecheck 会向同一目录写入测试产物。
+Linux 在 blade 上使用 `x86_64-unknown-linux-musl`，不启用 `target-cpu=native`。
 
 ```sh
 sh scripts/build-release.sh aarch64-apple-darwin
@@ -93,6 +97,17 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 发布前运行仓库 verify、包清单与名称分派检查及二进制同一性校验，以及真实进程的安装隔离和下载摘要失败测试；
 再把四个压缩包与 `SHA256SUMS` 上传同一个源码 tag 的 Release。构建记录应列出源码、Rust 版本、
 目标与摘要。当前是脚本辅助的人工发布流程，尚无自动签名、托管 CI 发布或可复现构建认证。
+
+若明确选择保持版本号并替换现有 Release，先备份该 Release 的所有附件与说明，再从同一份最终
+源码重建四个压缩包。更新 `BUILDINFO.txt` 的源码提交和构建信息，重新生成覆盖它与四个压缩包的
+`SHA256SUMS`，并让版本 tag 指向该提交。用 `gh release upload <tag> --clobber` 替换压缩包与
+构建记录，**最后替换 `SHA256SUMS`**；随后重新下载并校验整套附件。逐个上传不是原子操作，
+窗口内不匹配的下载会被安装脚本拒绝；重试即可，现有服务不会因此被停止。
+原生 `update --version <tag>` 会重新下载同版本附件，无需改动版本号。
+
+nginx 独立托管 PWA 时，从已校验的 relay 包取出 `client/`，放进新的发布目录，检查文件权限后
+原子切换 nginx 根目录所用的 `current` 符号链接；保留旧目录供回滚。随后检查首页、图标、manifest、
+Service Worker 与健康端点。仅切换静态目录不需要重启 relay，也不改变配对状态或 relay 配置。
 
 ## v0.1.0 验证记录
 
@@ -113,3 +128,7 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 修复版本选项的名称分派：`drdsh-daemon --version` 与 `drdsh daemon --version`（relay 同理）
 现在输出相同内容，`version` 与 `--help` 也经过同一分派。`multicall-smoke.mjs` 新增真实命令
 输出对比，共 16 项通过。平台矩阵和同平台二进制同一性保持不变；默认安装/更新获取最新 Release。
+
+同版本资源更新：README、网页标识、favicon、Apple Touch Icon、PWA 普通及 maskable 图标统一为
+鲸鱼设计；浅色和深色页面使用对应的字标。离线缓存使用 `dr.dsh-client-v2` 获取新资源。
+已安装到主屏幕的图标刷新时机由浏览器和操作系统决定。

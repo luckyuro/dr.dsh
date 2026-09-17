@@ -4,19 +4,21 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>dr.dsh</title>
-<!-- Installable: a manifest, two icons, and the service worker the page already registers. The
+<!-- Installable: a manifest, platform icons, and the service worker the page already registers. The
      manifest lives under /client/ because that is the one directory the relay serves files from,
      and it is same-origin so the app's scope is the whole relay. -->
 <link rel="manifest" href="/client/manifest.webmanifest">
 <meta name="theme-color" content='#2563eb'>
-<link rel="icon" href="/client/icon-192.png" sizes="192x192" type="image/png">
-<link rel="apple-touch-icon" href="/client/icon-192.png">
+<link rel="icon" href="/client/favicon-16.png" sizes="16x16" type="image/png">
+<link rel="icon" href="/client/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/client/apple-touch-icon.png" sizes="180x180">
 <style>
   :root { color-scheme: light dark; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb; }
   @media (prefers-color-scheme: dark) { :root { --fg: #e5e7eb; --muted: #9ca3af; --accent: #60a5fa; } }
   body { font: 16px/1.6 system-ui, sans-serif; color: var(--fg); margin: 0; padding: 3rem 1.5rem; }
   main { max-width: 34rem; margin: 0 auto; }
   h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
+  h1 img { display: block; width: 18rem; max-width: 100%; height: auto; }
   p { color: var(--muted); }
   label { display: block; font-weight: 600; margin: 1.5rem 0 .35rem; }
   input { width: 100%; padding: .6rem .7rem; font: inherit; font-family: ui-monospace, monospace;
@@ -49,7 +51,12 @@
 </head>
 <body>
 <main>
-  <h1>dr.dsh</h1>
+  <h1>
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="/client/logo-dark.png">
+      <img src="/client/logo.png" width="720" height="192" alt="dr.dsh">
+    </picture>
+  </h1>
   <p>This page connects your browser to the DeepSeek Harness running on your own computer.
      Traffic is end-to-end encrypted: this relay forwards it without being able to read it.</p>
 

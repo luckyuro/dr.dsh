@@ -10,6 +10,7 @@
     "node": "^22.19.0 || >=24.0.0"
   },
   "scripts": {
+    "brand:generate": "node scripts/generate-brand-assets.mjs",
     "drdsh": "node scripts/drdsh.mjs",
     "test:cli": "node --test scripts/drdsh.test.mjs",
     "smoke:multicall": "node scripts/multicall-smoke.mjs",

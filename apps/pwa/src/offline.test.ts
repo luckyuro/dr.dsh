@@ -4,6 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
@@ -52,7 +53,7 @@ test('the pre-cache list is the client\'s own files and nothing else', () => {
     assert.equal(isClientOwned(path), true, path);
     assert.equal(isCacheable(path, 'GET', path === '/' ? 'navigate' : 'cors'), true, path);
   }
-  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v1');
+  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v2');
 });
 
 test('the offline sentence says what is lost and what is not', () => {
@@ -68,4 +69,20 @@ test('the offline sentence says what is lost and what is not', () => {
     assert.match(sentence, /^This device is offline/);
   }
   assert.doesNotMatch(paired, /enter the code/);
+});
+
+test('both theme logos and every platform icon are available before going offline', () => {
+  const shell = readFileSync(new URL('../static/index.html', import.meta.url), 'utf8');
+  const manifest = JSON.parse(readFileSync(new URL('../static/manifest.webmanifest', import.meta.url), 'utf8')) as {
+    icons: { src: string }[];
+  };
+  const images = new Set([
+    ...Array.from(shell.matchAll(/(?:src|srcset|href)="(\/client\/[^" ]+\.png)"/g), match => match[1]),
+    ...manifest.icons.map(icon => icon.src),
+  ]);
+  assert.ok(images.size > 0);
+  for (const path of images) {
+    assert.ok(path !== undefined, 'each image reference must have a path');
+    assert.ok(PRECACHE_PATHS.includes(path), `${path} must survive an offline reload or theme switch`);
+  }
 });

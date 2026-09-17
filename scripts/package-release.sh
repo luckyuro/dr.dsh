@@ -37,7 +37,7 @@ mkdir "$drdsh_stage/bundle" "$drdsh_stage/bundle/bin"
 cp "$drdsh_binary" "$drdsh_stage/bundle/bin/drdsh"
 chmod 755 "$drdsh_stage/bundle/bin/drdsh"
 if [ "$drdsh_flavor" != daemon ]; then
-  [ -s "$drdsh_root/apps/pwa/dist/index.html" ] && [ -s "$drdsh_root/apps/pwa/dist/service-worker.js" ] || { echo 'Build the PWA before packaging relay.' >&2; exit 1; }
+  sh "$drdsh_root/scripts/check-pwa-build.sh"
   cp -R "$drdsh_root/apps/pwa/dist" "$drdsh_stage/bundle/client"
   cp "$drdsh_root/relay/nginx.conf.example" "$drdsh_stage/bundle/"
   ln -s drdsh "$drdsh_stage/bundle/bin/drdsh-relay"

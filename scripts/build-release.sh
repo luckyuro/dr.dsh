@@ -1,5 +1,5 @@
 #!/bin/sh
-# Run on the target build host. Rust toolchain and PWA build are explicit prerequisites.
+# Run on the target build host; relay bundles always include a fresh PWA build.
 set -eu
 drdsh_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 drdsh_target=${1:?Usage: build-release.sh <Rust target> [output-directory]}
@@ -9,6 +9,9 @@ case "$drdsh_target" in
   x86_64-unknown-linux-musl) drdsh_flavors='mixed relay daemon' ;;
   *) echo 'Unsupported release target.' >&2; exit 1 ;;
 esac
+if [ "$drdsh_target" = x86_64-unknown-linux-musl ]; then
+  (cd "$drdsh_root" && pnpm --filter @dr.dsh/pwa build)
+fi
 drdsh_build=$drdsh_root/target/release-multicall
 cargo build --manifest-path "$drdsh_root/Cargo.toml" --target-dir "$drdsh_build" \
   --locked --release --target "$drdsh_target" -p dr-dsh-cli

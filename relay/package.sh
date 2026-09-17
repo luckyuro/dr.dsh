@@ -41,9 +41,7 @@ fi
 for DRDSH_BINARY in drdsh-relay drdsh-relayctl; do
   if [ ! -x "$DRDSH_BIN/$DRDSH_BINARY" ]; then echo "relay/package.sh: missing $DRDSH_BIN/$DRDSH_BINARY; build the selected target first." >&2; exit 1; fi
 done
-for DRDSH_ASSET in index.html shell.js session.js service-worker.js manifest.webmanifest icon-192.png icon-512.png; do
-  if [ ! -s "$DRDSH_SOURCE/apps/pwa/dist/$DRDSH_ASSET" ]; then echo "relay/package.sh: missing PWA $DRDSH_ASSET; build the PWA first." >&2; exit 1; fi
-done
+sh "$DRDSH_SOURCE/scripts/check-pwa-build.sh"
 DRDSH_STAGE=$(mktemp -d "${TMPDIR:-/tmp}/drdsh-relay-package.XXXXXX")
 trap 'rm -rf "$DRDSH_STAGE"' EXIT
 trap 'exit 1' HUP INT TERM

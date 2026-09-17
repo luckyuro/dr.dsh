@@ -65,13 +65,13 @@ try {
 
   const cached = await page.evaluate(async () => {
     const names = await caches.keys();
-    const cache = await caches.open('dr.dsh-client-v1');
+    const cache = await caches.open('dr.dsh-client-v2');
     const keys = await cache.keys();
     return { names, paths: keys.map(request => new URL(request.url).pathname).sort() };
   });
   check(
     'the service worker cached the client\'s own files',
-    cached.names.includes('dr.dsh-client-v1') && cached.paths.includes('/'),
+    cached.names.includes('dr.dsh-client-v2') && cached.paths.includes('/'),
     cached.paths.join(', ') || 'nothing cached',
   );
 

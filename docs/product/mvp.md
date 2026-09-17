@@ -534,7 +534,8 @@ M3 的完成标准是三件事：崩溃率 < 0.5%、长会话（>1000 条消息�
 ### 做了什么
 
 1. **Web app manifest**（`apps/pwa/static/manifest.webmanifest`）：名称、`start_url: /`、`scope: /`、
-   `display: standalone`、主题色，以及 192 与 512 两个图标（512 那个同时声明为 `maskable`）。
+   `display: standalone`、主题色，以及 192 / 512 普通图标和独立的 512 `maskable` 图标。
+   图标统一由鲸鱼 SVG 导出；`maskable` 使用满底和中心安全留白，见[品牌素材](../../assets/brand/README.md)。
 2. **图标**：`apps/pwa/static/icon-{192,512}.png`，由一段 40 行的 PNG 写出程序生成（纯色圆角方块 +
    三道递减的横条），而不是引入一个图形库——两个文件不值得给这个项目加一条依赖。生成脚本在
    `apps/pwa/static/` 的注释里说明了形状的选择：项目没有可嵌入的字体，手画的文字比一个几何图形更难看。

@@ -19,8 +19,8 @@
  * @module @dr.dsh/pwa/offline
  */
 
-/** The cache the client's own files live in. Versioned, so a format change cannot read old entries. */
-export const OFFLINE_CACHE = 'dr.dsh-client-v1';
+/** A new cache ensures installed clients fetch the whale artwork instead of reusing the old icons. */
+export const OFFLINE_CACHE = 'dr.dsh-client-v2';
 
 /**
  * The paths cached at install time rather than on first use.
@@ -36,6 +36,12 @@ export const PRECACHE_PATHS: readonly string[] = [
   '/client/manifest.webmanifest',
   '/client/icon-192.png',
   '/client/icon-512.png',
+  '/client/icon-maskable-512.png',
+  '/client/favicon-16.png',
+  '/client/favicon-32.png',
+  '/client/apple-touch-icon.png',
+  '/client/logo.png',
+  '/client/logo-dark.png',
 ];
 
 /**
