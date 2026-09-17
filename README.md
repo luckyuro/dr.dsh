@@ -19,7 +19,7 @@ through a relay you host.
 | :--- | :--- | :--- |
 | Features | Serves the browser client (PWA), forwards encrypted traffic, provides keepalive and health checks | Manages local DSH, pairs devices, establishes encrypted tunnels, records audit and crash reports |
 | Where to install | Your server, or the same host as the daemon | A computer with DSH installed |
-| Install | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
+| Install | [One command](#1-install-relay) | [One command](#2-install-daemon) |
 | Management command | `drdsh relay` | `drdsh daemon` |
 | Separate guide | **[Relay setup and usage](relay/README.md)** | **[Daemon setup and usage](daemon/README.md)** |
 
@@ -38,25 +38,19 @@ See [release installation](docs/operations/releases.md). No npm package, hosted 
 
 ## Quick start
 
-Try both on one computer first, or deploy them separately. Run the following on each machine that
-needs a source checkout:
-
-```sh
-git clone https://github.com/luckyuro/dr.dsh.git
-cd dr.dsh
-```
-
-Release installation needs no Rust, pnpm or management-time Node. The daemon host still needs Node
-and a configured DSH. Services use Linux systemd user sessions or macOS desktop login sessions.
+Install directly from GitHub Releases with `curl`. The script detects your OS and CPU, downloads
+the matching package and verifies SHA-256. Run each command on the machine that needs that component.
+Installation needs curl, tar and sha256sum or shasum; it needs no Git, Rust, pnpm or management-time Node.
+The daemon host still needs Node and a configured DSH. Services use Linux systemd user sessions or macOS desktop login sessions.
 Install relay on Linux x86_64 below; daemon can run there or on an Apple Silicon Mac.
-For both components on Linux, use `sh install.sh --component mixed --start`.
+Both components can run on the same Linux computer; choose the mixed package below for that setup.
 
 ### 1. Install Relay
 
 The installer downloads relay and its prebuilt PWA from Release, then verifies SHA-256:
 
 ```sh
-sh relay/install.sh --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh relay status
 ```
@@ -71,7 +65,8 @@ another server, establish a [secure forward](daemon/README.md#connect-to-a-remot
 use its local address. Replace the project path with an existing directory:
 
 ```sh
-sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh daemon status
 ```
@@ -82,6 +77,24 @@ Add `--dsh /absolute/path/to/dsh` if DSH is outside PATH, or `--port 3081` if an
 
 Both management commands install under `~/.local/bin` by default. The `export` affects only the
 current terminal; add it to your shell configuration for later use.
+
+For both components on Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- --component mixed --start
+```
+
+Omit `--start` to install without starting services. Add `--enable` for login autostart.
+The root installer defaults to mixed on Linux and daemon on macOS. You can also set options through
+environment variables on the **`sh` side** of the pipe; command-line options take precedence:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | \
+  DRDSH_COMPONENT=daemon DRDSH_VERSION=v0.1.1 DRDSH_PREFIX="$HOME/.local" sh
+```
+
+`DRDSH_VERSION` defaults to `latest`; `DRDSH_PREFIX` defaults to `~/.local`. See
+[installation options and offline packages](docs/operations/releases.md) for details.
 
 ### 3. Pair and open DSH
 

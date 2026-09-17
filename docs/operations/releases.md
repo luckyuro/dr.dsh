@@ -28,21 +28,53 @@ CLI 启动先把鲸鱼 Logo 的 ASCII 版本打印到 stderr，stdout 保留给�
 
 ## 从 Release 安装
 
-仓库中的 `install.sh` 默认在 Linux 选择混合包、macOS 选择 daemon；`relay/install.sh` 和
-`daemon/install.sh` 固定选择各自组件。下载、校验 SHA-256、解包后调用 Rust 安装器。
-服务器不需要 Rust、pnpm 或管理用 Node；daemon 启动的 DSH 仍需用户预先安装 Node 与 DSH。
+在目标机器直接运行一条 curl 命令，脚本自动识别系统与 CPU，从 GitHub Release 下载对应包，
+校验 SHA-256、解包后调用 Rust 安装器。无需克隆仓库；下载需要 Shell、curl、tar，以及
+sha256sum 或 shasum。服务器不需要 Rust、pnpm 或管理用 Node；daemon 启动的 DSH 仍需用户预先安装 Node 与 DSH。
 
 ```sh
-sh relay/install.sh --prefix "$HOME/.local" --bind 127.0.0.1:8787 --start --enable
-sh daemon/install.sh --relay ws://127.0.0.1:8787 --dsh /absolute/path/to/dsh --start
-sh install.sh --component mixed --dsh /absolute/path/to/dsh
-# 固定版本，避免跟随 latest：
-sh relay/install.sh --version v0.1.0
+# Linux x86_64：只安装 Relay 与 PWA
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
+
+# Linux x86_64 / macOS Apple Silicon：只安装 Daemon
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+
+# 自动选择：Linux 为混合包，macOS 为 daemon；只安装，不启动
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh
+
+# 固定二进制版本，并选择安装目录
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- \
+  --component relay --version v0.1.1 --prefix "$HOME/.local"
 ```
 
-也可以只下载 GitHub 对应 tag 下的一个安装脚本到本地，再用 `sh` 运行；三个入口均为自包含 Shell
-文件。安装下载失败或摘要不符时不会停止现有服务。`--start` 与 `--enable` 才会启动服务与开启
-登录自启动；默认仅安装。Linux 使用 systemd 用户服务；macOS 使用 launchd 用户服务。
+根 `install.sh` 默认在 Linux 选择混合包、macOS 选择 daemon；`relay/install.sh` 和
+`daemon/install.sh` 默认选择各自组件。所有安装参数放在 `sh -s --` 后面，例如
+`--bind 127.0.0.1:8787`、`--dsh /absolute/path/to/dsh`、`--with-plugin`、`--enable`。
+
+也可使用环境变量，放在管道的 **`sh` 一侧**；显式命令行参数优先：
+
+| 环境变量 | 可用值 | 默认值 |
+| :--- | :--- | :--- |
+| `DRDSH_COMPONENT` | `relay`、`daemon`、`mixed`、`auto` | 根入口 `auto`；组件入口使用对应组件 |
+| `DRDSH_VERSION` | `latest` 或 Release tag，如 `v0.1.1` | `latest` |
+| `DRDSH_PREFIX` | 安装目录 | `~/.local` |
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | \
+  DRDSH_COMPONENT=relay DRDSH_VERSION=v0.1.1 DRDSH_PREFIX="$HOME/.local" sh
+```
+
+三个入口都是自包含 Shell 文件，也可以先下载为本地文件再运行：
+
+```sh
+curl -fL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh -o drdsh-install.sh
+sh drdsh-install.sh --component relay --start
+```
+
+安装器完整函数接收完后才执行，下载中断的半截脚本不会开始安装；程序包下载失败或摘要不符时
+不会停止现有服务。`--start` 与 `--enable` 才会启动服务与开启登录自启动；默认仅安装。
+Linux 使用 systemd 用户服务；macOS 使用 launchd 用户服务。安装完成后将 `<prefix>/bin` 加入 PATH。
 
 离线使用时，下载压缩包与摘要并校验，解压后运行包内 `sh install.sh`，或指定某一侧：
 
@@ -97,6 +129,10 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 发布前运行仓库 verify、包清单与名称分派检查及二进制同一性校验，以及真实进程的安装隔离和下载摘要失败测试；
 再把四个压缩包与 `SHA256SUMS` 上传同一个源码 tag 的 Release。构建记录应列出源码、Rust 版本、
 目标与摘要。当前是脚本辅助的人工发布流程，尚无自动签名、托管 CI 发布或可复现构建认证。
+
+修改下载入口时编辑 `scripts/release-install.sh`，再运行 `sh scripts/release-entrypoints.sh`
+同步三个独立入口。`node scripts/release-installer-smoke.mjs` 会用真实 curl → sh 管道与原生安装器，
+检查下载校验、参数和环境变量、指定版本、更新及中断脚本；测试运行在独立临时 prefix 中。
 
 若明确选择保持版本号并替换现有 Release，先备份该 Release 的所有附件与说明，再从同一份最终
 源码重建四个压缩包。更新 `BUILDINFO.txt` 的源码提交和构建信息，重新生成覆盖它与四个压缩包的

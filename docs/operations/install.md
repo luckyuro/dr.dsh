@@ -8,14 +8,14 @@ v0.1.0 提供原生统一 CLI 与 Release 安装；平台矩阵和新命令见[�
 
 ## 推荐：Daemon 独立安装与命令
 
-macOS / Linux 可以直接在源码目录运行：
+macOS Apple Silicon / Linux x86_64 可在任意目录直接运行：
 
 ```sh
-sh daemon/install.sh --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- --start
 export PATH="$HOME/.local/bin:$PATH"
-drdsh-daemonctl status
-drdsh-daemonctl restart
-drdsh-daemonctl logs --follow
+drdsh daemon status
+drdsh daemon restart
+drdsh daemon logs --follow
 ```
 
 先准备可连接的中继；Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.zh.md)，

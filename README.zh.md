@@ -18,7 +18,7 @@ DSH 在你的电脑上运行，会话流量在浏览器与 daemon 之间端到�
 | :--- | :--- | :--- |
 | 功能 | 提供浏览器客户端（PWA）、转发加密流量、连接保活与健康检查 | 管理本机 DSH、设备配对、加密隧道、审计与崩溃记录 |
 | 安装位置 | 你的服务器，也可与 daemon 同机 | 已安装 DSH 的电脑 |
-| 一键安装 | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
+| 一键安装 | [安装命令](#1-安装-relay) | [安装命令](#2-安装-daemon) |
 | 管理命令 | `drdsh relay` | `drdsh daemon` |
 | 独立说明 | **[Relay 安装与使用](relay/README.zh.md)** | **[Daemon 安装与使用](daemon/README.zh.md)** |
 
@@ -36,23 +36,18 @@ macOS Apple Silicon 提供 daemon 包。三个包使用同一套原生 CLI，同
 
 ## 快速开始
 
-可以先在一台电脑上跑通，也可以分开部署。以下命令在各自机器的源码目录执行：
-
-```sh
-git clone https://github.com/luckyuro/dr.dsh.git
-cd dr.dsh
-```
-
-Release 安装不需要 Rust、pnpm 或管理用 Node。Daemon 所在机器仍需 Node 和已配置好模型的 DSH。
+在各自机器上用 `curl` 直接安装。脚本自动识别系统和 CPU，从 GitHub Release 下载对应的二进制包，
+核对 SHA-256 后安装。只需 curl、tar、sha256sum 或 shasum，无需克隆仓库、Rust、pnpm 或管理用 Node。
+Daemon 所在机器仍需 Node 和已配置好模型的 DSH。
 Linux 使用 `systemctl --user`，macOS 使用图形登录会话。下面 relay 安装在 Linux x86_64 服务器；
-daemon 可安装在该服务器或 Apple Silicon Mac。Linux 同机安装可用 `sh install.sh --component mixed --start`。
+daemon 可安装在该服务器或 Apple Silicon Mac。Linux 同机部署也可选择下方的混合包命令。
 
 ### 1. 安装 Relay
 
 安装器从 Release 下载 relay 和已经构建好的 PWA，并核对 SHA-256：
 
 ```sh
-sh relay/install.sh --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh relay status
 ```
@@ -67,7 +62,8 @@ drdsh relay status
 将项目路径替换为已有目录：
 
 ```sh
-sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh daemon status
 ```
@@ -76,6 +72,23 @@ DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有 DSH 占用 `3080
 安装器不安装或配置上游 DSH。集成核对基准为 DSH `0.1.5-rc.2`，升级上游后需重新核对兼容性。
 
 两套命令默认安装在 `~/.local/bin`。`export` 只影响当前终端，可加入 shell 配置以便以后使用。
+
+Linux 同机安装两个组件：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- --component mixed --start
+```
+
+省略 `--start` 只安装，不启动服务；加 `--enable` 开启登录自启动。根入口默认在 Linux 选择混合包，
+macOS 选择 daemon。也可在管道的 **`sh` 一侧**设置环境变量，命令行参数优先：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | \
+  DRDSH_COMPONENT=daemon DRDSH_VERSION=v0.1.1 DRDSH_PREFIX="$HOME/.local" sh
+```
+
+`DRDSH_VERSION` 默认 `latest`，`DRDSH_PREFIX` 默认 `~/.local`。
+更多参数和离线安装见[发布与安装](docs/operations/releases.md)。
 
 ### 3. 配对并打开 DSH
 

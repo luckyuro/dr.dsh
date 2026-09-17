@@ -1,11 +1,11 @@
 # Relay 与 Daemon 的安装和管理
 
-新安装使用两个独立入口。它们可以在不同机器运行，也可以安装到同一机器、同一 prefix，
+新安装用 curl 运行两个独立入口，无需源码目录。它们可以在不同机器运行，也可以安装到同一机器、同一 prefix，
 各自管理自己的程序、配置、服务、日志与更新锁：
 
 | | Relay | Daemon |
 | :--- | :--- | :--- |
-| 安装 | `sh relay/install.sh --start` | `sh daemon/install.sh --start` |
+| 安装 | [Relay 安装命令](../../relay/README.zh.md#安装服务器无需-node) | [Daemon 安装命令](../../daemon/README.zh.md#一键安装并启动) |
 | 命令 | `drdsh relay` | `drdsh daemon` |
 | 管理范围 | relay + PWA | daemon + 可选插件 |
 | 配置 | `<prefix>/etc/dr.dsh/relay.json` | `<prefix>/etc/dr.dsh/daemon.json` |
@@ -61,7 +61,8 @@ Rust，PWA 必须在构建机预先准备，可通过 `--client-dir` 指定。�
    drdsh uninstall all
    ```
 
-3. 分别运行 Release 下载脚本 `sh relay/install.sh` 和 `sh daemon/install.sh`，传入原来的设置。
+3. 分别运行 [Relay](../../relay/README.zh.md#安装服务器无需-node) 和
+   [Daemon](../../daemon/README.zh.md#一键安装并启动) 的 curl 安装命令，在 `sh -s --` 后传入原来的设置。
    **Daemon 的 `--state-dir` 必须指向旧 `state` 目录**才能沿用配对；`--dsh-home` 沿用原来的 DSH home。
    原来使用非默认 prefix 的安装，两侧命令也传入原 `--prefix`。
 4. 按需重新安装插件，使用新命令 `start` / `status` 并从浏览器连接确认，再用 `enable` 恢复登录自启动。

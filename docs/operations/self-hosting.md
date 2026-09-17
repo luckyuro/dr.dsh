@@ -4,10 +4,17 @@
 
 自托管不是省钱的选择，而是本项目安全叙事的一部分：中继提供远端页面所需的静态应用壳，因此它位于客户端的可信计算基里；由你自己的基础设施提供这个壳，中继运营者与用户就是同一个人（见 [`../security.md`](../security.md) § 5.1）。
 
-中继已经实现 HTTP/WebSocket 路由、`/healthz` 与静态客户端服务。macOS / Linux 可以运行
-relay 离线包中的 `sh install.sh --start` 安装并启动中继与 PWA，服务器无需 Node、pnpm 或 Rust。
-源码入口 `sh relay/install.sh --start` 只构建 Rust，需要提前准备 PWA。随后使用 `drdsh-relayctl restart`、
-`drdsh-relayctl status`、`drdsh-relayctl logs --follow`。完整入口见
+中继已经实现 HTTP/WebSocket 路由、`/healthz` 与静态客户端服务。Linux x86_64 可直接安装
+预构建的 relay 与 PWA，服务器无需源码仓库、Node、pnpm 或 Rust：
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
+export PATH="$HOME/.local/bin:$PATH"
+drdsh relay status
+```
+
+离线使用时运行 relay 解压包中的 `sh install.sh --start`。其他平台可从源码构建。
+随后使用 `drdsh relay restart`、`drdsh relay status`、`drdsh relay logs --follow`。完整入口见
 [`../../relay/README.zh.md`](../../relay/README.zh.md)，旧安装迁移见 [`cli.md`](cli.md)。
 
 ## 中继是什么，不是什么

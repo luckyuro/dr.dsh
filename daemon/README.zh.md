@@ -31,14 +31,14 @@ Daemon 独立安装和运行，主动连接已有的 relay。
 在 DSH 电脑上执行；将项目路径替换成已有目录：
 
 ```sh
-git clone https://github.com/luckyuro/dr.dsh.git
-cd dr.dsh
-sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh-daemon status
 ```
 
-安装器从 Release 下载 daemon，默认安装到 `~/.local`，无需 sudo。
+安装器自动识别系统和 CPU，从 Release 下载 daemon 并校验 SHA-256，默认安装到 `~/.local`，无需 sudo 或源码仓库。
+可追加 `--version v0.1.1` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
 DSH 不在 PATH 中时添加 `--dsh /绝对路径/dsh`；已有进程占用默认端口 `3080` 时可加 `--port 3081`。
 省略 `--workdir` 会使用当前目录。检查状态时，等待 DSH HTTP 显示 `responding`；
 持续失败时用 `drdsh-daemon logs` 查看原因。
@@ -75,7 +75,8 @@ ssh -N -o ExitOnForwardFailure=yes \
 `--relay ws://127.0.0.1:8788`。例如，已有安装可运行：
 
 ```sh
-sh daemon/install.sh --relay ws://127.0.0.1:8788 --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8788 --start
 ```
 
 浏览器继续打开服务器的 HTTPS 地址。两种地址必须到达同一个中继。

@@ -33,14 +33,15 @@ The [relay](../relay/README.md) distributes the browser client (PWA) and forward
 Run on the DSH computer, replacing the project path with an existing directory:
 
 ```sh
-git clone https://github.com/luckyuro/dr.dsh.git
-cd dr.dsh
-sh daemon/install.sh --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8787 --workdir /path/to/your/project --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh-daemon status
 ```
 
-The installer downloads a prebuilt daemon from Release, under `~/.local` by default, without sudo.
+The installer detects your OS and CPU, downloads a prebuilt daemon from Release and verifies SHA-256.
+It installs under `~/.local` by default, without sudo. No source checkout is needed.
+Add `--version v0.1.1` to pin the binary version or `--prefix /path/to/install` for a custom directory.
 Add `--dsh /absolute/path/to/dsh` if DSH is outside your PATH, or `--port 3081` if another process uses
 the default port `3080`. Omitting `--workdir` uses the current directory. Wait for DSH HTTP status
 to say `responding`; use `drdsh-daemon logs` if it stays unresponsive.
@@ -79,7 +80,8 @@ Replace the SSH user and server address and leave this running. In another termi
 update the daemon using `--relay ws://127.0.0.1:8788`. For an existing installation:
 
 ```sh
-sh daemon/install.sh --relay ws://127.0.0.1:8788 --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/install.sh | sh -s -- \
+  --relay ws://127.0.0.1:8788 --start
 ```
 
 The browser still opens the server's HTTPS address. Both addresses must reach the same relay.

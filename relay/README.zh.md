@@ -15,10 +15,10 @@ DSH 的启动、配对、设备登记与密钥保管由 [daemon](../daemon/READM
 
 ## 安装：服务器无需 Node
 
-Linux x86_64 从 Release 下载静态 musl 程序和预构建 PWA，校验 SHA-256 后安装：
+Linux x86_64 在任意目录运行以下命令，从 Release 下载静态 musl 程序和预构建 PWA，校验 SHA-256 后安装：
 
 ```sh
-sh relay/install.sh --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh relay status
 ```
@@ -30,10 +30,11 @@ drdsh relay status
 离线使用时，下载并校验 `drdsh-relay-x86_64-unknown-linux-musl.tar.gz`，解压后运行包内
 `sh install.sh --start`。首次发布的 macOS 包只有 daemon，relay 可从源码构建。
 混合包、平台矩阵和固定版本见[发布说明](../docs/operations/releases.md)。
+可追加 `--version v0.1.1` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
 
 ### 从源码安装
 
-先构建 PWA 和 CLI，再运行原生安装器：
+在源码仓库中先构建 PWA 和 CLI，再运行原生安装器：
 
 ```sh
 pnpm --filter @dr.dsh/pwa build
@@ -76,7 +77,7 @@ DSH 的真实页面由浏览器 Service Worker 通过加密隧道取得，nginx 
 | 只更新 PWA | `drdsh relay install client --source /path/to/bundle` |
 | 卸载中继与 PWA | `drdsh-relay uninstall` |
 
-修改监听端口时重新安装，例如 `sh relay/install.sh --bind 127.0.0.1:8788`。
+修改监听端口时重新执行上面的 curl 命令，将参数改为 `sh -s -- --bind 127.0.0.1:8788`。
 更新和重启只操作 relay；已有连接会中断并需要重新建立，daemon 与它托管的 DSH 进程继续运行。
 `enable` / `disable` 只改变登录自启动，立即启停使用 `start` / `stop`。
 

@@ -15,10 +15,11 @@ The [daemon](../daemon/README.md) handles DSH processes, pairing, device registr
 
 ## Install without Node on the server
 
-On Linux x86_64, download the static musl relay and prebuilt PWA from Release, verify SHA-256, then install:
+On Linux x86_64, run this from any directory to download the static musl relay and prebuilt PWA,
+verify SHA-256 and install:
 
 ```sh
-sh relay/install.sh --start
+curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/relay/install.sh | sh -s -- --start
 export PATH="$HOME/.local/bin:$PATH"
 drdsh relay status
 ```
@@ -31,10 +32,11 @@ systemd user session; without `--start` / `--enable`, they remain stopped withou
 For offline use, download and verify `drdsh-relay-x86_64-unknown-linux-musl.tar.gz`, extract it and run
 its `sh install.sh --start`. This release provides only daemon on macOS; relay can be built from source.
 See [release installation](../docs/operations/releases.md) for mixed packages, platforms and pinned versions.
+Use `--version v0.1.1` to pin the binary version or `--prefix /path/to/install` to change the install directory.
 
 ### Source installation
 
-Build PWA and CLI on a development machine, then run the native installer:
+In a source checkout, build PWA and CLI on a development machine, then run the native installer:
 
 ```sh
 pnpm --filter @dr.dsh/pwa build
@@ -81,7 +83,7 @@ The browser's Service Worker retrieves DSH pages through the encrypted tunnel; n
 | Update only the PWA | `drdsh relay install client --source /path/to/bundle` |
 | Uninstall relay and PWA | `drdsh-relay uninstall` |
 
-Reinstall to change the listening port, for example `sh relay/install.sh --bind 127.0.0.1:8788`.
+To change the listening port, rerun the curl command with `sh -s -- --bind 127.0.0.1:8788`.
 Updates and restarts affect only the relay. Connections drop and need to be re-established;
 the daemon and its DSH process keep running. `enable` / `disable` only change login autostart;
 use `start` / `stop` for immediate action.
