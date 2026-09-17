@@ -17,11 +17,15 @@
   @media (prefers-color-scheme: dark) { :root { --fg: #e5e7eb; --muted: #9ca3af; --accent: #60a5fa; } }
   body { font: 16px/1.6 system-ui, sans-serif; color: var(--fg); margin: 0; padding: 3rem 1.5rem; }
   main { max-width: 34rem; margin: 0 auto; }
+  .page-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
+  #language { margin: 0 0 .5rem auto; background: transparent; color: var(--accent);
+              border: 1px solid currentColor; }
+  #room-list li { flex-wrap: wrap; overflow-wrap: anywhere; }
   h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
   h1 img { display: block; width: 18rem; max-width: 100%; height: auto; }
   p { color: var(--muted); }
   label { display: block; font-weight: 600; margin: 1.5rem 0 .35rem; }
-  input { width: 100%; padding: .6rem .7rem; font: inherit; font-family: ui-monospace, monospace;
+  input { box-sizing: border-box; width: 100%; padding: .6rem .7rem; font: inherit; font-family: ui-monospace, monospace;
           border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); border-radius: .4rem;
           background: transparent; color: inherit; }
   button { margin-top: 1rem; padding: .6rem 1.1rem; font: inherit; font-weight: 600; border: 0;
@@ -45,32 +49,46 @@
             border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); }
   #forget[hidden] { display: none; }
   #device { font-size: .9rem; }
+  .hint { font-size: .9rem; margin: .5rem 0; }
+  details { margin-top: 1.5rem; font-size: .9rem; }
+  summary { cursor: pointer; font-weight: 600; }
+  details li { margin: .6rem 0; }
+  #state, #device, #detail, .hint, details { overflow-wrap: anywhere; }
   code { background: color-mix(in srgb, currentColor 12%, transparent); padding: .1em .35em; border-radius: .25rem; }
   a { color: var(--accent); }
 </style>
 </head>
 <body>
 <main>
+  <header class="page-header">
   <h1>
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="/client/logo-dark.png">
       <img src="/client/logo.png" width="720" height="192" alt="dr.dsh">
     </picture>
   </h1>
-  <p>This page connects your browser to the DeepSeek Harness running on your own computer.
+  <button id="language" type="button" lang="zh-CN" aria-label="Switch to Chinese">中文</button>
+  </header>
+  <p data-i18n="page.intro">This page connects your browser to the DeepSeek Harness running on your own computer.
      Traffic is end-to-end encrypted: this relay forwards it without being able to read it.</p>
 
-  <label for="key">Pairing code or room key</label>
-  <input id="key" autocomplete="off" spellcheck="false" placeholder="the code `drdshd pair` printed">
-  <button id="connect" type="button">Connect</button>
-  <button id="forget" type="button" hidden>Forget this device</button>
-  <div id="state" data-phase="idle"></div>
+  <label for="key" data-i18n="page.credential">Pairing code or room key</label>
+  <input id="key" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XX"
+         aria-describedby="pairing-hint connection-hint">
+  <p id="pairing-hint" class="hint" data-i18n="page.pairingHint">On the computer running DSH, run <code>drdsh daemon pair</code>
+     (or <code>drdsh-daemon pair</code>) and keep the command running. Codes expire after five minutes
+     and can be used for one attempt, even if it fails.</p>
+  <p id="connection-hint" class="hint">Enter the pairing code and press Connect. After pairing succeeds,
+     press Connect again to open the tunnel.</p>
+  <button id="connect" type="button" data-i18n="page.connect">Connect</button>
+  <button id="forget" type="button" data-i18n="page.forgetAll" hidden>Forget all computers</button>
+  <div id="state" data-phase="idle" role="status" aria-live="polite"></div>
   <p id="device" hidden></p>
 
   <!-- One machine per paired room (ADR-0007). Hidden until there is at least one, so a first-time
        visitor sees the code field and nothing else. -->
   <section id="rooms" hidden>
-    <h2 style="font-size:1rem">Your computers</h2>
+    <h2 style="font-size:1rem" data-i18n="page.computers">Your computers</h2>
     <ul id="room-list" style="list-style:none;padding:0;margin:0"></ul>
   </section>
 
@@ -78,12 +96,39 @@
     <p id="headline"></p>
     <p id="detail"></p>
     <div id="actions"></div>
-    <button id="open" type="button" hidden>Open the DeepSeek Harness interface</button>
+    <button id="open" type="button" data-i18n="page.open" hidden>Open the DeepSeek Harness interface</button>
+    <p class="hint" data-i18n="page.keepOpen">The DSH interface opens in a new tab. Keep this dr.dsh tab open to maintain the
+       tunnel, and keep your DSH computer awake and online.</p>
   </section>
 
-  <p style="margin-top:2rem;font-size:.9rem">Either credential is a secret and neither leaves
-     this browser except inside the encrypted tunnel. A paired device is remembered in this
-     browser, so the code is only ever typed once.</p>
+  <details>
+    <summary data-i18n="page.help">Setup and troubleshooting</summary>
+    <ul>
+      <li data-i18n="page.helpDaemon">On the DSH computer, check <code>drdsh daemon status</code>. If the service is stopped,
+          run <code>drdsh daemon start</code>. Use <code>drdsh daemon logs --follow</code> or
+          <code>drdsh daemon doctor</code> to investigate a failure.</li>
+      <li data-i18n="page.helpHttps">Open this relay's HTTPS address on remote devices. The browser and daemon must reach
+          the same relay; localhost HTTP is only for testing on the relay computer.</li>
+      <li data-i18n="page.helpPair">To pair another computer, run <code>drdsh daemon pair</code> there and enter its code here.
+          Existing pairings stay in Your computers.</li>
+      <li data-i18n="page.helpForget">Forgetting removes saved pairings from this browser. To revoke access on the DSH computer,
+          use <code>drdsh daemon devices</code>, then <code>drdsh daemon devices --revoke &lt;id&gt;</code>.
+          Read local audit and crash reports with <code>drdsh daemon audit</code> and
+          <code>drdsh daemon crashes</code>.</li>
+      <li data-i18n="page.helpKey">A room key is only for a daemon explicitly configured with that same key.
+          <code>drdsh daemon room-key</code> generates a new key; it does not show the installed
+          daemon's key. Use pairing for an existing installation.</li>
+      <li data-i18n="page.helpRelay">On the relay server, check <code>drdsh relay status</code> and <code>drdsh relay logs --follow</code>.
+          For Release installations, <code>drdsh relay update</code> updates the relay and its PWA;
+          <code>drdsh daemon update</code> runs separately on the DSH computer.
+          If nginx serves the PWA directly, its static files must also be updated.</li>
+    </ul>
+    <p><a data-i18n="page.daemonGuide" href="https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md" target="_blank" rel="noopener noreferrer">Daemon setup guide</a>
+       · <a data-i18n="page.relayGuide" href="https://github.com/luckyuro/dr.dsh/blob/master/relay/README.md" target="_blank" rel="noopener noreferrer">Relay hosting guide</a></p>
+  </details>
+  <p class="hint" style="margin-top:2rem" data-i18n="page.privacy">Keep pairing codes and room keys private. Pairings are saved in
+     this browser for this relay address. Clearing site data or forgetting a computer requires pairing
+     again to reconnect.</p>
 </main>
 <script type="module" src="/client/shell.js"></script>
 </body>

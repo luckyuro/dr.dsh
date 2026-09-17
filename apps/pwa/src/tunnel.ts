@@ -28,6 +28,8 @@
  * @module @dr.dsh/pwa/tunnel
  */
 
+import { t, LocalizedError, type DisplayText } from './i18n.ts';
+
 /** The carrier's frame header size, from `dr-dsh-proto`. */
 export const FRAME_HEADER_LEN = 18;
 
@@ -74,8 +76,8 @@ export interface TunnelSocket {
 }
 
 /** Why the tunnel cannot be established or used. */
-export class TunnelError extends Error {
-  public constructor(message: string) {
+export class TunnelError extends LocalizedError {
+  public constructor(message: DisplayText) {
     super(message);
     this.name = 'TunnelError';
   }
@@ -408,7 +410,7 @@ export class Tunnel {
     // tunnel that reports itself established and then serves nothing — the failure mode this
     // check exists to make impossible.
     if (!this.deviceBound) {
-      throw new TunnelError('the daemon refused this device');
+      throw new TunnelError(() => t('error.deviceRefused'));
     }
   }
 
@@ -538,8 +540,8 @@ export class Tunnel {
       const reason = (message as { reason?: unknown }).reason;
       throw new TunnelError(
         reason === 'not_paired'
-          ? 'this device is not paired with that daemon any more'
-          : 'the daemon refused this device',
+          ? () => t('error.deviceRevoked')
+          : () => t('error.deviceRefused'),
       );
     }
     if (type !== RESUME.challenge) {
@@ -548,7 +550,9 @@ export class Tunnel {
     if (this.identity === null) {
       // The daemon asked a client that never claimed an identity. Answering is impossible and
       // guessing would be worse, so the tunnel ends with something the user can act on.
-      throw new TunnelError('the daemon requires a paired device and this client is not paired');
+      throw new TunnelError(
+        () => t('error.deviceRequired'),
+      );
     }
 
     const identity = this.identity;

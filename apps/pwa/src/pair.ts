@@ -33,6 +33,8 @@
  * @module @dr.dsh/pwa/pair
  */
 
+import { t, displayText, type DisplayText } from './i18n.ts';
+
 import {
   withRoom,
   generateDevice,
@@ -121,15 +123,10 @@ interface Acceptance {
 }
 
 /** Turns the daemon's machine-readable refusal into a sentence a person can act on. */
-function explain(reason: string): string {
-  if (reason === 'pairing_failed') {
-    return (
-      'the daemon refused the pairing: the code does not match the one it displayed. Check ' +
-      'the code and run `drdshd pair` again — a code is spent by the attempt, whether or not ' +
-      'it was right.'
-    );
-  }
-  return `the daemon refused the pairing: ${reason}`;
+function explain(reason: string): DisplayText {
+  return () => reason === 'pairing_failed'
+    ? t('error.pairingMismatch')
+    : t('error.pairingRefused', { reason });
 }
 
 /** Whether a payload is a JSON object, which is how the pairing envelopes announce themselves. */
@@ -197,9 +194,7 @@ async function openPairingTunnel(
       // that stayed silent.
       reject(
         new PairingError(
-          `no daemon answered in the pairing room for this code within ${Math.round(
-            timeoutMs / 1000,
-          )} seconds. Check that \`drdshd pair\` is still running and that the code has not expired.`,
+          () => t('error.pairingTimeout', { seconds: Math.round(timeoutMs / 1000) }),
         ),
       );
       socket.close();
@@ -254,7 +249,7 @@ export async function pairWithCode(
    * code plus a parked daemon is an invitation to keep guessing — and "nothing came back" must
    * not be indistinguishable from "the relay dropped".
    */
-  const next = async (what: string): Promise<Uint8Array<ArrayBuffer>> => {
+  const next = async (what: DisplayText): Promise<Uint8Array<ArrayBuffer>> => {
     if (tunnel === null) throw new PairingError('the pairing tunnel is not open');
     const deadline = Date.now() + timeoutMs;
     for (;;) {
@@ -263,8 +258,7 @@ export async function pairWithCode(
       const remaining = deadline - Date.now();
       if (remaining <= 0) {
         throw new PairingError(
-          `the daemon did not send ${what} within ${Math.round(timeoutMs / 1000)} seconds. ` +
-            'Check that `drdshd pair` is still running and that the code has not expired.',
+          () => t('error.pairingStep', { step: displayText(what), seconds: Math.round(timeoutMs / 1000) }),
         );
       }
       await new Promise<void>(resolve => {
@@ -292,7 +286,7 @@ export async function pairWithCode(
     });
 
     host.report({ phase: 'waiting' });
-    const daemonMessage = await next('its half of the PAKE');
+    const daemonMessage = await next(() => t('pairing.pake'));
     if (daemonMessage.length !== SPAKE2_MESSAGE_LEN || daemonMessage[0] !== SIDE_DAEMON) {
       // A refusal can arrive here too, and reporting *it* as a malformed PAKE message would
       // send the user hunting for a protocol bug. Only an envelope is read as one: a payload
@@ -323,7 +317,7 @@ export async function pairWithCode(
     });
     await opened.send(CONTROL_STREAM, new TextEncoder().encode(finish));
 
-    const accepted = asEnvelope(await next('an answer to the enrolment'));
+    const accepted = asEnvelope(await next(() => t('pairing.enrolment')));
     // The receipt carries the room key the daemon serves, sealed under the enrolment key: the
     // pairing room's transport is public by construction, so a key announced in the clear would
     // be a key handed to the relay.

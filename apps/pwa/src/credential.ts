@@ -11,6 +11,8 @@
  * @module @dr.dsh/pwa/credential
  */
 
+import { t, LocalizedError, type DisplayText } from './i18n.ts';
+
 /** The alphabet a displayed pairing code uses. */
 const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
@@ -21,8 +23,8 @@ const CODE_SYMBOLS = 10;
 const ROOM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
 
 /** Why the pasted text was neither credential. */
-export class CredentialError extends Error {
-  public constructor(message: string) {
+export class CredentialError extends LocalizedError {
+  public constructor(message: DisplayText) {
     super(message);
     this.name = 'CredentialError';
   }
@@ -48,11 +50,11 @@ export function classifyCredential(text: string): Credential {
   const trimmed = text.trim();
   if (trimmed === '') {
     throw new CredentialError(
-      'Enter the code `drdshd pair` printed, or the room key `drdshd room-key` printed.',
+      () => t('error.emptyCredential'),
     );
   }
 
-  // Grouping is presentation: `drdshd pair` prints `XXXX-XXXX-XX`, and people paste it either way.
+  // Grouping is presentation: `drdsh daemon pair` prints `XXXX-XXXX-XX`, and people paste it either way.
   const symbols = [...trimmed.toUpperCase()].filter(character => character !== '-' && !/\s/u.test(character));
   const folded = symbols.map(character =>
     character === 'I' || character === 'L'
@@ -77,9 +79,7 @@ export function classifyCredential(text: string): Credential {
   // One message for every near miss, naming both shapes: telling a user "that is 42 characters"
   // is useful only if they know it should be 43, and they do not.
   throw new CredentialError(
-    'That is neither a pairing code (10 symbols like 7Q4M-2XKP-9T) nor a room key (43 ' +
-      'URL-safe characters, the value `drdshd room-key` prints). Check what you pasted — the ' +
-      'pairing code expires after five minutes and a room key does not.',
+    () => t('error.invalidCredential'),
   );
 }
 
@@ -90,6 +90,6 @@ export function classifyCredential(text: string): Credential {
  */
 export function describeCredential(credential: Credential): string {
   return credential.kind === 'code'
-    ? `pairing code ${credential.code}`
-    : 'a room key';
+    ? t('credential.code', { code: credential.code })
+    : t('credential.key');
 }

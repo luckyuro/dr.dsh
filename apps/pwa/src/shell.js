@@ -12,6 +12,9 @@
  * more surface than it removes.
  */
 
+import { t, getLocale, setLocale, readLocale, saveLocale, displayText, errorText, LocalizedError } from './i18n.js';
+import { offlineNotice } from './offline.js';
+
 /**
  * Answers the interface's WebSockets over the tunnel.
  *
@@ -85,6 +88,8 @@ const state = document.getElementById('state');
 const connect = document.getElementById('connect');
 const forget = document.getElementById('forget');
 const key = document.getElementById('key');
+const pairingHint = document.getElementById('pairing-hint');
+const connectionHint = document.getElementById('connection-hint');
 const deviceLine = document.getElementById('device');
 const roomsSection = document.getElementById('rooms');
 const roomList = document.getElementById('room-list');
@@ -93,10 +98,49 @@ const headline = document.getElementById('headline');
 const detail = document.getElementById('detail');
 const actions = document.getElementById('actions');
 const openButton = document.getElementById('open');
+const languageButton = document.getElementById('language');
+
+setLocale(readLocale(() => localStorage, navigator.languages?.length ? navigator.languages : [navigator.language]));
+let stateMessage = '';
+let activePanel = null;
+
+/** Only catalog text can introduce code markup; interpolated device labels always stay plain text. */
+function renderStaticText(element, message) {
+  element.replaceChildren(...message.split(/(`[^`]+`)/u).map(part => {
+    if (!part.startsWith('`')) return document.createTextNode(part);
+    const code = document.createElement('code');
+    code.textContent = part.slice(1, -1);
+    return code;
+  }));
+}
+
+function renderLanguage() {
+  document.documentElement.lang = getLocale();
+  for (const element of document.querySelectorAll('[data-i18n]')) {
+    renderStaticText(element, t(element.dataset.i18n));
+  }
+  const chinese = getLocale() === 'zh-CN';
+  languageButton.textContent = chinese ? 'English' : '中文';
+  languageButton.lang = chinese ? 'en' : 'zh-CN';
+  languageButton.setAttribute('aria-label', t('language.switch'));
+  for (const component of ['daemon', 'relay']) {
+    document.querySelector(`[data-i18n="page.${component}Guide"]`).href =
+      `https://github.com/luckyuro/dr.dsh/blob/master/${component}/README${chinese ? '.zh' : ''}.md`;
+  }
+  renderDevice();
+  state.textContent = displayText(stateMessage);
+  if (!panel.hidden) activePanel?.draw();
+}
+
+languageButton.addEventListener('click', () => {
+  saveLocale(() => localStorage, getLocale() === 'en' ? 'zh-CN' : 'en');
+  renderLanguage();
+});
 
 function show(phase, message) {
   state.dataset.phase = phase;
-  state.textContent = message;
+  stateMessage = message;
+  state.textContent = displayText(message);
   // Remembered for crash reports: "where was the page when it broke" is the first question a report
   // has to answer, and by the time it is built the visible text has moved on.
   currentPhase = phase;
@@ -118,7 +162,7 @@ function roomLabel(room) {
 }
 
 /**
- * A short label for `drdshd devices`.
+ * A short label for `drdsh daemon devices`.
  *
  * The daemon stores it so an operator can tell two enrolled devices apart; a browser that sends
  * its whole user-agent string makes that list unreadable, and one that sends nothing makes it
@@ -135,7 +179,7 @@ function browserLabel() {
 let client = null;
 async function loadClient() {
   if (client === null) {
-    const [session, panelModule, controlModule, proxyCodec, pairing, identity, storage, credential, offlineModule, healthModule] =
+    const [session, panelModule, controlModule, proxyCodec, pairing, identity, storage, credential, healthModule] =
       await Promise.all([
         import('/client/session.js'),
         import('/client/panel.js'),
@@ -145,11 +189,12 @@ async function loadClient() {
         import('/client/identity.js'),
         import('/client/storage.js'),
         import('/client/credential.js'),
-        import('/client/offline.js'),
         // Loaded here with the rest so a report can be built without a second round of fetching on
         // a page that is already failing.
         import('/client/health.js'),
-      ]);
+      ]).catch(error => {
+        throw new LocalizedError(() => t('error.load', { reason: errorText(error) }));
+      });
     client = {
       session,
       panelModule,
@@ -159,7 +204,6 @@ async function loadClient() {
       identity,
       storage,
       credential,
-      offline: offlineModule,
       health: healthModule,
     };
   }
@@ -189,17 +233,21 @@ function renderDevice() {
     roomsSection.hidden = true;
     roomList.replaceChildren();
     forget.hidden = true;
-    key.placeholder = 'the code `drdshd pair` printed';
+    pairingHint.hidden = false;
+    key.placeholder = 'XXXX-XXXX-XX';
+    renderStaticText(connectionHint, t('page.connectionHint'));
     return;
   }
   deviceLine.hidden = false;
   deviceLine.textContent =
     rooms.length === 1
-      ? `Paired as ${device.deviceId} with ${rooms[0].label}.`
-      : `Paired as ${device.deviceId} with ${rooms.length} computers.`;
+      ? t('device.one', { id: device.deviceId, label: rooms[0].label })
+      : t('device.many', { id: device.deviceId, count: rooms.length });
   roomsSection.hidden = false;
   forget.hidden = false;
-  key.placeholder = 'paired already — leave empty to use the selected computer';
+  pairingHint.hidden = true;
+  key.placeholder = t('page.reconnectPlaceholder');
+  renderStaticText(connectionHint, t('page.reconnectHint'));
   renderRooms();
 }
 
@@ -220,7 +268,7 @@ function renderRooms() {
     choose.addEventListener('click', () => {
       selectedRoom = room;
       renderRooms();
-      show('idle', `Selected ${room.label}. Press Connect.`);
+      show('idle', () => t('room.selected', { label: room.label }));
     });
 
     const when = document.createElement('span');
@@ -229,12 +277,12 @@ function renderRooms() {
     const seen = room.lastConnectedAtMs ?? room.pairedAtMs;
     when.textContent =
       room.lastConnectedAtMs === null
-        ? 'never connected'
-        : `last used ${new Date(seen).toISOString().slice(0, 16).replace('T', ' ')}`;
+        ? t('room.never')
+        : t('room.lastUsed', { date: new Intl.DateTimeFormat(getLocale(), { dateStyle: 'medium', timeStyle: 'short' }).format(seen) });
 
     const drop = document.createElement('button');
     drop.type = 'button';
-    drop.textContent = 'Forget';
+    drop.textContent = t('room.forget');
     drop.addEventListener('click', () => void forgetRoom(room));
 
     row.append(choose, when, drop);
@@ -245,13 +293,14 @@ function renderRooms() {
 /** Forgets one room. The identity stays: the other rooms still need it. */
 async function forgetRoom(room) {
   try {
+    const deviceId = device?.deviceId ?? '<id>';
     await store?.forget(room.room);
     rooms = rooms.filter(candidate => candidate.room !== room.room);
     if (selectedRoom?.room === room.room) selectedRoom = rooms[0] ?? null;
     renderDevice();
-    show('idle', `Forgot ${room.label}. Its daemon still lists this device until you revoke it there.`);
+    show('idle', () => t('room.forgot', { label: room.label, id: deviceId }));
   } catch (error) {
-    show('failed', `Could not forget that computer: ${error.message}`);
+    show('failed', () => t('error.forget', { reason: errorText(error) }));
   }
 }
 
@@ -290,7 +339,7 @@ let control = null;
  * Sends this run's failures to the daemon, once, once the connection attempt has an outcome.
  *
  * One hop and no service: the report goes to the machine this page is paired with, which writes it
- * somewhere `drdshd crashes` can show it (`docs/security.md` § 5.10). Nothing is uploaded, and a run
+ * somewhere `drdsh daemon crashes` can show it (`docs/security.md` § 5.10). Nothing is uploaded, and a run
  * that reached a usable state without a failure sends nothing at all — reporting a healthy run would
  * be telemetry, which is the thing this design exists to avoid.
  *
@@ -315,7 +364,7 @@ async function reportOwnFailures() {
     if (!outcome.accepted) {
       console.warn(`dr.dsh: the crash report was not stored: ${outcome.error ?? 'no reason given'}`);
     } else {
-      console.info(`dr.dsh: ${outcome.stored} crash report(s) are stored on your computer; run \`drdshd crashes\` there to read them.`);
+      console.info(`dr.dsh: ${outcome.stored} crash report(s) are stored on your computer; run \`drdsh daemon crashes\` there to read them.`);
     }
   } catch (error) {
     console.warn(`dr.dsh: the crash report could not be sent: ${error.message}`);
@@ -331,7 +380,7 @@ async function reportOwnFailures() {
  * means the worker has usually taken control before the first connection, which is what the tunnel's
  * handoff needs.
  *
- * A failure here is reported but not fatal: the page works, it just cannot be used offline.
+ * A failure here leaves the shell readable, but the DSH interface still needs a worker to connect.
  */
 async function ensureWorker() {
   if (!('serviceWorker' in navigator)) return null;
@@ -342,7 +391,7 @@ async function ensureWorker() {
     });
     return await navigator.serviceWorker.ready;
   } catch (error) {
-    console.warn(`dr.dsh: no service worker, so this page cannot be used offline: ${error.message}`);
+    console.warn(`dr.dsh: the service worker could not start; the DSH interface and offline shell need it. Open this relay over HTTPS (localhost HTTP works for local testing), then reload. (${error.message})`);
     return null;
   }
 }
@@ -358,15 +407,14 @@ let offline = false;
  * network and a stopped relay produce the connect path's own sentence. This one only speaks for the
  * first case.
  */
-async function refreshOfflineNotice() {
+function refreshOfflineNotice() {
   if (navigator.onLine) {
     offline = false;
     if (state.dataset.phase === 'offline') show('idle', '');
     return;
   }
   offline = true;
-  const loaded = await loadClient();
-  show('offline', loaded.offline.offlineNotice({ paired: device !== null }));
+  show('offline', () => offlineNotice({ paired: device !== null && rooms.length > 0 }));
 }
 
 window.addEventListener('offline', () => void refreshOfflineNotice());
@@ -374,11 +422,20 @@ window.addEventListener('online', () => void refreshOfflineNotice());
 
 /** Loads the stored device on page load, so the page never asks for a code it does not need. */
 async function loadStoredDevice() {
+  // Loading modules and reading storage fail for different reasons and need different advice.
+  void ensureWorker();
+  let loaded;
   try {
-    // Before anything else that can fail: the worker is what makes the *next* load possible with no
-    // network, including the load that reports the outage.
-    void ensureWorker();
-    const loaded = await loadClient();
+    loaded = await loadClient();
+  } catch (error) {
+    if (!navigator.onLine) {
+      refreshOfflineNotice();
+      return;
+    }
+    show('failed', () => error instanceof LocalizedError ? error.message : t('error.connection', { reason: errorText(error) }));
+    return;
+  }
+  try {
     store = new loaded.storage.IndexedDbRoomStore();
     device = await store.loadIdentity();
     rooms = await store.listRooms();
@@ -392,19 +449,22 @@ async function loadStoredDevice() {
   } catch (error) {
     // Storage is not required to use the page: pairing for this visit still works, and saying so
     // is better than refusing to load.
-    show('idle', `This browser cannot remember a pairing: ${error.message}`);
+    show('idle', () => t('error.remember', { reason: errorText(error) }));
   }
 }
 
 forget.addEventListener('click', async () => {
   forget.disabled = true;
   try {
+    const deviceId = device?.deviceId ?? '<id>';
     await store?.forgetAll();
     device = null;
     rooms = [];
     selectedRoom = null;
     renderDevice();
-    show('idle', 'This browser forgot every computer. Pair again to reconnect.');
+    show('idle', () => t('room.forgotAll', { id: deviceId }));
+  } catch (error) {
+    show('failed', () => t('error.forgetAll', { reason: errorText(error) }));
   } finally {
     forget.disabled = false;
   }
@@ -412,7 +472,7 @@ forget.addEventListener('click', async () => {
 
 connect.addEventListener('click', async () => {
   connect.disabled = true;
-  show('connecting', 'Connecting…');
+  show('connecting', () => t('state.connecting'));
   panel.hidden = true;
   try {
     const loaded = await loadClient();
@@ -428,16 +488,16 @@ connect.addEventListener('click', async () => {
     if (typed !== '') {
       const parsed = credential.classifyCredential(typed);
       if (parsed.kind === 'code') {
-        show('pairing', `Pairing with ${parsed.code}…`);
+        show('pairing', () => t('state.pairing'));
         const paired = await pairing.pairWithCode(
           {
             connect: (room) => openSocket(room),
             report: (phase) => {
-              if (phase.phase === 'waiting') show('pairing', 'Waiting for the daemon to answer…');
+              if (phase.phase === 'waiting') show('pairing', () => t('state.waiting'));
             },
           },
           // The label is what the room list shows. The device name the daemon stores is the same
-          // string, so `drdshd devices` and this list agree about which machine is which.
+          // string, so `drdsh daemon devices` and this list agree about which machine is which.
           //
           // The identity is the one this browser already has, when it has one (ADR-0007): pairing with a
           // second computer must enrol *this* device there too, not replace the key the first computer
@@ -453,7 +513,7 @@ connect.addEventListener('click', async () => {
         selectedRoom = rooms.find(candidate => candidate.room === stored.room) ?? rooms[0] ?? null;
         key.value = '';
         renderDevice();
-        show('paired', `Paired as ${record.deviceId} with ${stored.label}. Press Connect to open the tunnel.`);
+        show('paired', () => t('state.paired', { id: record.deviceId, label: stored.label }));
         connect.disabled = false;
         return;
       }
@@ -502,11 +562,13 @@ connect.addEventListener('click', async () => {
         return () => clearInterval(timer);
       },
     });
+    activePanel?.stop();
+    activePanel = panelControl;
     await session.connect({ roomKey, room, device: record }, {
       report: (phase) => {
-        if (phase.phase === 'connecting') show('connecting', 'Connecting…');
+        if (phase.phase === 'connecting') show('connecting', () => t('state.connecting'));
         if (phase.phase === 'ready') {
-          show('ready', 'Connected.');
+          show('ready', () => t('state.ready'));
           // The page reached a usable state: a soak run counts a start as healthy when this flips.
           health.ready = true;
           // Remembered so the list shows where the user has actually been, and so the next visit
@@ -515,7 +577,8 @@ connect.addEventListener('click', async () => {
           if (selectedRoom !== null) {
             void store?.touch(selectedRoom.room, Date.now()).then(async () => {
               rooms = (await store?.listRooms()) ?? rooms;
-            });
+              renderRooms();
+            }).catch(() => {});
           }
           // Reported here rather than the moment a tunnel exists: "did this run ever work" is only
           // known once the connection has an outcome, and a report sent one step earlier would claim
@@ -523,8 +586,9 @@ connect.addEventListener('click', async () => {
           void reportOwnFailures();
         }
         if (phase.phase === 'failed') {
-          show('failed', phase.reason);
-          panelControl.disconnected(phase.reason);
+          const reason = () => errorText(phase.cause ?? phase.reason);
+          show('failed', reason);
+          panelControl.disconnected(reason);
           void reportOwnFailures();
         }
       },
@@ -547,24 +611,11 @@ connect.addEventListener('click', async () => {
     // Offline is checked first: the raw failure here is "Failed to fetch", which names neither the
     // network nor what to do about it.
     if (offline || !navigator.onLine) {
-      const loaded = await loadClient().catch(() => null);
-      show(
-        'offline',
-        loaded === null
-          ? 'This device is offline, so dr.dsh cannot reach the relay. Reconnect and try again.'
-          : loaded.offline.offlineNotice({ paired: device !== null }),
-      );
+      show('offline', () => offlineNotice({ paired: device !== null && rooms.length > 0 }));
       panel.hidden = true;
       return;
     }
-    // A module that fails to load is the one failure whose message says nothing useful: the
-    // browser reports a MIME type or a syntax error, and the cause is that this client is
-    // TypeScript which the browser has to run directly.
-    const message = /import|module|MIME|Unexpected token/i.test(String(error.message))
-      ? 'This browser could not load the client. It needs to run TypeScript modules directly; ' +
-        `a browser without that support cannot use this build. (${error.message})`
-      : error.message;
-    show('failed', message);
+    show('failed', () => error instanceof LocalizedError ? error.message : t('error.connection', { reason: errorText(error) }));
     panel.hidden = true;
   } finally {
     connect.disabled = false;
@@ -593,21 +644,21 @@ async function openSocket(room) {
     for (const listener of [...closeListeners]) listener('the relay closed the connection');
   });
   await new Promise((resolve, reject) => {
-    socket.addEventListener('error', () => reject(new Error('cannot reach the relay')), { once: true });
+    socket.addEventListener('error', () => reject(new LocalizedError(() => t('error.relayUnreachable'))), { once: true });
     socket.addEventListener('open', () => {
       socket.send(JSON.stringify({ role: 'client', room, proto: [0, 1] }));
       resolve();
     }, { once: true });
   });
   await new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('the relay never answered the handshake')), 10_000);
+    const timer = setTimeout(() => reject(new LocalizedError(() => t('error.relayHandshake'))), 10_000);
     const onMessage = (event) => {
       if (typeof event.data !== 'string') return;
       socket.removeEventListener('message', onMessage);
       clearTimeout(timer);
       const reply = JSON.parse(event.data);
       if (reply.type !== 'ready') {
-        reject(new Error(reply.reason ?? 'the relay refused this client'));
+        reject(new LocalizedError(() => t('error.relayRefused', { reason: reply.reason ?? t('error.noReason') })));
         return;
       }
       resolve();
@@ -639,4 +690,5 @@ openButton.addEventListener('click', () => {
   window.open('/__dr/interface', '_blank', 'noopener');
 });
 
+renderLanguage();
 void loadStoredDevice();

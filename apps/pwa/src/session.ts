@@ -25,6 +25,8 @@
  * @module @dr.dsh/pwa/session
  */
 
+import { t, LocalizedError } from './i18n.ts';
+
 import { checkRoom, restoreDevice, type IdentityRecord } from './identity.ts';
 import { serveWorker } from './officer.ts';
 import { Tunnel, type TunnelSocket, type DeviceIdentity } from './tunnel.ts';
@@ -34,7 +36,7 @@ export type SessionPhase =
   | { readonly phase: 'idle' }
   | { readonly phase: 'connecting' }
   | { readonly phase: 'ready'; readonly room: string }
-  | { readonly phase: 'failed'; readonly reason: string };
+  | { readonly phase: 'failed'; readonly reason: string; readonly cause?: unknown };
 
 /** What a page passes to {@link Session.start}. */
 export interface SessionOptions {
@@ -101,10 +103,7 @@ export class Session {
       // The key comes from the room record the caller chose, or from what the user typed.
       const encoded = options.roomKey;
       if (encoded === undefined || encoded === '') {
-        throw new Error(
-          'this browser has no pairing and no key was given. Enter the code `drdshd pair` printed, ' +
-            'or the room key `drdshd room-key` printed.',
-        );
+        throw new LocalizedError(() => t('error.noPairing'));
       }
       const root = decodeRoomKey(encoded);
       const room = await Tunnel.roomFor(root);
@@ -145,7 +144,7 @@ export class Session {
       // "Connecting…" while nothing is happening is the failure mode this reporting exists to
       // prevent.
       const reason = error instanceof Error ? error.message : String(error);
-      this.host.report({ phase: 'failed', reason });
+      this.host.report({ phase: 'failed', reason, cause: error });
       throw error;
     }
   }
@@ -190,19 +189,19 @@ export class Session {
 export function decodeRoomKey(encoded: string): Uint8Array<ArrayBuffer> {
   const trimmed = encoded.trim().replaceAll('-', '+').replaceAll('_', '/');
   if (!/^[A-Za-z0-9+/]*={0,2}$/u.test(trimmed)) {
-    throw new Error('the room key is not valid base64url');
+    throw new LocalizedError(() => t('error.roomKeyEncoding'));
   }
   const padded = trimmed + '='.repeat((4 - (trimmed.length % 4)) % 4);
   let binary: string;
   try {
     binary = atob(padded);
   } catch {
-    throw new Error('the room key is not valid base64url');
+    throw new LocalizedError(() => t('error.roomKeyEncoding'));
   }
   const bytes = new Uint8Array(binary.length);
   for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   if (bytes.length !== 32) {
-    throw new Error(`a room key is 32 bytes (43 base64url characters), got ${bytes.length}`);
+    throw new LocalizedError(() => t('error.roomKeyLength', { length: bytes.length }));
   }
   return bytes;
 }
@@ -238,7 +237,7 @@ export async function connect(
       const socket = new WebSocket(url);
       socket.binaryType = 'arraybuffer';
       return await new Promise<TunnelSocket>((resolve, reject) => {
-        socket.addEventListener('error', () => reject(new Error('cannot reach the relay')), {
+        socket.addEventListener('error', () => reject(new LocalizedError(() => t('error.relayUnreachable'))), {
           once: true,
         });
         socket.addEventListener(
@@ -255,7 +254,7 @@ export async function connect(
           socket.removeEventListener('message', onMessage);
           const reply = JSON.parse(event.data) as { type?: string; reason?: string };
           if (reply.type !== 'ready') {
-            reject(new Error(reply.reason ?? 'the relay refused this client'));
+            reject(new LocalizedError(() => t('error.relayRefused', { reason: reply.reason ?? t('error.noReason') })));
             return;
           }
           resolve({
@@ -276,7 +275,7 @@ export async function connect(
     },
     async prepareWorker() {
       if (!('serviceWorker' in navigator)) {
-        throw new Error('this browser does not support service workers, which the interface needs');
+        throw new LocalizedError(() => t('error.workerUnsupported'));
       }
       // `type: 'module'`, because the worker imports its collaborators rather than inlining
       // them. Registered as a classic worker it fails to evaluate — the registration is refused
@@ -305,7 +304,7 @@ export async function connect(
       const channel = new MessageChannel();
       const registration = navigator.serviceWorker.controller;
       if (registration === null) {
-        throw new Error('the service worker does not control this page yet');
+        throw new LocalizedError(() => t('error.workerControl'));
       }
       registration.postMessage({ kind: 'hand' }, [channel.port2]);
       return serve(channel.port1);

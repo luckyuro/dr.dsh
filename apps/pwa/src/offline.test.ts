@@ -53,7 +53,7 @@ test('the pre-cache list is the client\'s own files and nothing else', () => {
     assert.equal(isClientOwned(path), true, path);
     assert.equal(isCacheable(path, 'GET', path === '/' ? 'navigate' : 'cors'), true, path);
   }
-  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v2');
+  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v3');
 });
 
 test('the offline sentence says what is lost and what is not', () => {
@@ -61,8 +61,8 @@ test('the offline sentence says what is lost and what is not', () => {
   const unpaired = offlineNotice({ paired: false });
   assert.notEqual(paired, unpaired, 'the two situations need different advice');
   assert.match(paired, /still remembers the pairing/);
-  assert.match(paired, /still running DSH/);
-  assert.match(unpaired, /drdshd pair/, 'an unpaired user needs to know how to start');
+  assert.match(paired, /may still be running DSH/);
+  assert.match(unpaired, /drdsh daemon pair/, 'an unpaired user needs to know how to start');
   // Neither sentence may read like a browser error, and neither may tell a paired user to re-pair.
   for (const sentence of [paired, unpaired]) {
     assert.ok(sentence.length > 80, 'the sentence must be informative, not a label');

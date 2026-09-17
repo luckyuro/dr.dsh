@@ -26,6 +26,8 @@
  * @module @dr.dsh/pwa/pairing
  */
 
+import { LocalizedError, type DisplayText } from './i18n.ts';
+
 import { Spake2State } from './spake2.ts';
 import { base64url, base64urlDecode } from './tunnel.ts';
 
@@ -57,8 +59,8 @@ export const SEALED_ROOM_KEY_LEN = RECEIPT_NONCE_LEN + 32 + 16;
 const TRANSPORT_SUFFIX = 'transport';
 
 /** Why a pairing code or exchange was not usable. */
-export class PairingError extends Error {
-  public constructor(message: string) {
+export class PairingError extends LocalizedError {
+  public constructor(message: DisplayText) {
     super(message);
     this.name = 'PairingError';
   }

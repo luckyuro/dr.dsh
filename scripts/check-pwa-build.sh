@@ -3,7 +3,7 @@
 set -eu
 drdsh_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 drdsh_dist=$drdsh_root/apps/pwa/dist
-for drdsh_name in session.js service-worker.js offline.js; do
+for drdsh_name in session.js service-worker.js offline.js i18n.js; do
   [ -s "$drdsh_dist/$drdsh_name" ] || {
     echo "PWA build is missing $drdsh_name; run pnpm --filter @dr.dsh/pwa build before packaging." >&2
     exit 1

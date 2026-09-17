@@ -113,6 +113,11 @@ drdsh daemon pair
 for about five minutes; generate a new one after failure or expiry. Your browser remembers pairings
 for later visits and can add several computers.
 
+The PWA supports English and Simplified Chinese. It initially follows your browser's preferred
+supported language (falling back to English). Use **中文 / English** in the upper right to switch;
+your choice is remembered for this relay, works offline, and leaves the connection open.
+The tunneled DSH interface keeps its own language settings.
+
 ## Everyday management
 
 | Operation | Relay | Daemon |

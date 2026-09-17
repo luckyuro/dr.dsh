@@ -19,8 +19,10 @@
  * @module @dr.dsh/pwa/offline
  */
 
-/** A new cache ensures installed clients fetch the whale artwork instead of reusing the old icons. */
-export const OFFLINE_CACHE = 'dr.dsh-client-v2';
+import { t } from './i18n.ts';
+
+/** Refresh the shell and its translations together for already-installed clients. */
+export const OFFLINE_CACHE = 'dr.dsh-client-v3';
 
 /**
  * The paths cached at install time rather than on first use.
@@ -33,6 +35,8 @@ export const OFFLINE_CACHE = 'dr.dsh-client-v2';
 export const PRECACHE_PATHS: readonly string[] = [
   '/',
   '/client/shell.js',
+  '/client/i18n.js',
+  '/client/offline.js',
   '/client/manifest.webmanifest',
   '/client/icon-192.png',
   '/client/icon-512.png',
@@ -74,17 +78,7 @@ export interface OfflineContext {
  * @param context - what the page knows about this browser.
  */
 export function offlineNotice(context: OfflineContext): string {
-  if (context.paired) {
-    return (
-      'This device is offline, so dr.dsh cannot reach the relay. Your computer is probably still ' +
-      'running DSH, and this browser still remembers the pairing — reconnect when the network is ' +
-      'back and the interface will open again.'
-    );
-  }
-  return (
-    'This device is offline, so dr.dsh cannot reach the relay. Pairing needs the network: ' +
-    'reconnect, then enter the code `drdshd pair` printed.'
-  );
+  return t(context.paired ? 'offline.paired' : 'offline.unpaired');
 }
 
 /**

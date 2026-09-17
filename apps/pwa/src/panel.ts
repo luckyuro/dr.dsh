@@ -30,6 +30,8 @@
  * @module @dsh-shared/pwa/panel
  */
 
+import { t, displayText, errorText, type DisplayText } from './i18n.ts';
+
 import { ControlClient, ControlError, describe, describeRelay } from './control.ts';
 import type { ControlReason, LifecycleOperation, LifecycleState, Status } from './control.ts';
 
@@ -48,11 +50,11 @@ export interface PanelState {
    */
   readonly socketClosed: boolean;
   /** Why the tunnel is not open, when it is not. */
-  readonly tunnelError: string | null;
+  readonly tunnelError: DisplayText | null;
   /** The daemon's last reported status, if one has ever arrived. */
   readonly status: Status | null;
   /** The failure of the most recent control exchange, if any. */
-  readonly lastFailure: { readonly reason: ControlReason; readonly message: string } | null;
+  readonly lastFailure: { readonly reason: ControlReason; readonly message: DisplayText } | null;
   /** Whether a control request is in flight. */
   readonly busy: boolean;
 }
@@ -97,8 +99,7 @@ const POLL_INTERVAL_MS = 3_000;
 /**
  * Builds the view for a set of facts.
  *
- * Pure, and the only place that decides what a person is told. The order of the checks is the
- * order of the questions a user actually has: "am I even connected", then "is my computer
+ * Uses the current display language. The checks follow the questions a user actually has: "am I even connected", then "is my computer
  * reachable", then "is DSH running".
  *
  * @param state - the facts.
@@ -107,12 +108,10 @@ const POLL_INTERVAL_MS = 3_000;
 export function panelView(state: PanelState): PanelView {
   if (!state.connected) {
     return {
-      headline: 'Not connected to your computer',
-      detail:
-        state.tunnelError ??
-        'Open this page from the address your daemon printed, or paste the room key below.',
+      headline: t('panel.disconnected'),
+      detail: state.tunnelError === null ? t('panel.connectHint') : displayText(state.tunnelError),
       tone: 'error',
-      actions: disabledActions('there is no connection to send this to'),
+      actions: disabledActions(t('panel.noConnection')),
       needsConnection: true,
     };
   }
@@ -121,12 +120,10 @@ export function panelView(state: PanelState): PanelView {
   // what broke, and the daemon may be perfectly healthy on the other side of it.
   if (state.socketClosed) {
     return {
-      headline: 'The connection to the relay dropped',
-      detail:
-        'Your computer may still be running DSH. This is the link between this browser and the ' +
-        'relay — check your own network, then reconnect.',
+      headline: t('panel.dropped'),
+      detail: t('panel.droppedHint'),
       tone: 'error',
-      actions: disabledActions('there is no connection to send this to'),
+      actions: disabledActions(t('panel.noConnection')),
       needsConnection: true,
     };
   }
@@ -135,23 +132,23 @@ export function panelView(state: PanelState): PanelView {
     // The socket is open but nothing is answering on it, which means the daemon is gone: the
     // relay would have closed the connection if it were the one that failed.
     return {
-      headline: 'Your computer is not answering',
+      headline: t('panel.silent'),
       detail:
         state.lastFailure.reason === 'timeout'
-          ? 'The daemon did not reply. It may have stopped, or the machine may be asleep.'
-          : state.lastFailure.message,
+          ? t('panel.silentHint')
+          : displayText(state.lastFailure.message),
       tone: 'error',
-      actions: disabledActions('the daemon is not answering'),
+      actions: disabledActions(t('panel.noAnswer')),
       needsConnection: false,
     };
   }
 
   if (state.status === null) {
     return {
-      headline: 'Connecting…',
-      detail: 'Asking your computer what it is doing.',
+      headline: t('state.connecting'),
+      detail: t('panel.asking'),
       tone: 'busy',
-      actions: disabledActions('waiting for the first answer'),
+      actions: disabledActions(t('panel.waiting')),
       needsConnection: false,
     };
   }
@@ -163,9 +160,9 @@ export function panelView(state: PanelState): PanelView {
     // the user came for, and a relay problem does not stop a local session.
     headline: describe(status),
     detail: relayTrouble
-      ? `The relay is ${describeRelay(status.relay)}.`
+      ? t('panel.relay', { state: describeRelay(status.relay) })
       : status.state === 'running' && status.pid !== null
-        ? `Process ${String(status.pid)}.`
+        ? t('panel.process', { pid: status.pid })
         : null,
     tone: status.state === 'failed' ? 'error' : relayTrouble ? 'warn' : actionTone(status.state),
     actions: actionsFor(status, state.busy),
@@ -182,13 +179,13 @@ function actionTone(state: LifecycleState): PanelView['tone'] {
 
 /** Buttons for a daemon that has reported its status. */
 function actionsFor(status: Status, busy: boolean): PanelAction[] {
-  const busyReason = busy ? 'an operation is already running' : null;
+  const busyReason = busy ? t('action.busy') : null;
   // An attached DSH is the one case where a button must be disabled for a *reason the user
   // needs to read*: the daemon refuses these operations, and a button that looked available
   // would produce an error where an explanation belongs (criterion 5).
   const attachReason =
     status.state === 'attached'
-      ? 'DSH was started outside this daemon, so it cannot be controlled from here'
+      ? t('dsh.attached')
       : null;
   const allowed = attachReason === null;
   const enabled = (op: LifecycleOperation): boolean => {
@@ -200,15 +197,15 @@ function actionsFor(status: Status, busy: boolean): PanelAction[] {
   const reasonFor = (op: LifecycleOperation): string | null => {
     if (attachReason !== null) return attachReason;
     if (busyReason !== null) return busyReason;
-    if (op === 'start' && status.state === 'running') return 'DSH is already running';
+    if (op === 'start' && status.state === 'running') return t('action.alreadyRunning');
     if (op === 'stop' && status.state !== 'running' && status.state !== 'starting') {
-      return 'DSH is not running';
+      return t('action.notRunning');
     }
     return null;
   };
   return (['start', 'stop', 'restart'] as const).map(op => ({
     op,
-    label: op === 'start' ? 'Start DSH' : op === 'stop' ? 'Stop DSH' : 'Restart DSH',
+    label: t(`action.${op}`),
     enabled: enabled(op),
     reason: reasonFor(op),
   }));
@@ -218,7 +215,7 @@ function actionsFor(status: Status, busy: boolean): PanelAction[] {
 function disabledActions(reason: string): PanelAction[] {
   return (['start', 'stop', 'restart'] as const).map(op => ({
     op,
-    label: op === 'start' ? 'Start DSH' : op === 'stop' ? 'Stop DSH' : 'Restart DSH',
+    label: t(`action.${op}`),
     enabled: false,
     reason,
   }));
@@ -289,7 +286,7 @@ export class ControlPanel {
   }
 
   /** Records that the tunnel failed. */
-  public disconnected(reason: string): void {
+  public disconnected(reason: DisplayText): void {
     this.stopPolling?.();
     this.stopPolling = null;
     this.state = {
@@ -361,11 +358,11 @@ export class ControlPanel {
   /** Records a control failure and redraws. */
   private fail(error: unknown): void {
     if (error instanceof ControlError) {
-      this.state = { ...this.state, lastFailure: { reason: error.reason, message: error.message } };
+      this.state = { ...this.state, lastFailure: { reason: error.reason, message: () => errorText(error) } };
     } else {
       this.state = {
         ...this.state,
-        lastFailure: { reason: 'disconnected', message: (error as Error).message },
+        lastFailure: { reason: 'disconnected', message: () => errorText(error) },
       };
     }
     this.draw();

@@ -25,6 +25,8 @@
  * @module control
  */
 
+import { t } from './i18n.ts';
+
 import type { CrashReportBody } from './health.ts';
 import { CONTROL_STREAM, Tunnel, TunnelError } from './tunnel.ts';
 
@@ -392,22 +394,22 @@ export function describe(status: Status): string {
   switch (status.state) {
     case 'running':
       return status.relay === 'connected'
-        ? 'DSH is running'
-        : `DSH is running; the relay is ${describeRelay(status.relay)}`;
+        ? t('dsh.running')
+        : t('dsh.runningRelay', { state: describeRelay(status.relay) });
     case 'starting':
-      return 'DSH is starting — this usually takes a few seconds';
+      return t('dsh.starting');
     case 'stopping':
-      return 'DSH is shutting down';
+      return t('dsh.stopping');
     case 'stopped':
-      return 'DSH is stopped';
+      return t('dsh.stopped');
     case 'attached':
-      return 'DSH was started outside this daemon, so it cannot be controlled from here';
+      return t('dsh.attached');
     case 'failed':
       return status.lastError === null
-        ? 'DSH could not be kept running'
-        : `DSH could not be kept running: ${status.lastError}`;
+        ? t('dsh.failed')
+        : t('dsh.failedReason', { reason: status.lastError });
     default:
-      return 'DSH state is unknown';
+      return t('dsh.unknown');
   }
 }
 
@@ -415,14 +417,14 @@ export function describe(status: Status): string {
 export function describeRelay(health: RelayHealth): string {
   switch (health) {
     case 'connected':
-      return 'reachable';
+      return t('relay.connected');
     case 'reconnecting':
-      return 'reconnecting — your computer is trying to reach it again';
+      return t('relay.reconnecting');
     case 'rejected':
-      return 'refused — the relay rejected this daemon, which needs an operator';
+      return t('relay.rejected');
     case 'unreachable':
-      return 'unreachable — check your computer\'s network';
+      return t('relay.unreachable');
     default:
-      return 'in an unknown state';
+      return t('relay.unknown');
   }
 }

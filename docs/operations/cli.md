@@ -38,6 +38,37 @@ Rust，PWA 必须在构建机预先准备，可通过 `--client-dir` 指定。�
 
 实现与兼容决策见 [ADR-0015](../decisions/0015-independent-relay-and-daemon.md)。
 
+## 浏览器配对与页面提示
+
+PWA 提供简体中文和英文。首次访问按 `navigator.languages` 的优先顺序匹配 `zh-*` / `en-*`，
+不可用时读取 `navigator.language`，未匹配时回退英文；繁体中文环境暂使用简体中文文案。
+右上角 **中文 / English** 按钮立即切换页面、连接状态、电脑列表、控制面板及离线提示，
+保留输入和隧道。手动选择以 `dr.dsh.locale` 保存到当前站点的 localStorage，优先于环境语言；
+浏览器拒绝存储时仍可在本次访问中切换。忘记电脑不会清除语言选择，清除网站数据则恢复自动选择。
+两种语言随 PWA 一起缓存，离线可切换。DSH 界面、电脑名称及底层原始诊断信息保留原文。
+下面同时给出部分英文按钮名，便于对照另一种语言。
+
+PWA 的提示统一使用 `drdsh daemon ...` / `drdsh relay ...`。在运行 DSH 的电脑上确认
+`drdsh daemon status` 正常，再运行 `drdsh daemon pair`（等价于 `drdsh-daemon pair`）并保持
+命令运行。浏览器打开同一中继的 HTTPS 地址；回环 HTTP 只适用于中继本机测试。
+
+在 **Pairing code or room key** 输入配对码并点击 **Connect**。码有效期为五分钟，每个码只允许
+一次尝试，失败也需重新生成。显示 **Paired** 后再次点击 **Connect**，再点击
+**Open the DeepSeek Harness interface**。DSH 在新标签页打开；保留 dr.dsh 标签页维持隧道，
+DSH 电脑须保持开机、联网且不休眠。
+
+已配对时，页面提示留空输入框、选择 **Your computers** 中的电脑并连接；输入另一台电脑的新码
+会新增配对。配对按浏览器与中继站点保存，清除站点数据后需要重新配对。**Forget** 只忘记一台
+电脑，**Forget all computers** 清除此浏览器保存的全部配对；它们不会撤销 daemon 上的登记。
+若需撤销访问，在对应 DSH 电脑上运行 `drdsh daemon devices --revoke <id>`，页面会提示设备 id。
+
+房间密钥输入保留给显式配置了同一密钥的 daemon。`drdsh daemon room-key` 每次生成新密钥，
+不会读取已安装 daemon 的房间密钥，因此现有安装应使用配对码。
+
+页面的 **Setup and troubleshooting** 提供两侧的状态、日志、诊断、撤销、审计和更新命令。
+PWA 随 relay 更新；nginx 直接托管时还需更新其静态目录。浏览器加载的是构建后的 JavaScript，
+加载失败会引导检查或更新中继发布的 PWA 文件；DSH 界面另需安全上下文中的 Service Worker。
+
 ## 从旧版安装迁移
 
 已有**独立** `relay.json` 安装可直接运行新 relay 包里的 `sh install.sh --prefix <原前缀>`。
