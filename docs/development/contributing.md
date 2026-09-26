@@ -128,7 +128,7 @@ git diff crates/dr-dsh-relay/Cargo.toml
 
 **评审怎么查**：`pnpm run lint:imports`（`scripts/check-dsh-isolation.mjs`）。它扫描全部 `.ts`（跳过 `dist`、`dist-worker`、`node_modules`、`target`、`.git`），拒绝裸 `@deepseek-ai/*` 的静态 import、`export … from`、type-only import 与动态 `import()`。
 
-**要加一个新的 harness 事实时**：加在 `dsh-surface.ts` 里——`DSH_SURFACE` 增加一条带 `why` 与 `required` 的条目，必要时补进 `KNOWN_EVENT_NAMES`，并把 `VERIFIED_DSH_VERSION` 更新为实际核对的版本。守卫（`assertSupportedSurface`）只做浅探测，它的局限写在文件注释里：Cordis 接受任意事件名，`ctx.on('typo', …)` 不会报错、只会永不触发，因此 payload 形状的漂移只能靠升级测试覆盖。
+**要加一个新的 harness 事实时**：加在 `dsh-surface.ts` 里——`DSH_SURFACE` 增加一条带 `why` 与 `required` 的条目，payload 适配放在 `observeHarness`，并把 `VERIFIED_DSH_VERSION` 与 `VERIFIED_DSH_REVISION` 更新为实际核对的版本与提交。守卫（`assertSupportedSurface`）只检查 `ctx.on`/`ctx.effect`：Cordis 接受任意事件名，静态事件集合无法探测运行中的 DSH，因此事件与 payload 的漂移必须靠真实升级测试覆盖。审批和提问是 waterfall；观察者须返回 `next()`，不能吞掉后续回答者。
 
 ### 规则 3：协议改动必须同时更新两端与共享向量
 
@@ -220,7 +220,12 @@ git diff crates/dr-dsh-relay/Cargo.toml
 
 DSH 每次版本变更后，必须执行 [`../integration/dsh-surface.md`](../integration/dsh-surface.md) § 7 的七步升级仪式，并把每一步的实际结果写进 PR 描述。**这里不复述那七步**：清单的规范版本只保留一处，避免两处漂移；"如果没有时间做全套"时至少要做哪三步，也写在那里。
 
-本仓库侧随之要动的只有两处记录：`plugins/dr.dsh/src/dsh-surface.ts` 的 `VERIFIED_DSH_VERSION`（实际核对的版本）与 `plugins/dr.dsh/package.json` 的 `engines.dsh`（兼容范围）。两者都改了之后，`pnpm run test:ts` 是验证守卫与窄化逻辑是否仍成立的最短路径。
+`pnpm run smoke:dsh-upgrade /absolute/path/to/dsh` 在临时 `DSH_HOME` 中安装真实 bundle，
+通过 DSH 的服务验证审批、提问、会话结束、目标完成和插件卸载。它不需要模型或 API key；
+子代理完成使用真实事件总线上的构造消息，HTTP `/report` 接收器是测试替身。
+版本验收还需跑该页列出的真实 daemon/隧道测试与浏览器检查；不要把此脚本当作模型任务全流程验收。
+
+本仓库侧至少同步 `plugins/dr.dsh/src/dsh-surface.ts` 的 `VERIFIED_DSH_VERSION` 与 `VERIFIED_DSH_REVISION`、`plugins/dr.dsh/package.json` 的 `engines.dsh`、`scripts/dsh-upgrade-smoke.mjs` 的版本守卫，以及 [`../integration/dsh-surface.md`](../integration/dsh-surface.md) 的上游提交与实际验收结果。更新后运行 `pnpm run test:ts` 验证守卫与窄化逻辑，并执行该页列出的真实 DSH 验收。
 
 ## 提交与 PR 期望
 

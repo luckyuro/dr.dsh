@@ -253,6 +253,16 @@ async fn a_foreign_authority_is_refused_even_with_a_valid_cookie()
     );
     eprintln!("foreign authority refused with {}", head(&refused));
 
+    // The upgrade ritual also requires the API route to keep its Host fence. An
+    // index-only check cannot catch an upstream change limited to `/api`.
+    let foreign_api = raw_api_post(ready.port, "relay.example", &cookie).await?;
+    assert!(
+        foreign_api.starts_with("HTTP/1.1 403"),
+        "the /api Host fence must reject before cookie authentication; got: {}",
+        head(&foreign_api)
+    );
+    eprintln!("foreign API authority refused with {}", head(&foreign_api));
+
     supervisor.stop().await?;
     Ok(())
 }
@@ -297,6 +307,20 @@ async fn raw_get(
 ) -> Result<String, Box<dyn std::error::Error>> {
     let request = format!(
         "GET / HTTP/1.1\r\nHost: {authority}\r\nCookie: {cookie}\r\nConnection: close\r\n\r\n"
+    );
+    raw_request(port, &request).await
+}
+
+/// Sends a valid RPC body under a chosen Host to exercise the API fence itself.
+async fn raw_api_post(
+    port: u16,
+    authority: &str,
+    cookie: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let body = r#"{"type":"client-request","rpcId":"1","method":"list","payload":{"args":[{}]}}"#;
+    let request = format!(
+        "POST /api/session/list HTTP/1.1\r\nHost: {authority}\r\nCookie: {cookie}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
     );
     raw_request(port, &request).await
 }

@@ -39,7 +39,7 @@
 | [`development/contributing.md`](development/contributing.md) | 验证命令、仓库结构、评审强制的硬规则 |
 | [`architecture.md`](architecture.md) | 组件边界与数据流（改之前先读这个） |
 | [`decisions/`](decisions/) | 每条 ADR 都记录了被否决的方案——先确认你的改动不是被否决过的那个 |
-| [`integration/dsh-surface.md`](integration/dsh-surface.md) | DSH 升级仪式：改 DSH 版本时要跑的七件事 |
+| [`integration/dsh-surface.md`](integration/dsh-surface.md) | DSH 兼容矩阵、真实升级测试与改版本时的七项检查 |
 
 ## 全部文档
 

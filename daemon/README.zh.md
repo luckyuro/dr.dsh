@@ -21,7 +21,8 @@ Daemon 独立安装和运行，主动连接已有的 relay。
 ## 安装前准备
 
 - 已安装并配置好 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，能在本机运行任务。
-  本仓库的集成核对基准是 DSH **`0.1.5-rc.2`**；上游更新后需重新核对兼容性。
+  本次集成验收覆盖 DSH **`0.1.7-rc.2`**；**`0.1.5-rc.2`** 和 **`0.1.6-alpha.2`** 有历史验收记录。
+  上游更新后需重新核对[兼容记录](../docs/integration/dsh-surface.md)。
 - DSH 需要 Node.js 24+（或 22 系列的 22.19+）。Release 安装不需要 Rust、编译工具链或 pnpm。
 - macOS 图形登录会话或 Linux `systemctl --user` 会话；Windows 使用启用 systemd 的 WSL2，DSH 也安装在同一 WSL2 环境。
 - 一个运行中的中继，具有可访问的 `ws://` 或 `wss://` 地址。

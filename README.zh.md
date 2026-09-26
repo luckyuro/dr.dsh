@@ -76,7 +76,8 @@ drdsh daemon status
 已有 DSH 占用 `3080` 时可加 `--port 3081`。
 具体路径见 [Git clone 与 npm 安装示例](daemon/README.zh.md#按安装方式指定-dsh)；
 需要时可参考 [SSH 转发辅助说明](daemon/README.zh.md#ssh-转发可选)。
-安装器不安装或配置上游 DSH。集成核对基准为 DSH `0.1.5-rc.2`，升级上游后需重新核对兼容性。
+安装器不安装或配置上游 DSH。本次集成验收覆盖 DSH `0.1.7-rc.2`；
+`0.1.5-rc.2` 和 `0.1.6-alpha.2` 有历史验收记录。升级上游前请查看[兼容记录](docs/integration/dsh-surface.md)。
 
 两套命令默认安装在 `~/.local/bin`。`export` 只影响当前终端，可加入 shell 配置以便以后使用。
 

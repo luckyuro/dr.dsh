@@ -133,8 +133,8 @@ drdshd run
   │     → 303 + Set-Cookie: dsh-auth-<sha256(authority)>=v1.…
   │     ← cookie 绑定 authority 127.0.0.1:<p>，默认 30 天有效
   ├─ GET / 验证一次（首页必须 200，否则说明 authority 在两跳之间变了）
-  ├─ 建立健康检查循环（HTTP 探测 + 进程存活）        ← M2
-  └─ 向 relay 拨号，注册房间                          ← M0 剩余部分
+  ├─ 建立健康检查循环（HTTP 探测 + 进程存活）
+  └─ 向 relay 拨号，注册房间
 ```
 
 **已实现并实测的部分**（`crates/dr-dsh-daemon/tests/acceptance.rs`，`DSH_BIN=… cargo test -p dr-dsh-daemon --test acceptance -- --ignored`）：
@@ -143,7 +143,7 @@ drdshd run
 DshClient ──▶ 中继 ──▶ daemon ──▶ loopback ──▶ 真实的 dsh web
 ```
 
-一次代理 `GET /` 取回 DSH 自己的首页 27923 字节（以只有 DSH 注入的 `__DSH_BOOT__` 为证），authority 与 cookie 由 daemon 替换。健康检查循环（自愈）与 PWA 联通是 M0 的剩余部分。
+`GET /` 经加密隧道取回 DSH 自己的首页（以 DSH 注入的 `__DSH_BOOT__` 为证），authority 与 cookie 由 daemon 替换；`/api/remote.mux` 的 `$events` 就绪项也经同一路径往返。2026-09-26 在 DSH `0.1.7-rc.2` 上的实测结果见[兼容记录](integration/dsh-surface.md#2026-09-26-兼容验收dsh-017-rc2)。
 
 **为什么必须解析就绪行**：DSH 没有 daemon 模式，也没有本地发现文件；就绪行是它提供给监督者的正式接口（其源码注释写明"监督者应在观察到该行后立即建立连接"）。它是本项目中唯一一处依赖非版本化上游契约的地方，因此：
 

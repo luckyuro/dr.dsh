@@ -80,8 +80,9 @@ directory. On first installation, omitting these uses `dsh` from PATH and the cu
 reinstallation retains saved values. Add `--port 3081` if an existing DSH uses `3080`.
 See [Git clone and npm path examples](daemon/README.md#dsh-installation-methods) and
 [optional SSH forwarding](daemon/README.md#optional-ssh-forwarding).
-The installer does not install or configure upstream DSH. The integration baseline is DSH
-`0.1.5-rc.2`; check compatibility after upstream updates.
+The installer does not install or configure upstream DSH. The current integration check covers
+DSH `0.1.7-rc.2`; `0.1.5-rc.2` and `0.1.6-alpha.2` have historical checks. See the
+[compatibility record](docs/integration/dsh-surface.md) before changing upstream versions.
 
 Both management commands install under `~/.local/bin` by default. The `export` affects only the
 current terminal; add it to your shell configuration for later use.

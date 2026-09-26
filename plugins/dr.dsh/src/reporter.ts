@@ -27,7 +27,7 @@
  * @module
  */
 
-import type { DshContextLike } from './dsh-surface.ts';
+import { observeHarness, sessionNotification, type DshContextLike } from './dsh-surface.ts';
 
 /** Severity mirrors the wire protocol's `severity` values. */
 export type Severity = 'info' | 'notice' | 'alert';
@@ -52,8 +52,7 @@ export interface Report {
   /**
    * Opaque handle to the local session; never a title, path, or prompt.
    *
-   * Optional rather than nullable so a caller that genuinely has no session
-   * cannot invent one, and so the field is absent on the wire instead of null.
+   * Unknown sessions remain null; no handle is inferred from task content.
    */
   readonly sessionRef?: string | null;
 }
@@ -97,59 +96,24 @@ export class Reporter {
    * @returns a disposer that unsubscribes from every subscription.
    */
   public start(ctx: DshContextLike): () => void {
-    const disposers: (() => void)[] = [];
-    const listen = (event: string, listener: (...args: readonly unknown[]) => void): void => {
-      disposers.push(ctx.on(event, listener));
-    };
-
-    listen('approval/request', (...args) => {
-      this.report({ event: 'approval_requested', severity: 'alert', ...this.stamp() }, args);
+    return observeHarness(ctx, notification => {
+      const severity = notification.event === 'turn_complete' ? 'notice'
+        : notification.event === 'subagent_complete' ? 'info' : 'alert';
+      this.report({ ...notification, severity, atMs: Date.now() });
     });
-    listen('user-questions/request', (...args) => {
-      this.report({ event: 'approval_requested', severity: 'alert', ...this.stamp() }, args);
-    });
-    listen('session/event', (...args) => {
-      const report = classifySessionEvent(args);
-      if (report !== undefined) this.report(report, args);
-    });
-    listen('goal/changed', (...args) => {
-      if (looksComplete(args)) {
-        this.report({ event: 'goal_complete', severity: 'alert', ...this.stamp() }, args);
-      }
-    });
-    listen('subagent/end', (...args) => {
-      this.report({ event: 'subagent_complete', severity: 'info', ...this.stamp() }, args);
-    });
-
-    return () => {
-      for (const dispose of disposers) dispose();
-    };
   }
 
-  /** Counters for diagnostics; the daemon exposes them through `drdshd doctor`. */
+  /** In-process counters for diagnostics; no daemon diagnostics endpoint yet. */
   public stats(): { delivered: number; dropped: number; lastError: string | null } {
     return { delivered: this.delivered, dropped: this.dropped, lastError: this.lastError };
   }
 
-  private stamp(): { atMs: number } {
-    return { atMs: Date.now() };
-  }
-
-  /**
-   * Queues one report.
-   *
-   * `sessionRef` is derived from the harness's session argument only when it is
-   * a plain string or an object with a string `id`; anything else becomes
-   * `null` rather than a stringified object, because a stringified session would
-   * leak far more than an identifier.
-   */
-  private report(report: Report, args: readonly unknown[]): void {
+  private report(report: Report): void {
     if (!this.config.report.includes(report.event)) {
       this.dropped += 1;
       return;
     }
-    const payload: Report = { ...report, sessionRef: sessionRefOf(args) };
-    void this.post(payload);
+    void this.post(report);
   }
 
   private async post(report: Report): Promise<void> {
@@ -174,17 +138,6 @@ export class Reporter {
   }
 }
 
-/** How a harness session argument becomes an opaque handle. */
-function sessionRefOf(args: readonly unknown[]): string | null {
-  const first = args[0];
-  if (typeof first === 'string') return first;
-  if (typeof first === 'object' && first !== null) {
-    const id = (first as { id?: unknown }).id;
-    if (typeof id === 'string') return id;
-  }
-  return null;
-}
-
 /**
  * Maps a `session/event` payload to a report, or `undefined` when the event is
  * not notification-worthy.
@@ -195,19 +148,7 @@ function sessionRefOf(args: readonly unknown[]): string | null {
  * event handler.
  */
 export function classifySessionEvent(args: readonly unknown[]): Report | undefined {
-  const event = args[1];
-  if (typeof event !== 'object' || event === null) return undefined;
-  const type = (event as { type?: unknown }).type;
-  if (type !== 'turn/end') return undefined;
-  return { event: 'turn_complete', severity: 'notice', atMs: Date.now(), sessionRef: sessionRefOf(args) };
-}
-
-/** Whether a `goal/changed` payload reports completion, narrowing defensively. */
-function looksComplete(args: readonly unknown[]): boolean {
-  for (const arg of args) {
-    if (typeof arg !== 'object' || arg === null) continue;
-    const status = (arg as { status?: unknown }).status;
-    if (status === 'complete' || status === 'completed') return true;
-  }
-  return false;
+  const notification = sessionNotification(args);
+  return notification === undefined ? undefined
+    : { ...notification, severity: 'notice', atMs: Date.now() };
 }

@@ -11,12 +11,11 @@
  * ## How the assumptions are recorded
  *
  * Every entry in {@link DSH_SURFACE} names the behaviour relied on and the DSH
- * release it was verified against. `assertSupportedSurface` refuses to run
- * against a harness that does not answer as expected, so an upgrade produces a
- * loud startup error instead of a plugin that silently reports nothing — the
- * failure mode that makes remote integrations untrustworthy (§ 9.7).
+ * release it was verified against. The runtime guard checks the Cordis methods;
+ * event names and payloads require the real-harness upgrade smoke test. Cordis
+ * accepts arbitrary event names, so a static name set cannot detect an upgrade.
  *
- * ## What is relied on (verified against DSH 0.1.5-rc.2)
+ * ## What is relied on (DSH 0.1.7-rc.2)
  *
  * | Assumption | Evidence in DSH |
  * | :--- | :--- |
@@ -24,14 +23,17 @@
  * | A bundle contributes one layer via `dsh.bundle.patch` | `docs/user/develop/basic/publish.md` § The bundle manifest |
  * | `ctx.effect(fn, label)` scopes a disposable to plugin lifetime | `packages/host/webserver/src/index.ts`, `packages/client/connection/src/index.ts` |
  * | `session/event(session, event)` carries every committed session event | `packages/core/session/src/index.ts` |
- * | `approval/request` and `user-questions/request` are waterfalls | `packages/interaction/user-approval/src/types.ts` |
- * | `subagent/start`, `subagent/end`, `goal/changed`, `agent/status` exist | `packages/subagent/subagent/src/index.ts`, `packages/goal/goal/src/domain.ts`, `packages/core/agent/src/runtime-types.ts` |
+ * | Approval/question observers must return `next()`; session is `request.agent.session` | `packages/interaction/{user-approval,user-questions}/src/types.ts` |
+ * | Goal completion is `payload.change.operation === 'complete'` | `packages/goal/goal/src/domain.ts` |
+ * | `subagent/end` carries the child session id as `info.id` | `packages/subagent/subagent/src/index.ts` |
  *
  * @module
  */
 
 /** DSH release this surface was verified against. */
-export const VERIFIED_DSH_VERSION = '0.1.5-rc.2';
+export const VERIFIED_DSH_VERSION = '0.1.7-rc.2';
+/** Exact upstream source revision reviewed for this integration. */
+export const VERIFIED_DSH_REVISION = '477b4f420553e8a52c2fbccc464d7561b239c443';
 
 /**
  * The minimal shape of the Cordis context this plugin uses.
@@ -58,31 +60,33 @@ export interface DshContextLike {
    * @param listener - receives the producer's arguments positionally.
    * @returns a disposer that unsubscribes.
    */
-  on(event: string, listener: (...args: readonly unknown[]) => void): () => void;
+  on(
+    event: string,
+    listener: (...args: readonly unknown[]) => unknown,
+    options?: { readonly prepend?: boolean },
+  ): () => void;
 }
 
-/** One behaviour this project depends on, with a runtime probe. */
+/** One upstream assumption checked by the upgrade smoke test. */
 export interface SurfaceEntry {
   /** Harness event or service key that must exist. */
   readonly key: string;
   /** Why the project needs it. */
   readonly why: string;
-  /** Whether the plugin refuses to start when it is missing. */
+  /** Whether losing this event blocks compatibility acceptance. */
   readonly required: boolean;
 }
 
 /**
  * Every harness event this plugin listens to.
  *
- * `required: false` entries are best-effort: DSH may rename a diagnostic event
- * between preview releases, and losing a badge is not worth refusing to boot
- * over. `required: true` entries carry the notifications the product definition
- * calls critical, and their absence is a startup failure.
+ * Required events block upgrade acceptance. Their existence is not discoverable
+ * at runtime; the real event producers must be exercised when upgrading DSH.
  */
 export const DSH_SURFACE: readonly SurfaceEntry[] = [
   {
     key: 'session/event',
-    why: 'turn completion, tool results, and assistant messages for notifications',
+    why: 'turn completion notifications without retaining message content',
     required: false,
   },
   {
@@ -96,11 +100,6 @@ export const DSH_SURFACE: readonly SurfaceEntry[] = [
     required: true,
   },
   {
-    key: 'subagent/start',
-    why: 'subagent activity is what makes a long remote task look alive',
-    required: false,
-  },
-  {
     key: 'subagent/end',
     why: 'subagent completion is a notification-worthy milestone',
     required: false,
@@ -110,37 +109,17 @@ export const DSH_SURFACE: readonly SurfaceEntry[] = [
     why: 'goal completion is the clearest "your task is done" signal',
     required: false,
   },
-  {
-    key: 'agent/status',
-    why: 'idle/running transitions drive the remote activity indicator',
-    required: false,
-  },
 ];
 
 /**
- * Checks that the running harness answers the way {@link DSH_SURFACE} expects.
- *
- * The probe is intentionally shallow, and its limits are worth stating: Cordis
- * accepts *any* event name at runtime, so `ctx.on('typo', …)` is not an error —
- * it simply never fires. Nothing here can detect that. What this guard does catch
- * is a harness release whose documented names have been renamed wholesale, and
- * it fails at startup rather than at 3am when a notification is missed.
- *
- * Payload shapes cannot be probed either; only the upgrade test in
- * `docs/development.md` covers them, which is why `reporter.ts` narrows every
- * payload field explicitly instead of asserting.
+ * Checks the methods used to mount this plugin. This cannot check whether DSH
+ * emits our event names or payload shapes; see docs/integration/dsh-surface.md.
  *
  * @param ctx - the context to probe; must offer the methods this plugin calls.
- * @throws Error listing every missing required entry, so one startup failure
- * names all of them instead of one per restart.
+ * @throws Error when the Cordis plugin methods are unavailable.
  */
 export function assertSupportedSurface(ctx: DshContextLike): void {
   const problems: string[] = [];
-  for (const entry of DSH_SURFACE) {
-    if (entry.required && !KNOWN_EVENT_NAMES.has(entry.key)) {
-      problems.push(`${entry.key} (${entry.why})`);
-    }
-  }
   if (typeof ctx.effect !== 'function' || typeof ctx.on !== 'function') {
     problems.push('ctx.effect/ctx.on (the Cordis plugin contract itself)');
   }
@@ -153,30 +132,77 @@ export function assertSupportedSurface(ctx: DshContextLike): void {
   }
 }
 
-/** Event names without which dr.dsh refuses to start; see {@link DSH_SURFACE}. */
+/** Event names required for upgrade acceptance; see {@link DSH_SURFACE}. */
 export const REQUIRED_EVENT_NAMES: readonly string[] = DSH_SURFACE
   .filter(entry => entry.required)
   .map(entry => entry.key);
 
+/** Content-free events the rest of the plugin understands. */
+export interface HarnessNotification {
+  readonly event: 'approval_requested' | 'turn_complete' | 'goal_complete' | 'subagent_complete';
+  readonly sessionRef: string | null;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function sessionRef(value: unknown): string | null {
+  const id = typeof value === 'string' ? value : record(value)?.id;
+  return typeof id === 'string' && id.length > 0 ? id : null;
+}
+
+function agentSessionRef(value: unknown): string | null {
+  return sessionRef(record(value)?.session);
+}
+
+/** Session observers receive a Session instance followed by its committed event. */
+export function sessionNotification(args: readonly unknown[]): HarnessNotification | undefined {
+  if (record(args[1])?.type !== 'turn/end') return undefined;
+  return { event: 'turn_complete', sessionRef: sessionRef(args[0]) };
+}
+
 /**
- * Event names this bundle was verified against.
- *
- * A static set, not a probe, because Cordis accepts any event name at runtime —
- * `ctx.on('typo', …)` is not an error, it simply never fires. That silence is
- * exactly the failure this set prevents: the guard at least catches a harness
- * whose documented names have changed, and `docs/development.md` describes the
- * upgrade ritual for payload changes.
+ * Subscribe without claiming an approval/question or retaining harness payloads.
+ * Prepending ensures existing answerers cannot short-circuit our observation.
  */
-const KNOWN_EVENT_NAMES: ReadonlySet<string> = new Set([
-  'session/created',
-  'session/disposed',
-  'session/event',
-  'session/flush',
-  'approval/request',
-  'user-questions/request',
-  'subagent/start',
-  'subagent/end',
-  'goal/changed',
-  'goal/activation-changed',
-  'agent/status',
-]);
+export function observeHarness(
+  ctx: DshContextLike,
+  notify: (notification: HarnessNotification) => void,
+): () => void {
+  const disposers: (() => void)[] = [];
+  const dispose = (): void => { for (const stop of disposers.splice(0).reverse()) stop(); };
+  const observed = (notification: HarnessNotification): void => {
+    // A failing notification sink must not change DSH's task or approval outcome.
+    try { notify(notification); } catch { /* Best-effort observer only. */ }
+  };
+  try {
+    for (const event of ['approval/request', 'user-questions/request']) {
+      disposers.push(ctx.on(event, (...args) => {
+        observed({ event: 'approval_requested', sessionRef: agentSessionRef(record(args[0])?.agent) });
+        const next = args.at(-1);
+        return typeof next === 'function' ? next() : undefined;
+      }, { prepend: true }));
+    }
+    disposers.push(ctx.on('session/event', (...args) => {
+      const notification = sessionNotification(args);
+      if (notification !== undefined) observed(notification);
+    }));
+    disposers.push(ctx.on('goal/changed', (value) => {
+      const payload = record(value);
+      if (record(payload?.change)?.operation !== 'complete') return;
+      observed({ event: 'goal_complete', sessionRef: agentSessionRef(payload?.agent) });
+    }));
+    disposers.push(ctx.on('subagent/end', (value) => {
+      const id = sessionRef(record(value));
+      if (id === null) return;
+      observed({ event: 'subagent_complete', sessionRef: id });
+    }));
+  } catch (error) {
+    dispose();
+    throw error;
+  }
+  return dispose;
+}

@@ -48,7 +48,7 @@ export const inject: readonly string[] = [];
 export interface Config {
   /** Loopback URL of the local daemon's report endpoint. */
   daemonUrl: string;
-  /** Which events to report; unknown names are a startup error, not a silent no-op. */
+  /** Which event kinds to report; notifications not listed here are dropped. */
   report: readonly string[];
 }
 

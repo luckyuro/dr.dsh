@@ -4,7 +4,11 @@
 
 DSH 的 README 明确写道："Developer preview … **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**" 因此本文的目的不是"确认依赖稳定"，而是"把不稳定性关进一个可以被检查的笼子里"。
 
-核对基准：**DSH `0.1.5-rc.2`**（`package.json` 的 `version`）。
+核对基准（2026-09-26）：**DSH `0.1.7-rc.2`**，上游提交
+[`477b4f420553e8a52c2fbccc464d7561b239c443`](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443)。
+同时保留对 **`0.1.5-rc.2`** 与 **`0.1.6-alpha.2`** 的回归记录。截至核对日，官方 npm 的 `latest` 为 `0.1.5-rc.3`、
+`alpha` 为 `0.1.7-alpha.2`、`next` 为 `0.1.7-rc.2`；本次按 `next` 通道的最新预发布版验收。
+版本列表由 `npm view @deepseek-ai/dsh dist-tags --registry=https://registry.npmjs.org` 取得。
 
 > 引用约定：本文只引用**文件路径与符号名**，不引用行号——行号会随上游提交漂移，符号名可以被 `grep` 重新定位。
 
@@ -18,7 +22,7 @@ DSH 的 README 明确写道："Developer preview … **THERE WILL BE COMPATIBILI
 | 2 | 浏览器信任栅栏 | `packages/client/connection/src/browser-auth.ts` → `TOKEN_QUERY`、`COOKIE_PREFIX`、`authenticatedUrl`、`authorizeIndex`、`isAuthenticated`；`packages/client/connection/src/api-request-trust.ts` → `isTrustedApiRequest` | daemon 用令牌换 cookie，并以 loopback authority 代理 | 页面或 `/api` 全 401 | **致命** |
 | 3 | 跨进程事件通道 | `packages/api/gateway/src/stream-protocol.ts` → `REMOTE_STREAM_MUX_PATH`（`/api/remote.mux`）；`packages/api/remotes/src/remote-events.ts` → `API_REMOTE_FORWARDED_EVENTS` | 审批与提问通知不需要插件即可到达远端 | 关键通知失效 | 高 |
 | 4 | Cordis 插件与 bundle 清单 | `docs/user/develop/basic/publish.md`（bundle / profile 两种 manifest）；`packages/util/package-manifest/src/types.ts` → `DshManifest`、`DshBundleManifest` | 以 bundle 形式安装事件上报插件 | 插件无法安装或加载 | 中（插件可选） |
-| 5 | 进程内事件名 | `packages/core/session/src/index.ts` → `'session/event'`；`packages/interaction/user-approval/src/types.ts` → `'approval/request'`；`packages/interaction/user-questions/src/types.ts` → `'user-questions/request'`；`packages/subagent/subagent/src/index.ts` → `'subagent/start'`、`'subagent/end'`；`packages/goal/goal/src/domain.ts` → `'goal/changed'`；`packages/core/agent/src/runtime-types.ts` → `agent/status` | 插件订阅并转推给 daemon | 部分通知缺失（守卫会在启动时报错） | 中（插件可选） |
+| 5 | 进程内事件名及参数 | `packages/core/session/src/index.ts` → `'session/event'`；`packages/interaction/user-approval/src/types.ts` → `'approval/request'`；`packages/interaction/user-questions/src/types.ts` → `'user-questions/request'`；`packages/subagent/subagent/src/index.ts` → `'subagent/end'`；`packages/goal/goal/src/domain.ts` → `'goal/changed'` | 插件提取不含内容的事件元数据并上报 | 部分通知缺失，需真实升级测试发现 | 中（插件可选） |
 | 6 | 优雅停止 | `apps/cli/src/process-shutdown.ts`；`apps/cli/reference/README.md` | daemon 用 SIGTERM 停止 DSH，等待其自行关闭 | 停止变成强杀，可能中断会话 | 中 |
 | 7 | 本地数据布局 | `packages/util/home-paths/src/index.ts`（`$DSH_HOME`，默认 `~/.dsh`） | `doctor` 与排障文档引用路径 | 文档指引失准 | 低 |
 
@@ -69,7 +73,7 @@ dsh web: http://127.0.0.1:3080/?token=<launchToken>
 **上游行为**（三件事，缺一不可）：
 
 1. **索引与静态前端需要授权**（`packages/host/frontend-static/src/index.ts`）：未授权时返回 `401`，正文是 `dsh web authentication required; reopen the URL printed by dsh web.`
-2. **授权令牌只能换一次 cookie**（`browser-auth.ts` → `authorizeIndex`）：`GET /?token=<launchToken>` 返回 `303` + `Set-Cookie`；cookie 名为 `dsh-auth-<base64url(sha256(authority))>`，值为 `v1.<base64url(payload)>.<base64url(HMAC-SHA256)>`，属性为 `Path=/; HttpOnly; SameSite=Strict`，有效期由 `cookieMaxAgeDays` 决定（默认 **30 天**）。
+2. **授权令牌换取 cookie**（`browser-auth.ts` → `authorizeIndex`）：`GET /?token=<launchToken>` 返回 `303` + `Set-Cookie`；同一进程内令牌可以重复使用。cookie 名为 `dsh-auth-<base64url(sha256(authority))>`，值为 `v1.<base64url(payload)>.<base64url(HMAC-SHA256)>`，属性包含 `Path=/; HttpOnly; SameSite=Strict`，有效期由 `cookieMaxAgeDays` 决定（默认 **30 天**；新版还带 `Expires`）。daemon 将 cookie 值视作不透明数据。
 3. **cookie 绑定 authority**：cookie 名与签名 audience 都是请求的 Host authority；`isAuthenticated` 会同时校验 cookie 的 authority 与当前请求的 Host authority 是否一致。`/api` 另有一道 Host 栅栏（`api-request-trust.ts` → `isTrustedApiRequest`）：Host 必须是 loopback 或 `trustedHosts` 之一，且若存在 `Origin` 必须与 Host 同源，`Sec-Fetch-Site: cross-site` 直接拒绝。
 
 **实测记录（2026-09-11，DSH 0.1.5-rc.2）**：
@@ -94,7 +98,9 @@ dsh web: http://127.0.0.1:3080/?token=<launchToken>
 
 ## 4. 依赖 3 与 5：事件通道
 
-**跨进程（无需插件）**：Gateway 的 WebSocket 多路复用位于 `REMOTE_STREAM_MUX_PATH`（`/api/remote.mux`），它转发的事件是**编译期硬编码的常量列表** `API_REMOTE_FORWARDED_EVENTS`（19 项），其中包含 `approval/request`、`user-questions/request`、`api-session/*`、`goal/activation-changed`。这些事件本身就是 DSH 界面的流量，被我们原样代理即可到达远端，因此**审批与提问通知在 M0 就可用**。
+**跨进程（无需插件）**：Gateway 的 WebSocket 多路复用位于 `REMOTE_STREAM_MUX_PATH`（`/api/remote.mux`），它转发的事件是**编译期硬编码的常量列表** `API_REMOTE_FORWARDED_EVENTS`（本次核对为 27 项），其中包含 `approval/request`、`user-questions/request`、`api-session/*`、`goal/activation-changed`，以及 `plugin-manager/changed`、`plugin-manager/install-log`、`plugin-manager/install-state`、`settings/document-updated`。这些事件本身就是 DSH 界面的流量，被我们原样代理即可到达远端，因此**审批与提问通知在 M0 就可用**。新版插件管理与设置页也使用这条通道，无需复制它们的业务实现或增加 dr.dsh wire 消息。
+
+2026-09-26 的 `0.1.7-rc.2` 验收确认了这条通道经加密隧道建立并返回 `$events` 就绪项；未在该版本单独注入审批或提问事件验证浏览器端到端交付。
 
 该列表由 `registerRemoteEvents` 注册，且是单例：第三方插件**无法扩展**它。这解释了我们为什么不去尝试"用插件把 session/event 加进转发列表"。
 
@@ -109,7 +115,19 @@ dsh web: http://127.0.0.1:3080/?token=<launchToken>
 
 我们的 patch 因此只有一行（`plugins/dr.dsh/cordis.patch.yml`），这是一个需要保持的特性：patch 越薄，DSH 升级能打破它的方式越少。
 
-**版本守卫**：`engines.dsh` 声明了兼容范围，但上游目前**不校验**它。因此插件在启动时自己检查：必需事件名必须出现在它的已知集合里，`ctx.on`/`ctx.effect` 必须存在，否则抛出带全部缺失项的启动错误。局限也写在代码里：Cordis 接受任意事件名，`ctx.on('typo', …)` 不会报错，只会永不触发——这一点无法在运行时探测，只能靠升级测试覆盖。
+**事件适配**集中在 `plugins/dr.dsh/src/dsh-surface.ts`，`reporter.ts` 只接收事件种类和会话标识：
+
+| 上游事件 | 已核对的形状与处理 |
+| :--- | :--- |
+| `approval/request`、`user-questions/request` | `(request, next)`；会话标识来自 `request.agent.session.id`，没有 agent 时为 `null`。观察者提前注册，发送通知后必须原样返回 `next()`，保留回答者的结果与异常 |
+| `session/event` | `(session, event)`；仅 `event.type === 'turn/end'` 上报，使用 `session.id` |
+| `goal/changed` | 单个 `{ agent, change }` 参数；仅 `change.operation === 'complete'` 上报，不能把其他操作误当完成 |
+| `subagent/end` | 单个 `info` 参数；`info.id` 是子会话标识，丢弃 `lastAssistantMessage` 等内容 |
+
+**版本守卫**：`engines.dsh` 精确列出已验证的三个预发布版本（普通 `>=0.1.5 <0.2` 不包含它们），
+但上游目前**不校验**此字段。插件启动只检查 `ctx.on`/`ctx.effect` 是否存在。
+Cordis 接受任意事件名，静态集合无法探测运行中的 DSH 是否仍产生这些事件；真实服务的升级测试才是验收依据。
+观察者的发送异常被隔离，不能改变 DSH 的任务或审批结果；未知 payload 不作内容猜测。
 
 ---
 
@@ -135,7 +153,7 @@ dsh web: http://127.0.0.1:3080/?token=<launchToken>
 | :--- | :--- | :--- |
 | daemon 自己监督的进程状态 | 完全可用 | **是**：`Status` 的唯一来源 |
 | HTTP 探测 `127.0.0.1:<p>` | 完全可用 | 是（健康检查） |
-| 插件上报的事件 | 需要插件 | 是（可选增强） |
+| 插件上报的事件 | 需要插件及报告接收器 | 插件已适配；daemon `/report` 接收与通知推送尚未交付 |
 | `$DSH_HOME/sessions/**` 会话日志 | 默认 zstd 校验帧压缩，外部按行读不可用 | **否**：解析持久化格式会让上游的格式变更直接打断我们，且要求用户改压缩配置 |
 | DSH 的 credentials 文件 | 存在，但是内部格式与用户私有数据 | **否**：不读 |
 | DSH 的日志文件 | 不存在（日志即 stdout/stderr） | 由 daemon 捕获子进程 stdout/stderr 并写入自己的日志 |
@@ -146,15 +164,73 @@ dsh web: http://127.0.0.1:3080/?token=<launchToken>
 
 DSH 每次版本变更后，按顺序做这七件事，并把结果更新到本文：
 
-1. **跑一遍 `drdshd doctor`**，确认能发现 DSH、能绑定 loopback 端口。
+1. **跑一遍 `drdsh daemon doctor`**，确认能发现 DSH、能绑定 loopback 端口。
 2. **启动一次 `dsh web --no-open`，人工确认就绪行格式**（前缀 `dsh web: `、`?token=` 存在、LAN 追加部分仍以空格分隔）。若格式变化，更新解析逻辑与本文 § 2。
 3. **确认令牌换 cookie 仍可用**：`GET /?token=…` 仍返回 `303` + `Set-Cookie`，cookie 名仍以 `dsh-auth-` 开头。若变化，更新本文 § 3。
 4. **确认 `/api` 的 Host 栅栏未放宽**：用非 loopback Host 请求 `/api/...`，必须仍被拒绝。若被放宽，需要在 `docs/security.md` 中重新评估"鉴权不被绕过"这一保证。
 5. **确认跨进程事件列表**：`API_REMOTE_FORWARDED_EVENTS` 是否仍包含 `approval/request` 与 `user-questions/request`。若移出，关键通知将依赖插件，需要重新评估插件的必需性。
-6. **跑插件的升级测试**：安装 bundle，观察 `session/event` 与 `approval/request` 的 payload 形状是否仍能被 `reporter.ts` 的窄化逻辑识别（无法识别时必须静默丢弃而不是抛异常）。
-7. **更新本文的核对基准版本号**，并在 PR 描述中写出上面每一步的实际结果。
+6. **跑插件的升级测试**：执行 `pnpm run smoke:dsh-upgrade /absolute/path/to/dsh`；安装真实 bundle，通过服务产生审批、提问、会话结束和目标完成，验证 `dsh-surface.ts` 的适配保留回答且不泄露内容，然后卸载。脚本使用临时 `DSH_HOME`，不改用户的 profile；插件安装需要可用的包管理器与网络。
+7. **跑浏览器与旧版回归**，更新本文的版本、上游提交、插件 `engines.dsh` 及 smoke 的版本清单，并记录实际结果。新增页面应在真实隧道内检查，不能仅凭 HTTP 200 宣称可用。
 
 **如果没有时间做全套**：至少做 2、3、5——这三条失效会让产品完全不可用，而它们的检查各只需一条命令。
+
+### 2026-09-20 兼容验收（历史记录）
+
+两版均以官方 npm 包在独立目录安装；用临时 `DSH_HOME` 执行测试。源码分别对照官方 tag
+[`dsh-v0.1.5-rc.2`（`fb2c4b9e698e30edb738bca4cf0618587db7d203`）](https://github.com/deepseek-ai/deepseek-harness/tree/fb2c4b9e698e30edb738bca4cf0618587db7d203)
+与 [`dsh-v0.1.6-alpha.2`（`ddefc45fbc7f8e46dd73185e68295696d1297887`）](https://github.com/deepseek-ai/deepseek-harness/tree/ddefc45fbc7f8e46dd73185e68295696d1297887)。
+
+```sh
+# DSH_BIN 指向待验收版本；DSH_HOME 使用一个独立的测试目录。
+DSH_BIN=/absolute/path/to/dsh DSH_HOME=/tmp/drdsh-dsh-test \
+  cargo test -p dr-dsh-daemon --test real_dsh -- --ignored --test-threads=1
+DSH_BIN=/absolute/path/to/dsh DSH_HOME=/tmp/drdsh-dsh-test \
+  cargo test -p dr-dsh-daemon --test acceptance -- --ignored --test-threads=1
+pnpm run smoke:dsh-upgrade /absolute/path/to/dsh
+```
+
+| 检查 | `0.1.5-rc.2` | `0.1.6-alpha.2` |
+| :--- | :--- | :--- |
+| `drdsh daemon doctor --dsh <path>`（程序版本、loopback 端口） | 通过 | 通过 |
+| 就绪行、令牌换 cookie、JSON RPC、Host/端口绑定、优雅退出（`real_dsh`，3 项） | 通过 | 通过 |
+| 真实 DSH 首页经中继加密隧道返回、直连 DSH 的实时 mux 升级成功（当时的 `acceptance`，2 项） | 通过 | 通过 |
+| bundle 安装/移除、审批与提问回答保留、报告元数据（`dsh-upgrade-smoke`，6 项） | 通过 | 通过 |
+| 真实 Chrome：配对、独立界面页、插件管理与设置读取、隧道内 `$events` 就绪 | 本次未单独跑浏览器 | 通过，控制台无错误 |
+
+插件 smoke 暂时关闭该测试 profile 的 `api-remotes`，让本地测试回答者处理请求，避免等待未连接的浏览器。
+子代理完成仅以符合上游类型的构造消息走真实事件总线；没有运行模型或真实子代理任务。
+`/report` 使用本地测试接收器；daemon 的通知接收与推送仍未交付，不能把插件通过等同于推送端到端通过。
+浏览器验证未配置模型凭据，因此不覆盖模型回复、长任务或真实工具审批；这类验收仍使用 `scripts/browser-task-smoke.mjs --full`。
+这些是当时环境中的结果；2026-09-26 临时重新安装 `0.1.5-rc.2` 时，上游插件树在启动阶段加载失败，未进入 dr.dsh 隧道断言，因此本次没有重新确认该旧版。旧版的 npm 传递依赖解析结果可能与历史验收时不同。
+
+这次发现并修复了 daemon `post_json` 缺少 `Content-Type: application/json` 的问题：新版 RPC 网关会拒绝没有媒体类型的请求。
+审批/提问监听器补齐 `next()`，目标完成改读 `change.operation`，会话标识改从各事件的真实结构提取。
+
+### 2026-09-26 兼容验收（DSH 0.1.7-rc.2）
+
+以官方 npm 包在独立目录安装，`DSH_HOME` 指向临时目录；源码对照提交
+[`477b4f420553e8a52c2fbccc464d7561b239c443`](https://github.com/deepseek-ai/deepseek-harness/tree/477b4f420553e8a52c2fbccc464d7561b239c443)。
+
+```sh
+cargo run -p dr-dsh-cli -- daemon doctor --dsh /absolute/path/to/dsh
+DSH_BIN=/absolute/path/to/dsh DSH_HOME=/tmp/drdsh-dsh-test \
+  cargo test -p dr-dsh-daemon --test real_dsh -- --ignored --test-threads=1
+DSH_BIN=/absolute/path/to/dsh DSH_HOME=/tmp/drdsh-dsh-test \
+  cargo test -p dr-dsh-daemon --test acceptance -- --ignored --test-threads=1
+pnpm run smoke:dsh-upgrade /absolute/path/to/dsh
+```
+
+| 检查 | 结果 |
+| :--- | :--- |
+| `drdsh daemon doctor`（版本识别、loopback 端口） | 通过；识别 `0.1.7-rc.2`，端口可用 |
+| 真实 DSH 契约（`real_dsh`，3 项） | 通过；就绪行、令牌换 cookie、JSON RPC、Host/端口绑定、优雅退出；带有效 cookie 的非 loopback Host 请求 `/api/session/list` 返回 403 |
+| 真实 DSH 接入（`acceptance`，2 项） | 通过；经 relay 加密隧道的首页返回 34240 字节，`/api/remote.mux` 升级及 `$events` 就绪项双向穿过隧道；另有直连 DSH 的 mux 契约检查 |
+| 插件安装与事件适配（`dsh-upgrade-smoke`，6 项） | 通过；bundle 安装/移除、审批与提问回答保留、仅上报内容无关元数据 |
+| 真实浏览器渲染 | 未运行；本机未安装 smoke 脚本所需 `playwright-core`，且脚本预期的 Chromium 二进制不存在。隧道内 HTTP 与 WebSocket 往返已由 `acceptance` 验证 |
+
+插件 smoke 关闭测试 profile 的 `api-remotes`，由本地测试回答者处理审批与提问；`/report` 指向临时接收器，不代表 daemon 通知推送已交付。
+真实浏览器渲染、模型回复与真实工具审批尚未在这个版本单独验收。
+`acceptance` 另有一条非致命的测试审计目录提示（`target/audit-unused` 不存在）；本次隧道断言通过，但该用例未验证审计文件落盘。
 
 ---
 

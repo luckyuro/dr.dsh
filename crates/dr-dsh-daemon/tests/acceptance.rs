@@ -40,6 +40,8 @@
 //! 3. A proxied `GET /` returns DSH's **own** index, proven by the boot global that only
 //!    DSH injects, with the authority and cookie substituted by the daemon.
 //! 4. The relay never sees the page: the client's traffic is opaque frames.
+//! 5. The real DSH mux accepts an upgrade and returns the `$events` ready item
+//!    through the same sealed relay path.
 
 use std::path::PathBuf;
 use std::process::Stdio;
@@ -265,6 +267,62 @@ async fn a_remote_client_reaches_the_real_dsh_through_a_relay()
         body.len()
     );
 
+    // The index alone can render a snapshot while every live update is broken.
+    // Exercise the real mux over the same encrypted carrier, in both directions.
+    let mut payload = Vec::new();
+    message::encode(
+        &ProxyMessage::WsOpen(message::WsOpen {
+            id: 2,
+            target: "/api/remote.mux".to_owned(),
+            headers: Vec::new(),
+        }),
+        &mut payload,
+    )?;
+    client.send(2, &payload).await?;
+    let opened = tokio::time::timeout(EXCHANGE_PATIENCE, client.next_inbound())
+        .await
+        .map_err(|_| "the daemon never answered the mux upgrade through the relay")??;
+    match message::decode(&opened.payload)? {
+        ProxyMessage::WsOpened(head) => {
+            assert_eq!(opened.stream_id, 2);
+            assert_eq!(head.id, 2);
+            assert_eq!(head.status, 101, "DSH must accept the mux upgrade");
+        }
+        other => return Err(format!("expected a mux upgrade, got {other:?}").into()),
+    }
+
+    let mut payload = Vec::new();
+    message::encode(
+        &ProxyMessage::WsData(message::WsData {
+            id: 2,
+            frame: message::WsFrame::Text(
+                serde_json::json!({
+                    "type": "open", "streamId": "dr.dsh-upgrade-tunnel", "endpoint": "$events",
+                    "payload": { "args": {} }
+                })
+                .to_string(),
+            ),
+        }),
+        &mut payload,
+    )?;
+    client.send(2, &payload).await?;
+    let answer = tokio::time::timeout(EXCHANGE_PATIENCE, client.next_inbound())
+        .await
+        .map_err(|_| "DSH's mux did not answer through the relay")??;
+    let ProxyMessage::WsData(data) = message::decode(&answer.payload)? else {
+        return Err("expected a mux frame through the relay".into());
+    };
+    assert_eq!(answer.stream_id, 2);
+    assert_eq!(data.id, 2);
+    let message::WsFrame::Text(text) = data.frame else {
+        return Err("DSH's mux did not return a JSON text frame".into());
+    };
+    let response: serde_json::Value = serde_json::from_str(&text)?;
+    assert_eq!(response["type"], "item");
+    assert_eq!(response["streamId"], "dr.dsh-upgrade-tunnel");
+    assert_eq!(response["value"]["type"], "ready");
+    eprintln!("DSH's live event source answered through the encrypted relay");
+
     client.close().await?;
     daemon.abort();
     supervisor.stop().await?;
@@ -308,21 +366,37 @@ async fn the_live_session_feed_upgrades_against_the_real_dsh()
     let socket = dsh.upgrade("/api/remote.mux", &[]).await?;
     eprintln!("DSH accepted the upgrade to /api/remote.mux");
 
-    // A frame written to the live feed must not kill the connection. The exact protocol
-    // DSH speaks on this socket belongs to DSH (and to M2's notification work); what is
-    // asserted here is only that it is a working bidirectional socket after the handshake.
+    // A successful upgrade alone can hide a changed mux protocol. Use the same
+    // opening exchange as DSH's client and require the event source's ready item.
     let (mut reader, mut writer) = socket.split();
     writer
-        .send(dr_dsh_daemon::dsh::WsFrame::Text("{}".to_owned()))
+        .send(dr_dsh_daemon::dsh::WsFrame::Text(
+            serde_json::json!({
+                "type": "open", "streamId": "dr.dsh-upgrade", "endpoint": "$events",
+                "payload": { "args": {} }
+            })
+            .to_string(),
+        ))
         .await
         .map_err(|error| format!("cannot write to the live feed: {error}"))?;
-    match tokio::time::timeout(Duration::from_secs(5), reader.next()).await {
-        // A frame back: the feed answered.
-        Ok(Ok(Some(_))) => eprintln!("the live feed answered"),
-        // Silence: DSH buffered or ignored it. Also fine — the socket is alive.
-        Err(_) => eprintln!("the live feed stayed silent, which is its choice to make"),
-        Ok(Ok(None)) => eprintln!("DSH closed the feed, which an unknown message may explain"),
-        Ok(Err(error)) => eprintln!("the feed reported {error}"),
+    let frame = tokio::time::timeout(Duration::from_secs(5), reader.next())
+        .await
+        .map_err(|_| "DSH event source did not become ready; review the upstream mux contract")??
+        .ok_or("DSH closed the event source before readiness; review the upstream mux contract")?;
+    let dr_dsh_daemon::dsh::WsFrame::Text(text) = frame else {
+        return Err(
+            "DSH event source changed from JSON text; review the upstream mux contract".into(),
+        );
+    };
+    let response: serde_json::Value = serde_json::from_str(&text)?;
+    if response["type"] != "item"
+        || response["streamId"] != "dr.dsh-upgrade"
+        || response["value"]["type"] != "ready"
+    {
+        return Err(
+            "DSH event source did not acknowledge readiness; review the upstream mux contract"
+                .into(),
+        );
     }
 
     supervisor.stop().await?;

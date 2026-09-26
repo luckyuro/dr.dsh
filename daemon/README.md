@@ -21,7 +21,9 @@ The [relay](../relay/README.md) distributes the browser client (PWA) and forward
 ## Prerequisites
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) installed and configured, with local tasks working.
-  The integration baseline is DSH **`0.1.5-rc.2`**; check compatibility after upstream updates.
+  The current integration check covers DSH **`0.1.7-rc.2`**; **`0.1.5-rc.2`** and
+  **`0.1.6-alpha.2`** have historical checks. See the
+  [compatibility record](../docs/integration/dsh-surface.md) after upstream updates.
 - Node.js 24+ (or 22.19+ on the 22.x line) for DSH. Rust and a compiler are only needed for source builds.
   Installing the base daemon does not require pnpm.
 - A macOS desktop login or Linux `systemctl --user` session. On Windows, use WSL2 with systemd enabled

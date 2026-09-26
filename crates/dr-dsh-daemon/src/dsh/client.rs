@@ -428,7 +428,16 @@ impl DshClient {
         body: &str,
     ) -> Result<DshResponse, DshClientError> {
         let target = format!("{}{}", self.base_url, path_and_query);
-        self.send(Method::POST, &target, Some(body)).await
+        // Current DSH rejects RPC bodies without the JSON media type before
+        // decoding the envelope, even if the payload itself is valid JSON.
+        self.finish(
+            Request::builder()
+                .method(Method::POST)
+                .uri(target)
+                .header(header::CONTENT_TYPE, "application/json"),
+            Some(body.as_bytes().to_vec()),
+        )
+        .await
     }
 
     /// Forwards one proxied request, preserving the client's headers.
@@ -601,6 +610,35 @@ impl DshClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn json_posts_declare_the_media_type_and_keep_the_body()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let addr = listener.local_addr()?;
+        let app = axum::Router::new().route(
+            "/api/session/list",
+            axum::routing::post(|headers: hyper::HeaderMap, body: Bytes| async move {
+                if headers
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|v| v.to_str().ok())
+                    != Some("application/json")
+                {
+                    return (StatusCode::UNSUPPORTED_MEDIA_TYPE, Bytes::new());
+                }
+                (StatusCode::OK, body)
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let result = DshClient::new(&format!("http://{addr}"))?
+            .post_json("/api/session/list", r#"{"payload":{"args":[{}]}}"#)
+            .await;
+        server.abort();
+        let response = result?;
+        assert_eq!(response.status, StatusCode::OK);
+        assert_eq!(response.text(), r#"{"payload":{"args":[{}]}}"#);
+        Ok(())
+    }
 
     #[test]
     fn a_client_needs_an_absolute_http_authority() {

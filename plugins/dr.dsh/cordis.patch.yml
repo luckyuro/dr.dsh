@@ -5,7 +5,7 @@
 # break, so it should stay small enough to review in one glance.
 #
 # Install with:
-#   sh install.sh plugin   # from the dr.dsh repository root
+#   dsh plugin --profile web add /absolute/path/to/dr.dsh/plugins/dr.dsh
 # which appends this bundle to `dsh.profile.bundles`. Verify with:
 #   dsh --profile web --dump-config   # shows a "# == @dr.dsh/dsh-plugin" layer
 - insert:
