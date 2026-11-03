@@ -71,7 +71,7 @@ pub struct ProxyService {
     /// upgraded connection outlives the message that opened it, so its sender has to
     /// live somewhere until the connection ends. Behind a `Mutex` because `handle` takes
     /// `&self`: many requests are in flight at once and each writes its own response.
-    sockets: Arc<std::sync::Mutex<std::collections::HashMap<u64, mpsc::Sender<WsFrame>>>>,
+    sockets: Arc<std::sync::Mutex<std::collections::HashMap<u64, SocketEntry>>>,
 }
 
 impl ProxyService {
@@ -140,10 +140,6 @@ impl ProxyService {
             // told why through a `Failure` message and may reuse the stream.
             ProxyMessage::RequestStart(head) => {
                 let id = head.id;
-                eprintln!(
-                    "PROXY request stream={stream_id} id={id} {} {}",
-                    head.method, head.target
-                );
                 if let Err(error) = self.perform(stream_id, head, outbox).await {
                     // Everything that can go wrong here is something the *client* can act
                     // on — a target it should not have asked for, a malformed body, a DSH
@@ -168,11 +164,14 @@ impl ProxyService {
                 // A frame for a connection this daemon does not have. Most likely the
                 // upgrade was refused, and the client kept writing; saying so is better
                 // than silently dropping frames it believes are being delivered.
-                let sender = lock_sockets(&self.sockets).get(&data.id).cloned();
+                let sender = lock_sockets(&self.sockets)
+                    .get(&data.id)
+                    .filter(|entry| entry.owner.same_channel(outbox))
+                    .map(|entry| entry.frames.clone());
                 match sender {
                     Some(sender) => {
                         if sender.send(data.frame).await.is_err() {
-                            lock_sockets(&self.sockets).remove(&data.id);
+                            self.registry_handle().remove(data.id, outbox);
                         }
                         Ok(true)
                     }
@@ -187,9 +186,14 @@ impl ProxyService {
             ProxyMessage::WsClose => {
                 // The client is ending every websocket it holds on this stream.
                 let mut sockets = lock_sockets(&self.sockets);
-                for (_, sender) in sockets.drain() {
-                    let _ = sender.try_send(WsFrame::Close);
-                }
+                sockets.retain(|_, entry| {
+                    if entry.owner.same_channel(outbox) {
+                        let _ = entry.frames.try_send(WsFrame::Close);
+                        false
+                    } else {
+                        true
+                    }
+                });
                 Ok(true)
             }
             ProxyMessage::ResponseStart(_)
@@ -298,7 +302,16 @@ impl ProxyService {
         .await?;
 
         let (frames_tx, mut frames_rx) = mpsc::channel::<WsFrame>(WS_QUEUE);
-        lock_sockets(&self.sockets).insert(open.id, frames_tx);
+        if outbox.is_closed() {
+            return Err(ProxyError::Carrier("the carrier is gone".to_owned()));
+        }
+        lock_sockets(&self.sockets).insert(
+            open.id,
+            SocketEntry {
+                frames: frames_tx,
+                owner: outbox.clone(),
+            },
+        );
         let (mut reader, mut writer) = connection.split();
 
         // DSH → client.
@@ -309,7 +322,14 @@ impl ProxyService {
             tokio::spawn(async move {
                 // `while let` rather than `loop`: the only reason to stop is DSH ending
                 // the connection, which `next` reports as `None`.
-                while let Ok(Some(frame)) = reader.next().await {
+                loop {
+                    let frame = tokio::select! {
+                        frame = reader.next() => frame,
+                        () = outbox.closed() => break,
+                    };
+                    let Ok(Some(frame)) = frame else {
+                        break;
+                    };
                     let message = ProxyMessage::WsData(WsData {
                         id,
                         frame: from_dsh(frame),
@@ -322,7 +342,7 @@ impl ProxyService {
                         break;
                     }
                 }
-                registry.remove(id);
+                registry.remove(id, &outbox);
                 let mut payload = Vec::new();
                 if encode(
                     &ProxyMessage::WsData(WsData {
@@ -340,8 +360,16 @@ impl ProxyService {
 
         // Client → DSH. Ends when the socket is removed from the registry, which drops
         // this receiver's only sender.
+        let carrier = outbox.clone();
         let to_dsh = tokio::spawn(async move {
-            while let Some(frame) = frames_rx.recv().await {
+            loop {
+                let frame = tokio::select! {
+                    frame = frames_rx.recv() => frame,
+                    () = carrier.closed() => break,
+                };
+                let Some(frame) = frame else {
+                    break;
+                };
                 let ending = frame == WsFrame::Close;
                 if writer.send(to_dsh(frame)).await.is_err() || ending {
                     break;
@@ -441,12 +469,22 @@ fn request_body(head: &RequestHead) -> Result<Vec<u8>, ProxyError> {
 /// lifetime tangle that turns a leak into a hang.
 #[derive(Debug, Clone)]
 struct SocketRegistry {
-    sockets: Arc<std::sync::Mutex<std::collections::HashMap<u64, mpsc::Sender<WsFrame>>>>,
+    sockets: Arc<std::sync::Mutex<std::collections::HashMap<u64, SocketEntry>>>,
+}
+
+#[derive(Debug)]
+struct SocketEntry {
+    frames: mpsc::Sender<WsFrame>,
+    owner: mpsc::Sender<Outbound>,
 }
 
 impl SocketRegistry {
-    fn remove(&self, id: u64) {
-        if let Ok(mut sockets) = self.sockets.lock() {
+    fn remove(&self, id: u64, owner: &mpsc::Sender<Outbound>) {
+        if let Ok(mut sockets) = self.sockets.lock()
+            && sockets
+                .get(&id)
+                .is_some_and(|entry| entry.owner.same_channel(owner))
+        {
             sockets.remove(&id);
         }
     }
@@ -457,8 +495,8 @@ impl SocketRegistry {
 /// Poisoning means another request panicked while holding the lock; recovering keeps that
 /// failure as the reported one instead of turning every later request into a panic.
 fn lock_sockets(
-    sockets: &std::sync::Mutex<std::collections::HashMap<u64, mpsc::Sender<WsFrame>>>,
-) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, mpsc::Sender<WsFrame>>> {
+    sockets: &std::sync::Mutex<std::collections::HashMap<u64, SocketEntry>>,
+) -> std::sync::MutexGuard<'_, std::collections::HashMap<u64, SocketEntry>> {
     sockets
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -510,6 +548,8 @@ fn upstream_reason(error: &crate::dsh::DshClientError) -> String {
 /// rewritten, because accepting one would mean the client had named a host — and the
 /// host is the one thing this proxy must decide for itself. A traversal sequence is
 /// refused for the same reason: it is an attempt to leave the origin the daemon chose.
+/// Local plugin management remains inaccessible through the daemon's authenticated
+/// DSH connection, including path spellings an upstream router could normalize.
 ///
 /// # Errors
 ///
@@ -526,17 +566,123 @@ pub fn validate_target(target: &str) -> Result<String, ProxyError> {
             "the target must not begin with //".to_owned(),
         ));
     }
-    if target.contains("..") || target.contains('\\') {
+    if target
+        .bytes()
+        .any(|byte| byte.is_ascii_control() || byte == b' ')
+    {
         return Err(ProxyError::Refused(
-            "the target must not contain .. or \\".to_owned(),
+            "the target must not contain whitespace or control characters; encode ordinary spaces in DSH paths".to_owned(),
         ));
     }
-    if target.contains('\r') || target.contains('\n') || target.contains(' ') {
+    if target.contains('#') {
         return Err(ProxyError::Refused(
-            "the target must not contain whitespace".to_owned(),
+            "the target must not contain a URL fragment; send only the DSH path and query"
+                .to_owned(),
         ));
     }
-    Ok(target.to_owned())
+
+    // Query data does not select a route. Inspect decoded paths only, and forward
+    // the original target so ordinary encoded asset names retain their meaning.
+    let path = target.split_once('?').map_or(target, |(path, _)| path);
+    let mut path = path.as_bytes().to_vec();
+    const MAX_PATH_DECODINGS: usize = 8;
+    let mut remaining = MAX_PATH_DECODINGS;
+    loop {
+        validate_path_layer(&path)?;
+        let Some(decoded) = decode_path_layer(&path, remaining == MAX_PATH_DECODINGS)? else {
+            return Ok(target.to_owned());
+        };
+        if remaining == 0 {
+            return Err(ProxyError::Refused(
+                "the DSH path has too many nested URL escapes; use a directly encoded path"
+                    .to_owned(),
+            ));
+        }
+        path = decoded;
+        remaining -= 1;
+    }
+}
+
+fn validate_path_layer(path: &[u8]) -> Result<(), ProxyError> {
+    if path.starts_with(b"//")
+        || path
+            .iter()
+            .any(|byte| byte.is_ascii_control() || *byte == b'\\')
+    {
+        return Err(ProxyError::Refused(
+            "the DSH path must not contain encoded authority prefixes, backslashes or control characters; use a plain origin-form path".to_owned(),
+        ));
+    }
+
+    // WHATWG URL removes dot segments before DSH selects a route. Decoding also
+    // covers reserved-name spellings a future router might otherwise reinterpret.
+    let mut segments = Vec::new();
+    for segment in path.split(|byte| *byte == b'/') {
+        match segment {
+            b"" | b"." => {}
+            b".." => {
+                segments.pop();
+            }
+            _ => segments.push(segment),
+        }
+    }
+    if segments
+        .first()
+        .is_some_and(|segment| *segment == b"_drdsh")
+    {
+        return Err(ProxyError::Refused(
+            "remote access to local daemon management is disabled; open the management page in the local DSH browser".to_owned(),
+        ));
+    }
+    if path
+        .split(|byte| *byte == b'/')
+        .any(|segment| segment == b"..")
+    {
+        return Err(ProxyError::Refused(
+            "the DSH path must not contain parent-directory segments; use its canonical path"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn decode_path_layer(path: &[u8], original: bool) -> Result<Option<Vec<u8>>, ProxyError> {
+    let mut decoded = Vec::with_capacity(path.len());
+    let mut escaped = false;
+    let mut cursor = 0;
+    while cursor < path.len() {
+        if path[cursor] == b'%' {
+            let value = path
+                .get(cursor + 1..cursor + 3)
+                .and_then(|pair| Some(hex_digit(pair[0])? * 16 + hex_digit(pair[1])?));
+            if let Some(value) = value {
+                decoded.push(value);
+                cursor += 3;
+                escaped = true;
+                continue;
+            }
+            if original {
+                return Err(ProxyError::Refused(
+                    "the DSH path contains an invalid URL escape; encode each percent sign as %25"
+                        .to_owned(),
+                ));
+            }
+            // A decoded %25 can be a literal filename character, not another
+            // escape. Preserve it while still inspecting any valid nested escapes.
+        }
+        decoded.push(path[cursor]);
+        cursor += 1;
+    }
+    Ok(escaped.then_some(decoded))
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -547,7 +693,22 @@ mod tests {
 
     #[test]
     fn origin_form_targets_are_accepted() -> TestResult {
-        for target in ["/", "/index.html", "/api/session/list?limit=5", "/a/b/c"] {
+        for target in [
+            "/",
+            "/index.html",
+            "/api/session/list?limit=5",
+            "/a/b/c",
+            "/assets/asset..js",
+            "/assets/my%20file.js",
+            "/assets/100%25.svg",
+            "/assets/%E4%B8%AD%E6%96%87.js",
+            "/assets/a%3Fb%23c.js",
+            "/assets/%2525.svg",
+            "/_drdsh-other",
+            "/nested/_drdsh/manage",
+            "/ordinary?next=/_drdsh/manage",
+            "/ordinary?next=/%255fdrdsh/manage&name=../a%2fb\\c",
+        ] {
             assert_eq!(validate_target(target)?, target);
         }
         Ok(())
@@ -575,9 +736,73 @@ mod tests {
             "/a\\b",
             "/a b",
             "/a\r\nHost: evil",
+            "/\t_drdsh/manage",
+            "/a\0b",
+            "/a\u{7f}b",
+            "/ordinary?control=\t",
+            "/a#fragment",
+            "/ordinary?query#fragment",
+            "/%2fexample.com",
+            "/%5c_drdsh/manage",
+            "/a/%00b",
+            "/a/%7fb",
+            "/a/%250ab",
+            "/a/%2e%2e/b",
+            "/a/.%2e/b",
+            "/a/%252e%252e/b",
+            "/a/%",
+            "/a/%2",
+            "/a/%xy",
         ] {
             assert!(validate_target(target).is_err(), "{target}");
         }
+    }
+
+    #[test]
+    fn local_management_paths_are_refused_after_each_normalization() -> TestResult {
+        for target in [
+            "/_drdsh",
+            "/_drdsh/",
+            "/_drdsh/manage",
+            "/_drdsh/manage?token=private",
+            "/./_drdsh/manage",
+            "/%2e/_drdsh/manage",
+            "/a/%2e%2e/_drdsh/manage",
+            "/a/.%2e/_drdsh/manage",
+            "/a/%2e./_drdsh/manage",
+            "/.%2f_drdsh/manage",
+            "/.%2f%2f_drdsh/manage",
+            "/%5fdrdsh/manage",
+            "/%5Fdrdsh/manage",
+            "/_drdsh%2fmanage",
+            "/%255fdrdsh/manage",
+            "/a/%252e%252e/%255fdrdsh/manage",
+        ] {
+            let error = validate_target(target)
+                .err()
+                .ok_or("management path was accepted")?;
+            assert!(
+                error.to_string().contains("local daemon management"),
+                "{target}: {error}"
+            );
+            assert!(!error.to_string().contains("private"));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn excessive_nested_escapes_are_refused_even_for_an_ordinary_path() -> TestResult {
+        let mut path = "/assets/%61.js".to_owned();
+        for _ in 1..8 {
+            path = path.replace('%', "%25");
+        }
+        assert_eq!(validate_target(&path)?, path);
+        path = path.replace('%', "%25");
+        let error = validate_target(&path)
+            .err()
+            .ok_or("a ninth decoding was skipped")?;
+        assert!(error.to_string().contains("too many nested URL escapes"));
+        Ok(())
     }
 
     #[tokio::test]

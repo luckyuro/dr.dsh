@@ -245,6 +245,7 @@ export class ResponseCollector {
    * the daemon answered a different request on this stream.
    */
   public absorb(message: ProxyInbound): void {
+    if (this.isComplete) return;
     switch (message.kind) {
       case 'responseStart':
         this.head = { id: message.id, status: message.status, headers: message.headers };
@@ -261,15 +262,24 @@ export class ResponseCollector {
         }
         this.ended = true;
         this.settled = { head: this.head, body: concat(this.chunks) };
+        this.chunks.length = 0;
         this.resolve?.(this.settled);
         return;
       case 'failure':
-        this.failure = message.reason;
-        this.reject?.(new TunnelError(message.reason));
+        this.cancel(message.reason);
         return;
       default:
         return;
     }
+  }
+
+  /** Releases a partial body as soon as its caller or carrier goes away. */
+  public cancel(reason: string): void {
+    if (this.isComplete) return;
+    this.failure = reason;
+    this.chunks.length = 0;
+    this.head = null;
+    this.reject?.(new TunnelError(reason));
   }
 
   /** Whether the exchange is over, for either reason. */
@@ -312,18 +322,49 @@ export async function request(
   tunnel: Tunnel,
   streamId: number,
   encoded: Uint8Array<ArrayBuffer>,
+  signal?: AbortSignal,
 ): Promise<Response> {
+  if (signal?.aborted) throw new TunnelError('the interface request was cancelled because its worker route ended');
   const collector = new ResponseCollector();
+  let ended = false;
+  let needsDrain = false;
+  const aborted = () => {
+    if (collector.isComplete) return;
+    needsDrain = true;
+    collector.cancel('the interface request was cancelled because its worker route ended');
+  };
   const stop = tunnel.on(streamId, payload => {
     const message = decodeMessage(payload);
     if (message !== undefined) collector.absorb(message);
   });
+  const stopClosed = tunnel.onClosed(reason => { ended = true; collector.cancel(reason); });
+  signal?.addEventListener('abort', aborted, { once: true });
+  const response = collector.response();
   try {
-    await tunnel.send(streamId, encoded);
-    return await collector.response();
+    // Cancellation must also release a request queued behind an unfinished encryption.
+    await Promise.race([tunnel.send(streamId, encoded), response]);
+    return await response;
   } finally {
+    if (needsDrain && !ended) discardResponse(tunnel, streamId);
     stop();
+    stopClosed();
+    signal?.removeEventListener('abort', aborted);
   }
+}
+
+function discardResponse(tunnel: Tunnel, streamId: number): void {
+  // This wire version has no HTTP cancel message. Do not leave late reply bodies in the
+  // tunnel's unmatched-frame buffer, or retain the collector that no page needs anymore.
+  let finished = false;
+  let stopFrames: (() => void) | undefined;
+  let stopClosed: (() => void) | undefined;
+  const finish = () => { finished = true; stopFrames?.(); stopClosed?.(); };
+  stopClosed = tunnel.onClosed(finish);
+  stopFrames = tunnel.on(streamId, payload => {
+    if (payload[0] === MAGIC[0] && payload[1] === MAGIC[1] && payload[2] === VERSION
+      && (payload[3] === TAG.responseEnd || payload[3] === TAG.failure)) finish();
+  });
+  if (finished) finish();
 }
 
 /** A bounds-checked reader over a message payload. */

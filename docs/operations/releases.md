@@ -1,7 +1,8 @@
 # 二进制发布与安装
 
-当前源码新增 daemon 的 WSS 支持；此改动尚未发布到 Release。使用下面的 WSS 示例需先
-[从源码构建](#开发与发布步骤)，或安装后续包含此修复的二进制。安装脚本更新不会给旧二进制增加 TLS 能力。
+当前版本为 **v0.2.0**，提供原生 TLS、插件本机管理与独立隧道、同页 Harness，以及自动安装 DSH。
+先按下表选包；第一次使用可直接看[项目快速开始](../../README.zh.md#快速开始)。
+本次功能和环境范围见[发布验收记录](acceptance-2026-11-04.md)。
 
 从 `v0.1.0` 起，GitHub [Releases](https://github.com/luckyuro/dr.dsh/releases) 提供下列 `.tar.gz`。
 版本尚处早期自托管阶段；没有第三方审计、代码签名或可复现构建保证。`SHA256SUMS` 用于校验下载内容，
@@ -33,7 +34,7 @@ CLI 启动先把鲸鱼 Logo 的 ASCII 版本打印到 stderr，stdout 保留给�
 
 在目标机器直接运行一条 curl 命令，脚本自动识别系统与 CPU，从 GitHub Release 下载对应包，
 校验 SHA-256、解包后调用 Rust 安装器。无需克隆仓库；下载需要 Shell、curl、tar，以及
-sha256sum 或 shasum。服务器不需要 Rust、pnpm 或管理用 Node；daemon 启动的 DSH 仍需用户预先安装 Node 与 DSH。
+sha256sum 或 shasum。服务器不需要 Rust、pnpm 或管理用 Node；daemon 主机需要 Node 24.9+ 与 npm。首次省略 `--dsh` 会安装固定的 DSH 和插件；已有 DSH 可显式指定。
 
 ```sh
 # Linux x86_64：只安装 Relay 与 PWA
@@ -48,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh |
 
 # 固定二进制版本，并选择安装目录
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- \
-  --component relay --version v0.1.1 --prefix "$HOME/.local"
+  --component relay --version v0.2.0 --prefix "$HOME/.local"
 ```
 
 根 `install.sh` 默认在 Linux 选择混合包、macOS 选择 daemon；`relay/install.sh` 和
@@ -56,8 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh |
 `--bind 127.0.0.1:8787`、`--dsh /absolute/path/to/dsh`、`--with-plugin`、`--enable`。
 
 `--dsh` 指定已安装的 DeepSeek Harness **可执行文件**，可用 `command -v dsh` 查找；
-`--workdir /path/to/your/project` 只指定可选的启动工作目录。首次安装省略时，分别在 PATH 中查找
-`dsh`、使用当前目录；后续安装沿用已保存值。DSH 需事先安装并配置好，详见 [Daemon 参数说明](../../daemon/README.zh.md#一键安装并启动)。
+`--workdir /path/to/your/project` 只指定可选的启动工作目录。首次省略 `--dsh` 会[私有安装 DSH](dsh-provisioning.md)，省略 `--workdir` 使用当前目录；后续安装沿用已保存值。模型凭据需在 DSH 中配置，详见 [Daemon 参数说明](../../daemon/README.zh.md#一键安装并启动)。
 `--relay` 仅用于 daemon，按端点实际协议填写 `ws://` 或 `wss://`，例如 `wss://relay.example.com`。
 Relay 服务端用 `--bind` 配置监听 IP 和端口，不接受 `--relay`。
 浏览器可通过 `https://relay.example.com` 访问，DNS、证书和反向代理步骤见 [Relay 域名配置](../../relay/README.zh.md#使用域名)。
@@ -67,12 +67,12 @@ Relay 服务端用 `--bind` 配置监听 IP 和端口，不接受 `--relay`。
 | 环境变量 | 可用值 | 默认值 |
 | :--- | :--- | :--- |
 | `DRDSH_COMPONENT` | `relay`、`daemon`、`mixed`、`auto` | 根入口 `auto`；组件入口使用对应组件 |
-| `DRDSH_VERSION` | `latest` 或 Release tag，如 `v0.1.1` | `latest` |
+| `DRDSH_VERSION` | `latest` 或 Release tag，如 `v0.2.0` | `latest` |
 | `DRDSH_PREFIX` | 安装目录 | `~/.local` |
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | \
-  DRDSH_COMPONENT=relay DRDSH_VERSION=v0.1.1 DRDSH_PREFIX="$HOME/.local" sh
+  DRDSH_COMPONENT=relay DRDSH_VERSION=v0.2.0 DRDSH_PREFIX="$HOME/.local" sh
 ```
 
 三个入口都是自包含 Shell 文件，也可以先下载为本地文件再运行：
@@ -101,7 +101,7 @@ Relay 包带静态 `client/` 和 nginx 示例，daemon 包带可选 `plugin/`，
 
 ```sh
 drdsh relay update                    # 最新 Release 中的 relay 独立包
-drdsh daemon update --version v0.1.0
+drdsh daemon update --version v0.2.0
 drdsh relay status
 drdsh daemon logs --follow
 drdsh relay uninstall
@@ -126,7 +126,8 @@ Daemon 的 TLS 后端 ring 需要目标平台的 C 编译工具链；预编译�
 此时需先运行 `pnpm --filter @dr.dsh/pwa build`。两个打包入口（含旧 `relay/package.sh`）都会
 检查静态资源与源码一致、必要模块存在，拒绝漏图标、旧页面或混入测试文件的构建目录。
 应先完成 verify 再构建发布 PWA，因为 typecheck 会向同一目录写入测试产物。
-Linux 在 blade 上使用 `x86_64-unknown-linux-musl`，不启用 `target-cpu=native`。
+Linux 使用 `x86_64-unknown-linux-musl`，不启用 `target-cpu=native`；v0.2.0 在 macOS 上通过
+cargo-zigbuild 交叉构建，并在 Linux systemd 容器中运行产物。组件与插件包均排除构建主机的扩展文件属性。
 
 ```sh
 sh scripts/build-release.sh aarch64-apple-darwin
@@ -137,7 +138,7 @@ sh scripts/build-release.sh x86_64-unknown-linux-musl
 `target/debug/drdsh relay install --source "$PWD" --skip-build --build-profile debug`。
 旧管理路径的回归测试仍使用 `relay/install-source.sh`、`daemon/install-source.sh`。
 
-从当前源码构建并安装支持 WSS 的 daemon：
+开发者也可从源码安装 daemon：
 
 ```sh
 cargo build -p dr-dsh-cli
@@ -146,7 +147,7 @@ target/debug/drdsh daemon install --source "$PWD" --skip-build --build-profile d
 ```
 
 发布前运行仓库 verify、包清单与名称分派检查及二进制同一性校验，以及真实进程的安装隔离和下载摘要失败测试；
-再把四个压缩包与 `SHA256SUMS` 上传同一个源码 tag 的 Release。构建记录应列出源码、Rust 版本、
+再把四个组件压缩包、包含两个平台 native 的独立插件包、`BUILDINFO.txt` 与 `SHA256SUMS` 上传同一个源码 tag 的 Release。构建记录应列出源码、Rust 版本、
 目标与摘要。当前是脚本辅助的人工发布流程，尚无自动签名、托管 CI 发布或可复现构建认证。
 
 修改下载入口时编辑 `scripts/release-install.sh`，再运行 `sh scripts/release-entrypoints.sh`
@@ -163,6 +164,31 @@ target/debug/drdsh daemon install --source "$PWD" --skip-build --build-profile d
 nginx 独立托管 PWA 时，从已校验的 relay 包取出 `client/`，放进新的发布目录，检查文件权限后
 原子切换 nginx 根目录所用的 `current` 符号链接；保留旧目录供回滚。随后检查首页、图标、manifest、
 Service Worker 与健康端点。仅切换静态目录不需要重启 relay，也不改变配对状态或 relay 配置。
+
+## v0.2.0 升级说明
+
+- 常驻 daemon 与独立插件隧道都可用。插件配置 `relayUrl` 后随 DSH 启停；需要远程恢复时启用 daemon。
+- 新安装可自动下载 DSH `0.2.2-alpha.2`；Cordis 相关依赖固定为通过本次浏览器验收的 alpha.1 组合，避免浮动依赖破坏设置保存与会话创建。已有外部 DSH 不会被修改。
+- 本机管理页支持独立授权、持久 OS 作业、接管和在线配对撤销；管理权限不能通过远端隧道取得。
+- 配对后直接连接 Harness，支持回车提交；管理页可复制配对码。进入 Harness 后使用可拖动的 **dr** 浮钮打开控制。
+- TLS、私有 CA、HTTPS DSH、通知订阅、慢客户端背压和多房间隔离均已纳入实测。
+- PWA 离线缓存为 `dr.dsh-client-v14`。更新 relay 或 nginx 静态目录后，完整重载浏览器页面以使用新客户端；配对会保留。
+
+两个组件分别更新。已有外部 DSH 路径、配对和插件归属会沿用。独立插件用户下载下方新包，通过 DSH 更新插件；要更新已安装 daemon，再到本机管理页应用插件附带版本。
+
+### 独立插件包
+
+Release 的 `drdsh-plugin-0.2.0.tgz` 同时包含 Linux x86_64 与 macOS Apple Silicon 的原生程序。
+下载它和 `drdsh-plugin-0.2.0.tgz.sha256`，在同一目录校验后安装：
+
+```sh
+# macOS；Linux 可改用 sha256sum -c
+shasum -a 256 -c drdsh-plugin-0.2.0.tgz.sha256
+dsh plugin --profile web add /absolute/path/drdsh-plugin-0.2.0.tgz
+```
+
+打开本机 DSH 的 **dr.dsh 管理** 页面，按[插件指南](../../daemon/README.zh.md#从-dsh-插件管理-daemon)授权。
+该包不含中继，Relay 需单独部署。插件原生缺包或版本不匹配时明确失败，不下载旧 Release 替代。
 
 ## v0.1.0 验证记录
 

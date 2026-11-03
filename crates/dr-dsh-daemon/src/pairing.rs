@@ -285,11 +285,29 @@ fn expect_spake2_len(payload: &[u8], step: &'static str) -> Result<(), ExchangeE
 pub async fn run_daemon_side(
     relay_url: &str,
     code: &PairingCode,
-    mut registry: DeviceRegistry,
+    _registry: DeviceRegistry,
     registry_path: &std::path::Path,
     served_root: &[u8; dr_dsh_crypto::SESSION_KEY_LEN],
     timeout: Duration,
 ) -> Result<(Enrolment, DeviceRegistry), ExchangeError> {
+    run_daemon_side_with_commit(relay_url, code, served_root, timeout, |key, label| {
+        crate::registry::enrol(registry_path, key, label).map_err(|error| {
+            ExchangeError::Transport(format!("cannot commit the paired device: {error}"))
+        })
+    })
+    .await
+}
+
+pub(crate) async fn run_daemon_side_with_commit<F>(
+    relay_url: &str,
+    code: &PairingCode,
+    served_root: &[u8; dr_dsh_crypto::SESSION_KEY_LEN],
+    timeout: Duration,
+    commit: F,
+) -> Result<(Enrolment, DeviceRegistry), ExchangeError>
+where
+    F: FnOnce(DevicePublicKey, String) -> Result<DeviceRegistry, ExchangeError>,
+{
     let room = pairing_room(code);
     let mut transport = Transport::dial(relay_url, &room, &pairing_root())
         .await
@@ -353,8 +371,7 @@ pub async fn run_daemon_side(
     };
 
     let label = finish.device_name;
-    registry.enrol(DevicePublicKey::from_bytes(&public_key)?, label.clone());
-    registry.save(registry_path)?;
+    let registry = commit(DevicePublicKey::from_bytes(&public_key)?, label.clone())?;
     // The receipt carries the room key **the daemon serves**, sealed under the key the PAKE
     // produced. Announcing the PAKE-derived key instead — which is what this did — left every
     // freshly paired device dialling a room nobody serves, and announcing the served key in the

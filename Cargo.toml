@@ -19,6 +19,7 @@ members = [
   "crates/dr-dsh-relay",
   "crates/dr-dsh-relayctl",
   "crates/dr-dsh-cli",
+  "crates/dr-dsh-tls",
 ]
 # `cargo build` at the root builds the audit-critical pair only; the daemon and
 # relay are built explicitly so a contributor never accidentally links a
@@ -26,7 +27,7 @@ members = [
 default-members = ["crates/dr-dsh-proto", "crates/dr-dsh-crypto"]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.88"
@@ -35,6 +36,8 @@ rust-version = "1.88"
 # Internal crates, referenced by path so one workspace version rules.
 dr-dsh-proto = { path = "crates/dr-dsh-proto" }
 dr-dsh-crypto = { path = "crates/dr-dsh-crypto" }
+dr-dsh-tls = { path = "crates/dr-dsh-tls" }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 # Runtime + HTTP/WS surface. axum keeps the relay's routing declarative and
 # reviewable; it brings hyper/tower regardless.
@@ -42,7 +45,7 @@ tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "net", "sig
 axum = { version = "0.8", features = ["ws"] }
 futures-util = "0.3"
 tower = "0.5"
-# The daemon talks to DSH over loopback HTTP and must control the Host header and
+# The daemon talks to DSH over loopback HTTP(S) and must control the Host header and
 # cookie jar itself, so it uses a minimal hyper client rather than a full client
 # stack: fewer dependencies in a process that runs unattended, and no hidden
 # redirect/retry behaviour between us and DSH's authentication fence.

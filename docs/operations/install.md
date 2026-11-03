@@ -1,6 +1,6 @@
 # 安装 daemon
 
-v0.1.0 提供原生统一 CLI 与 Release 安装；平台矩阵和新命令见[二进制发布](releases.md)。
+v0.2.0 提供原生统一 CLI 与 Release 安装；平台矩阵和新命令见[二进制发布](releases.md)。
 本文后面的 raw binary 命令仍可用于源码调试。
 
 本文覆盖 **Linux、macOS、Windows** 三个平台。中继的部署（含 Docker）在
@@ -19,7 +19,7 @@ drdsh daemon restart
 drdsh daemon logs --follow
 ```
 
-将 `--dsh` 替换为 DeepSeek Harness 可执行程序的路径，可用 `command -v dsh` 查找。
+上例适用于已有 DSH 与已发布包。将 `--dsh` 替换为 DeepSeek Harness 可执行程序的路径，可用 `command -v dsh` 查找。
 Git clone 安装使用指向构建后 `apps/cli/lib/bin.js` 的可执行启动脚本；npm 全局安装可用
 `--dsh "$(npm prefix -g)/bin/dsh"`，完整命令见 [DSH 安装方式说明](../../daemon/README.zh.md#按安装方式指定-dsh)。
 `--workdir` 是可选的启动工作目录，首次安装默认使用当前目录，重新安装沿用已保存值。
@@ -29,13 +29,18 @@ Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.z
 两侧配置和旧安装迁移见 [`cli.md`](cli.md)。下面保留手工构建、旧 CPU 与附着模式说明。
 Windows 的一键路径是启用 systemd 的 WSL2；原生 Windows 仍需手工运行二进制。
 
+v0.2.0 支持首次省略 `--dsh`：安装器下载固定的 DSH `0.2.2-alpha.2` 到 daemon
+私有版本目录，记录版本与路径，并默认装配随包插件。需要 Node **24.9+**、npm 和 npm registry
+访问能力；已有 DSH 配置会保留，模型账号/API key 仍由用户设置。完整命令、失败恢复和版本
+边界见 [DSH 自动安装](dsh-provisioning.md)。这项能力尚不能视为已有 Release 的行为。
+
 ## 先决条件（三个平台相同）
 
 | 需要的 | 为什么 | 怎么确认 |
 | :--- | :--- | :--- |
 | **Rust stable** | 仅源码构建需要；Release 安装不需要 | `cargo --version` |
-| **Node.js 22.19+ 或 24+** | DSH 本身是一个 Node 程序 | `node --version` |
-| **DSH 已安装** | daemon 监督它，不替代它 | `dsh --version` |
+| **Node.js 24.9+ 与 npm** | 当前 DSH 版本及自动安装需要；旧版 DSH 按其自身要求 | `node --version`、`npm --version` |
+| **DSH 可执行程序** | 使用已有 `--dsh`，或由v0.2.0 首次自动安装 | `dsh --version` 或 daemon 保存的私有路径 |
 | **一个中继地址** | 远端设备靠它找到你的电脑 | 见 [`self-hosting.md`](self-hosting.md) |
 
 **房间密钥不用你管**：第一次运行 `drdshd run`（或 `drdshd pair`）时它会自动生成，写到状态目录里的
@@ -201,7 +206,8 @@ drdshd run --attach 3080 --attach-token '<token>' --relay ws://127.0.0.1:8787 --
 
 3. **远端打开界面**：用手机或另一台电脑访问你的中继地址，把 `drdshd pair` 打印的码粘进唯一的
    输入框，点 Connect。配对完成后这一台设备就被记住了（存在浏览器的 IndexedDB 里），以后
-   只点 Connect 即可；点「Open the DeepSeek Harness interface」在另一个标签页里看到真实界面。
+   只点 Connect 即可；DSH 运行时，真实界面会自动显示在当前页面，无需另开标签页。
+   浮动 **dr** 按钮可以打开连接管理或断开；同一房间同时只接受一个活跃浏览器连接。
    没有配对时也可以直接粘贴房间密钥——那是尚未配对的部署的回退路径，不是推荐状态。
 
    **同一台电脑上跑多个 daemon**（例如工作与个人两个 profile）就是多开进程：每个 daemon 用自己的

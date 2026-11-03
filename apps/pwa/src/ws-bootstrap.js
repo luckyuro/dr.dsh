@@ -8,38 +8,62 @@
  * has to replace `window.WebSocket` **before** DSH's scripts run, which means a script in the
  * interface document itself.
  *
- * But the tunnel is not there. It lives in the shell page, which owns the carrier socket and
- * answers the worker's requests; the service worker — which *is* in the interface page — only has
- * a port to that page. So this script talks to the shell over a `BroadcastChannel`: same-origin,
- * same browsing-context group, no globals, and the shell can answer without exposing the tunnel
- * itself to the page DSH runs in.
+ * The parent shell owns the tunnel. Each embedded document transfers it one private MessagePort;
+ * the parent accepts only the expected origin, iframe window and view id. A same-origin tab has
+ * no shared channel on which it can hear or inject another computer's socket messages.
  *
  * ## What is deliberately not here
  *
- * It does not import DSH, does not read the page, and does not touch anything but `WebSocket`. The
- * interface is DSH's application; this is a transport substitution and nothing else.
+ * It does not import DSH or interpret its page. It only wires the document's HTTP route and
+ * WebSocket transport; the interface remains DSH's application.
  *
  * Plain JavaScript, served from the client directory, for the same reason `shell.js` is: the
  * relay serves modules, and a script that has to run before a page's own modules cannot be part of
  * their build order.
  */
 
-const CHANNEL = 'dr-dsh-websocket';
+(() => {
 const NativeWebSocket = globalThis.WebSocket;
-
-/** Handlers registered per socket id, for messages coming back from the shell. */
+const viewId = document.currentScript?.dataset.drdshView ?? new URL(location.href).searchParams.get('drdshView');
 const handlers = new Map();
 let nextId = 1;
+let disposed = false;
+let workerBinding = 0;
+const pair = new MessageChannel();
+const channel = pair.port1;
+const deadline = setTimeout(() => {
+  for (const handler of [...handlers.values()]) handler({ kind: 'closed', code: 1006, reason: 'The connection page did not attach this interface. Return to dr.dsh and reconnect.' });
+}, 15_000);
 
-const channel = new BroadcastChannel(CHANNEL);
-
+// A restarted worker has forgotten its client routes. Rebind this exact document after both
+// its controller changes and the parent confirms that its tunnel route has been restored.
+function bindWorker() {
+  const worker = navigator.serviceWorker?.controller;
+  if (!worker || !viewId || disposed) return;
+  globalThis.__DSH_REMOTE_WS__.workerBound = false;
+  const generation = ++workerBinding;
+  const binding = new MessageChannel();
+  const timeout = setTimeout(() => binding.port1.close(), 5_000);
+  binding.port1.onmessage = event => {
+    clearTimeout(timeout);
+    binding.port1.close();
+    if (generation !== workerBinding || disposed) return;
+    // A failed bind can race the parent's handoff; worker-ready retries it without guessing.
+    if (event.data?.kind === 'bound') globalThis.__DSH_REMOTE_WS__.workerBound = true;
+  };
+  worker.postMessage({ kind: 'bind-view', viewId }, [binding.port2]);
+}
 channel.onmessage = event => {
   const message = event.data;
-  if (message === null || typeof message !== 'object') return;
-  const handler = handlers.get(message.id);
-  if (handler === undefined) return;
-  handler(message);
+  if (message === null || typeof message !== 'object' || disposed) return;
+  if (message.kind === 'worker-ready') {
+    clearTimeout(deadline);
+    bindWorker();
+    return;
+  }
+  handlers.get(message.id)?.(message);
 };
+channel.start();
 
 /**
  * A `WebSocket` whose traffic travels through the tunnel.
@@ -153,8 +177,21 @@ class TunneledWebSocket extends EventTarget {
   }
 }
 
-// Installed only if the page has not already been given one, and only when a channel listener is
-// actually there to answer — a replacement with nobody on the other end would turn "this page has
-// no live updates" into "this page has no WebSocket at all".
 globalThis.WebSocket = TunneledWebSocket;
-globalThis.__DSH_REMOTE_WS__ = { channel: CHANNEL, native: NativeWebSocket };
+globalThis.__DSH_REMOTE_WS__ = { transport: 'message-port', viewId, native: NativeWebSocket, workerBound: false };
+navigator.serviceWorker?.addEventListener('controllerchange', bindWorker);
+window.addEventListener('pagehide', () => {
+  disposed = true;
+  clearTimeout(deadline);
+  navigator.serviceWorker?.removeEventListener('controllerchange', bindWorker);
+  channel.postMessage({ kind: 'dispose' });
+  channel.close();
+  handlers.clear();
+}, { once: true });
+if (parent !== window && viewId) {
+  parent.postMessage({ kind: 'drdsh-interface-connect', viewId }, location.origin, [pair.port2]);
+  bindWorker();
+} else {
+  pair.port2.close();
+}
+})();

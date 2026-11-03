@@ -239,3 +239,29 @@ test('the upgrade encoder refuses a target that names a host', () => {
   assert.throws(() => encodeWsOpen(1, 'ws://evil.example/x'), /origin-form/);
   assert.throws(() => encodeWsOpen(1, '//evil.example/x'), /origin-form/);
 });
+
+test('a send rejected by a closing tunnel closes the adapter without an unhandled rejection', async () => {
+  const { tunnel, sent, reply } = standIn();
+  const Socket = tunneledWebSocket(tunnel, allocator());
+  const socket = new Socket('ws://x/mux');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const streamId = onlyStream(sent);
+  reply(streamId, opened(streamId));
+  tunnel.send = async () => { throw new Error('the tunnel closed while this message was queued'); };
+  socket.send('pending');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(socket.readyState, 3);
+});
+
+test('an explicit socket close tolerates the tunnel cancelling its queued close frame', async () => {
+  const { tunnel, sent, reply } = standIn();
+  const Socket = tunneledWebSocket(tunnel, allocator());
+  const socket = new Socket('ws://x/mux');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  const streamId = onlyStream(sent);
+  reply(streamId, opened(streamId));
+  tunnel.send = async () => { throw new Error('the tunnel is already closed'); };
+  socket.close();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(socket.readyState, 3);
+});

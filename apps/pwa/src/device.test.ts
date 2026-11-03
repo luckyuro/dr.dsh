@@ -34,11 +34,14 @@ const ROOM = 'the-room-the-client-was-told-about';
 async function fakeDaemon(
   devicePublicKey: CryptoKey,
   options: {
+    readonly delayChallenge?: number;
+    readonly delayVerdict?: number;
     readonly refuse?: 'not_paired' | 'bad_proof';
     /** Whether the daemon refuses before a response arrives, which is what an unpaired client sees. */
     readonly refuseUnpaired?: boolean;
     /** Whether the daemon says nothing at all after its acknowledgement, as an unpaired daemon does. */
     readonly silentAfterAck?: boolean;
+    readonly silentAfterResponse?: boolean;
   } = {},
 ) {
   const handlers: ((data: Uint8Array<ArrayBuffer>) => void)[] = [];
@@ -57,7 +60,10 @@ async function fakeDaemon(
   const result: {
     signatureValid: boolean | undefined;
     deviceId: string | undefined;
-  } = { signatureValid: undefined, deviceId: undefined };
+    accepted: boolean;
+    clientFrames: number;
+    closed: number;
+  } = { signatureValid: undefined, deviceId: undefined, accepted: false, clientFrames: 0, closed: 0 };
 
   const deliver = (frame: Uint8Array<ArrayBuffer>): void => {
     for (const handler of [...handlers]) handler(frame);
@@ -84,6 +90,7 @@ async function fakeDaemon(
   }
 
   async function handle(frame: Uint8Array<ArrayBuffer>): Promise<void> {
+    result.clientFrames += 1;
     const { streamId, body } = parseCarrier(frame);
     const counter = Number(
       new DataView(body.buffer, body.byteOffset, body.byteLength).getBigUint64(0, false),
@@ -109,6 +116,7 @@ async function fakeDaemon(
       sealCounter = 0;
       await seal(CONTROL_STREAM, new Uint8Array([0x6b]));
       if (options.silentAfterAck === true) return;
+      if (options.delayChallenge) await new Promise(resolve => setTimeout(resolve, options.delayChallenge));
       if (options.refuse !== undefined && options.refuseUnpaired === true) {
         // A client with no identity cannot answer, so the daemon does not wait for one: it
         // refuses and closes. Both halves matter — a refusal that did not close would leave
@@ -145,6 +153,7 @@ async function fakeDaemon(
       return;
     }
     result.deviceId = message.device_id;
+    if (options.delayVerdict) await new Promise(resolve => setTimeout(resolve, options.delayVerdict));
     if (options.refuse !== undefined) {
       await seal(
         CONTROL_STREAM,
@@ -167,6 +176,8 @@ async function fakeDaemon(
       signature,
       signed,
     );
+    if (options.silentAfterResponse === true) return;
+    result.accepted = true;
     await seal(
       CONTROL_STREAM,
       new TextEncoder().encode(JSON.stringify({ type: 'resume_accept' })),
@@ -176,6 +187,7 @@ async function fakeDaemon(
   const fake = {
     seen,
     result,
+    sendControl(payload: Uint8Array<ArrayBuffer>) { return seal(CONTROL_STREAM, payload); },
     push: deliver,
     drop(reason: string) {
       for (const handler of [...closeHandlers]) handler(reason);
@@ -191,7 +203,7 @@ async function fakeDaemon(
       closed(handler: (reason: string) => void) {
         closeHandlers.push(handler);
       },
-      close() {},
+      close() { result.closed += 1; },
     },
   };
   return fake;
@@ -261,25 +273,95 @@ test('a refusal becomes an error naming the reason, not a hang', async () => {
   );
 });
 
-test('an unpaired client is told it is not paired instead of waiting forever', async () => {
-  // The daemon requires a device and this client has none: it cannot answer, and the daemon
-  // will not let it through. What must not happen is a tunnel that reports itself established
-  // and then never serves a request — which is what shipped before this test existed, because
-  // the client waited for a challenge only when it had an identity to answer with.
-  const { publicKey } = await pairedDevice();
-  const fake = await fakeDaemon(publicKey, { refuse: 'not_paired', refuseUnpaired: true });
-  await assert.rejects(Tunnel.open(fake.socket, ROOT), (error: unknown) => {
-    assert.ok(error instanceof TunnelError, `expected a TunnelError, got ${String(error)}`);
-    // Either wording is a correct outcome: the client may read the refusal, or it may only see
-    // the connection close. What is *not* acceptable is a tunnel that reports itself
-    // established — which is what shipped before this test existed.
-    assert.match(
-      (error as Error).message,
-      /not paired|closed|refused/,
-      `the failure must name what happened: ${(error as Error).message}`,
-    );
-    return true;
+for (const scenario of [
+  { name: 'challenge', delayChallenge: 400 },
+  { name: 'acceptance', delayVerdict: 400 },
+]) {
+  test(`a paired device waits for an explicit acceptance when its ${scenario.name} exceeds the legacy grace period`, async () => {
+    const { identity, publicKey } = await pairedDevice();
+    const fake = await fakeDaemon(publicKey, scenario);
+    let settled = false;
+    const opening = Tunnel.open(fake.socket, ROOT, identity).then(tunnel => {
+      settled = true;
+      opened.push(tunnel);
+      return tunnel;
+    });
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.equal(settled, false, 'a saved identity cannot become a room-key session while the daemon is still authenticating');
+    const tunnel = await opening;
+    assert.equal(fake.result.signatureValid, true);
+    assert.equal(fake.result.accepted, true);
+    assert.equal(tunnel.isDeviceBound, true);
   });
+}
+
+test('a refusal after the legacy grace period rejects a paired connection before it is handed out', async () => {
+  const { identity, publicKey } = await pairedDevice();
+  const fake = await fakeDaemon(publicKey, { delayVerdict: 400, refuse: 'not_paired' });
+  await assert.rejects(Tunnel.open(fake.socket, ROOT, identity), /not paired/);
+  assert.equal(fake.result.closed, 1);
+});
+
+test('the device deadline closes silent exchanges and pending signatures without sending after failure', async t => {
+  const devices = await Promise.all([pairedDevice(), pairedDevice(), pairedDevice()]);
+  const [silent, unanswered, signing] = devices;
+  assert.ok(silent && unanswered && signing);
+  let releaseSignature!: () => void;
+  const signatureGate = new Promise<void>(resolve => { releaseSignature = resolve; });
+  const sign = crypto.subtle.sign.bind(crypto.subtle);
+  t.mock.method(crypto.subtle, 'sign', async (...args: Parameters<SubtleCrypto['sign']>) => {
+    if (args[1] === signing.identity.key.privateKey) await signatureGate;
+    return await sign(...args);
+  });
+  const fakes = await Promise.all([
+    fakeDaemon(silent.publicKey, { silentAfterAck: true }),
+    fakeDaemon(unanswered.publicKey, { silentAfterResponse: true }),
+    fakeDaemon(signing.publicKey),
+  ]);
+  try {
+    await Promise.all(fakes.map(async (fake, index) => {
+      await assert.rejects(Tunnel.open(fake.socket, ROOT, devices[index]!.identity), /did not accept this paired device within 10000ms/);
+      assert.equal(fake.result.closed, 1, 'the timed-out carrier must be closed');
+    }));
+  } finally {
+    releaseSignature();
+  }
+  await new Promise(resolve => setTimeout(resolve, 50));
+  assert.equal(fakes[2]!.result.clientFrames, 1, 'a signature completed after the deadline must not send a response');
+});
+
+test('a late rejection ends a room-key connection instead of reaching an ordinary control subscriber', async () => {
+  const { publicKey } = await pairedDevice();
+  const fake = await fakeDaemon(publicKey, { silentAfterAck: true });
+  const tunnel = await Tunnel.open(fake.socket, ROOT);
+  opened.push(tunnel);
+  const delivered: Uint8Array<ArrayBuffer>[] = [];
+  tunnel.on(CONTROL_STREAM, payload => { if (payload.length) delivered.push(payload); });
+  const closed = new Promise<string>(resolve => tunnel.onClosed(resolve));
+  await fake.sendControl(new TextEncoder().encode(JSON.stringify({ type: 'resume_reject', reason: 'not_paired' })));
+  assert.match(await closed, /not paired/);
+  assert.equal(tunnel.isEstablished, false);
+  assert.equal(tunnel.isDeviceBound, false);
+  assert.equal(fake.result.closed, 1);
+  assert.deepEqual(delivered, []);
+});
+
+test('pairing bypasses device parsing and delivers its control bytes intact', async () => {
+  const { publicKey } = await pairedDevice();
+  const fake = await fakeDaemon(publicKey, { silentAfterAck: true });
+  const tunnel = await Tunnel.open(fake.socket, ROOT, null, { deviceStep: false });
+  opened.push(tunnel);
+  for (const payload of [
+    new Uint8Array([0xff, 0x00, 0x03]),
+    new TextEncoder().encode(JSON.stringify({ type: 'resume_reject', reason: 'not_paired' })),
+  ]) {
+    const received = new Promise<Uint8Array<ArrayBuffer>>(resolve => {
+      const stop = tunnel.on(CONTROL_STREAM, value => { stop(); resolve(value); });
+    });
+    await fake.sendControl(payload);
+    assert.deepEqual(await received, payload);
+    assert.equal(tunnel.isEstablished, true);
+  }
 });
 
 test('a silent daemon is taken as requiring no device', async () => {

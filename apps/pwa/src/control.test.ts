@@ -10,11 +10,12 @@
  */
 
 import assert from 'node:assert/strict';
-import { afterEach, test } from 'node:test';
+import { afterEach, test, type TestContext } from 'node:test';
 
 import { ControlClient, ControlError, describe, describeRelay } from './control.ts';
 import type { LifecycleState, RelayHealth } from './control.ts';
 import { crashReport, emptyHealth, recordFailure } from './health.ts';
+import type { Notification } from './notifications.ts';
 import {
   CONTROL_STREAM,
   LABELS,
@@ -48,6 +49,8 @@ interface StandIn {
   setProblem(message: string): void;
   /** Stops answering anything, leaving requests outstanding. */
   goSilent(): void;
+  emit(message: unknown): Promise<void>;
+  emitPayload(streamId: number, payload: Uint8Array<ArrayBuffer>): Promise<void>;
 }
 
 /**
@@ -132,10 +135,9 @@ async function standIn(): Promise<StandIn> {
       await seal(CONTROL_STREAM, new Uint8Array([0x6b]));
       return;
     }
-    if (silent) return;
-
     const request = JSON.parse(new TextDecoder().decode(plaintext)) as Record<string, unknown>;
     requests.push(request);
+    if (silent) return;
     const id = request['id'];
     if (problem !== null) {
       await seal(
@@ -215,6 +217,14 @@ async function standIn(): Promise<StandIn> {
     socket,
     requests,
     crashReports,
+    emit(message) {
+      chain = chain.then(() => seal(CONTROL_STREAM, new TextEncoder().encode(JSON.stringify(message))));
+      return chain;
+    },
+    emitPayload(streamId, payload) {
+      chain = chain.then(() => seal(streamId, payload));
+      return chain;
+    },
     drop() {
       for (const handler of [...closeHandlers]) handler('the relay closed the connection');
     },
@@ -241,13 +251,39 @@ afterEach(() => {
 });
 
 /** A client on a tunnel against a stand-in daemon. */
-async function connected(): Promise<{ client: ControlClient; daemon: StandIn }> {
+async function connected(): Promise<{ client: ControlClient; daemon: StandIn; tunnel: Tunnel }> {
   const daemon = await standIn();
   const tunnel = await Tunnel.open(daemon.socket, ROOT);
   opened.push(tunnel);
   const client = new ControlClient(tunnel);
   clients.push(client);
-  return { client, daemon };
+  return { client, daemon, tunnel };
+}
+
+/** Keep real cryptography, but advance request budgets without a minute-long test. */
+function requestClock(t: TestContext): { advance(ms: number): void } {
+  let now = Math.ceil(performance.now());
+  t.mock.method(performance, 'now', () => now);
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  return {
+    advance(ms) {
+      // Tick each callback with the same monotonic time the implementation reads.
+      while (ms > 0) {
+        const step = Math.min(ms, 1_000);
+        now += step;
+        t.mock.timers.tick(step);
+        ms -= step;
+      }
+    },
+  };
+}
+
+async function deliverBody(daemon: StandIn, tunnel: Tunnel): Promise<void> {
+  const received = new Promise<void>(resolve => {
+    const stop = tunnel.on(7, () => { stop(); resolve(); });
+  });
+  await daemon.emitPayload(7, new Uint8Array(48 * 1024));
+  await received;
 }
 
 test('a status reply becomes something a UI can render', async () => {
@@ -259,6 +295,35 @@ test('a status reply becomes something a UI can render', async () => {
   assert.equal(status.owned, true);
   assert.equal(status.uptimeSecs, 61);
   assert.deepEqual(status.protocol, [0, 1]);
+});
+
+test('unsolicited notifications arrive over the encrypted control stream without consuming replies', async () => {
+  const { client, daemon } = await connected();
+  const received: Notification[] = [];
+  const unsubscribe = client.onNotification(notification => received.push(notification));
+  const body = { event: 'turn_complete', severity: 'notice', at_ms: 1234, session_ref: 'session_1' };
+  for (const id of [0, null, undefined]) await daemon.emit({ kind: 'notification', id, body });
+  assert.equal((await client.status()).state, 'running');
+  assert.equal(received.length, 3);
+  assert.deepEqual(received[0], { event: 'turn_complete', severity: 'notice', atMs: 1234, sessionRef: 'session_1' });
+  await daemon.emit({ kind: 'notification', id: 2, body });
+  await daemon.emit({ kind: 'notification', id: 0, body: { ...body, title: 'private data' } });
+  assert.equal((await client.status()).state, 'running', 'a notification with a request id cannot settle the request');
+  assert.equal(received.length, 3, 'malformed envelopes and content-bearing bodies are ignored');
+  unsubscribe();
+  await daemon.emit({ kind: 'notification', id: 0, body });
+  await client.status();
+  assert.equal(received.length, 3);
+});
+
+test('a dropped tunnel retires the control client and immediately rejects outstanding requests', async () => {
+  const { client, daemon } = await connected();
+  daemon.goSilent();
+  const pending = client.status();
+  const rejected = assert.rejects(pending, (error: unknown) => error instanceof ControlError && error.reason === 'disconnected');
+  daemon.drop();
+  await rejected;
+  await assert.rejects(client.status(), (error: unknown) => error instanceof ControlError && error.reason === 'disconnected');
 });
 
 test('a lifecycle command carries only an operation', async () => {
@@ -332,14 +397,107 @@ test('a malformed reply is an error rather than a wrong value', async () => {
 test('an unanswered request ends as a timeout, not a wait', async () => {
   // The acceptance criterion for failure transparency: a client that waits forever shows a
   // spinner, and a spinner is indistinguishable from a slow daemon.
-  const { client, daemon } = await connected();
+  const { client, daemon, tunnel } = await connected();
   daemon.goSilent();
   await assert.rejects(
     client.status(),
     (error: unknown) =>
       error instanceof ControlError &&
-      (error.reason === 'timeout' || error.reason === 'disconnected'),
+      error.reason === 'timeout',
   );
+  assert.equal(tunnel.failure, null);
+  assert.equal(tunnel.isEstablished, true, 'one request timeout does not terminate the carrier');
+});
+
+test('authenticated body traffic allows a status reply to wait behind a slow transfer', async t => {
+  const { client, daemon, tunnel } = await connected();
+  daemon.goSilent();
+  const clock = requestClock(t);
+  let settled = false;
+  const pending = client.status();
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  for (let elapsed = 0; elapsed < 24_000; elapsed += 4_000) {
+    clock.advance(4_000);
+    await deliverBody(daemon, tunnel);
+    assert.equal(settled, false, 'the active transfer must not make the computer look silent');
+  }
+  const request = daemon.requests.find(request => request['kind'] === 'status_request');
+  assert.ok(request);
+  await daemon.emit({ kind: 'status_response', id: request['id'], body: {
+    state: 'running', relay: 'connected', pid: 4242, owned: true, protocol: [0, 1],
+  } });
+  assert.equal((await pending).pid, 4242);
+  clock.advance(60_000);
+  assert.equal(tunnel.isEstablished, true, 'a resolved probe cannot later tear down the connection');
+});
+
+test('a status request fails five seconds after authenticated inbound progress stops', async t => {
+  const { client, daemon, tunnel } = await connected();
+  daemon.goSilent();
+  const clock = requestClock(t);
+  let settled = false;
+  const pending = client.status();
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(pending, (error: unknown) => error instanceof ControlError && error.reason === 'timeout');
+  clock.advance(4_000);
+  await deliverBody(daemon, tunnel);
+  clock.advance(4_999);
+  await Promise.resolve();
+  assert.equal(settled, false);
+  clock.advance(1);
+  await rejected;
+  assert.equal(tunnel.isEstablished, true);
+});
+
+test('unrelated authenticated traffic cannot extend a status request beyond sixty seconds', async t => {
+  const { client, daemon, tunnel } = await connected();
+  daemon.goSilent();
+  const clock = requestClock(t);
+  let settled = false;
+  const pending = client.status();
+  void pending.then(() => { settled = true; }, () => { settled = true; });
+  const rejected = assert.rejects(pending, (error: unknown) => error instanceof ControlError && error.reason === 'timeout');
+  for (let elapsed = 0; elapsed < 56_000; elapsed += 4_000) {
+    clock.advance(4_000);
+    await deliverBody(daemon, tunnel);
+    assert.equal(settled, false);
+  }
+  clock.advance(3_999);
+  await deliverBody(daemon, tunnel);
+  assert.equal(settled, false, 'a recent valid frame is not a reply to this status request');
+  clock.advance(1);
+  await rejected;
+});
+
+test('a dropped carrier immediately rejects a status request whose deadline was extended', async t => {
+  const { client, daemon, tunnel } = await connected();
+  daemon.goSilent();
+  const clock = requestClock(t);
+  const pending = client.status();
+  const rejected = assert.rejects(pending, (error: unknown) => error instanceof ControlError && error.reason === 'disconnected');
+  clock.advance(4_000);
+  await deliverBody(daemon, tunnel);
+  clock.advance(2_000);
+  daemon.drop();
+  await rejected;
+  clock.advance(60_000);
+  await assert.rejects(client.status(), (error: unknown) => error instanceof ControlError && error.reason === 'disconnected');
+});
+
+test('inbound progress does not change lifecycle or crash-report deadlines', async t => {
+  const { client, daemon, tunnel } = await connected();
+  daemon.goSilent();
+  const clock = requestClock(t);
+  const command = assert.rejects(client.command('restart'), (error: unknown) =>
+    error instanceof ControlError && error.reason === 'timeout' && /30000ms/u.test(error.message));
+  const report = assert.rejects(client.reportCrash(crashReport(emptyHealth(), 'ready', { now: 1, userAgent: 'x' })), (error: unknown) =>
+    error instanceof ControlError && error.reason === 'timeout' && /5000ms/u.test(error.message));
+  for (let elapsed = 1_000; elapsed <= 30_000; elapsed += 1_000) {
+    clock.advance(1_000);
+    if (elapsed % 4_000 === 0) await deliverBody(daemon, tunnel);
+    if (elapsed === 5_000) await report;
+  }
+  await command;
 });
 
 test('concurrent requests are matched to their own replies', async () => {

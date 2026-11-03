@@ -2,10 +2,11 @@
  * Install the real bundle into a fresh DSH home and exercise actual services.
  * Usage: node scripts/dsh-upgrade-smoke.mjs /absolute/path/to/dsh
  * Requires an installed Harness and its plugin package manager; no model/API key.
- * The HTTP report receiver is a test fixture, not an implemented daemon endpoint.
+ * The HTTP report receiver here is a test fixture; the daemon chain has its own smoke.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { once } from 'node:events';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
@@ -22,12 +23,14 @@ if (!binary || !existsSync(binary)) {
 }
 const scratch = mkdtempSync(join(tmpdir(), 'drdsh-upgrade-'));
 const reports = [];
+const reportToken = randomBytes(32).toString('base64url');
 const children = new Set();
 let checks = 0;
 const check = name => console.log(`ok ${++checks} - ${name}`);
 const sink = createServer((req, res) => {
   assert.equal(req.method, 'POST');
   assert.equal(req.url, '/report');
+  assert.ok(req.headers.authorization === `Bearer ${reportToken}`, 'plugin authenticates to its local receiver');
   let body = '';
   req.on('data', chunk => { body += chunk; });
   req.on('end', () => { reports.push(JSON.parse(body)); res.end(); });
@@ -35,7 +38,10 @@ const sink = createServer((req, res) => {
 
 function start(args) {
   const child = spawn(resolve(binary), args, {
-    cwd: scratch, env: { ...process.env, DSH_HOME: join(scratch, 'home'), CI: '1' }, stdio: ['ignore', 'pipe', 'pipe'],
+    cwd: scratch, env: { ...process.env, DSH_HOME: join(scratch, 'home'), CI: '1',
+      DRDSH_REPORT_URL: sink.listening ? `http://127.0.0.1:${sink.address().port}` : undefined,
+      DRDSH_REPORT_TOKEN: sink.listening ? reportToken : undefined,
+    }, stdio: ['ignore', 'pipe', 'pipe'],
   });
   let output = '';
   child.stdout.on('data', bytes => { output += bytes; });
@@ -70,7 +76,8 @@ async function command(args, timeout = 90_000) {
 
 try {
   const version = (await command(['--version'])).trim();
-  assert.match(version, /^0\.1\.(5-rc\.2|6-alpha\.2|7-rc\.2)$/u, 'update the reviewed compatibility matrix before testing a new version');
+  const supported = JSON.parse(readFileSync(join(repo, 'plugins/dr.dsh/package.json'), 'utf8')).engines.dsh.split(' || ');
+  assert.ok(supported.includes(version), 'update the reviewed compatibility matrix before testing a new version');
   check(`real DSH ${version} executable`);
   await command(['plugin', '--profile', 'web', 'add', join(repo, 'plugins/dr.dsh')]);
   const profile = JSON.parse(readFileSync(join(scratch, 'home/profiles/web/package.json'), 'utf8'));

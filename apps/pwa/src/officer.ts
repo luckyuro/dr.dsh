@@ -16,6 +16,7 @@
  */
 
 import { encodeRequest, request } from './proxy.ts';
+import { allocateProxyStream } from './proxy-stream.ts';
 import type { Tunnel } from './tunnel.ts';
 
 /** The messages the page sends to the worker. */
@@ -59,23 +60,22 @@ export interface OfficerRequest {
  * @returns a function that stops serving.
  */
 export function serveWorker(tunnel: Tunnel, port: MessagePort): () => void {
-  let nextStream = 1;
   let stopped = false;
+  const lifetime = new AbortController();
 
   const onMessage = (event: MessageEvent): void => {
     const message = event.data as { kind?: string };
     if (message.kind !== 'request') return;
     const incoming = event.data as OfficerRequest;
-    const streamId = nextStream;
-    nextStream += 1;
-
     void (async (): Promise<void> => {
       try {
+        const streamId = allocateProxyStream(tunnel);
         const encoded = encodeRequest(incoming.id, incoming.method, incoming.path, {
           headers: incoming.headers,
           body: new Uint8Array(incoming.body),
         });
-        const answer = await request(tunnel, streamId, encoded);
+        const answer = await request(tunnel, streamId, encoded, lifetime.signal);
+        if (stopped) return;
         post(port, {
           kind: 'response',
           id: incoming.id,
@@ -86,6 +86,7 @@ export function serveWorker(tunnel: Tunnel, port: MessagePort): () => void {
           body: answer.body.slice().buffer,
         });
       } catch (error) {
+        if (stopped) return;
         post(port, {
           kind: 'failed',
           id: incoming.id,
@@ -101,6 +102,7 @@ export function serveWorker(tunnel: Tunnel, port: MessagePort): () => void {
   return () => {
     if (stopped) return;
     stopped = true;
+    lifetime.abort();
     port.removeEventListener('message', onMessage);
     port.close();
   };

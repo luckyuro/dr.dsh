@@ -63,6 +63,7 @@ try {
   for (const entrypoint of entrypoints.keys()) {
     const help = await pipe(entrypoint.slice(1), ['--help'], 0);
     assert.match(help, /DRDSH_PREFIX/);
+    assert.match(help, /--insecure \/ --no-insecure/);
     if (entrypoint === '/relay/install.sh') {
       assert.match(help, /--bind <ip:port>/);
       assert.doesNotMatch(help, /--relay\b|--dsh\b|--workdir\b/);
@@ -92,7 +93,8 @@ try {
   check('checksum mismatch stops before creating an installation');
   mode = 'missing'; await command('sh', args, 1); assert.equal(existsSync(prefix), false);
   check('missing asset checksum is rejected');
-  mode = 'ok'; await command('sh', args, 0); assert.ok(existsSync(config));
+  mode = 'ok'; await command('sh', [...args, '--insecure'], 0); assert.ok(existsSync(config));
+  assert.equal(JSON.parse(readFileSync(config, 'utf8')).tlsInsecure, true);
   assert.ok(requests.some(p => p === `/download/${version}/${asset}`));
   check('pinned Release installation downloads, verifies and installs without Node/Cargo');
   const ctl = join(prefix, `bin/drdsh-${scope}`);
@@ -101,12 +103,17 @@ try {
   check('failed update leaves saved configuration unchanged');
   mode = 'ok'; await command(ctl, ['update'], 0);
   const saved = JSON.parse(readFileSync(config, 'utf8'));
+  assert.equal(saved.tlsInsecure, true);
   assert.equal(scope === 'daemon' ? saved.port : saved.bind, scope === 'daemon' ? 38917 : '127.0.0.1:38917');
   assert.ok(requests.some(p => p === `/latest/download/${asset}`));
   check('installed update command follows latest and retains component settings');
   await pipe(`${scope}/install.sh`, options, 0);
   assert.equal(JSON.parse(readFileSync(config, 'utf8')).prefix, prefix);
+  assert.equal(JSON.parse(readFileSync(config, 'utf8')).tlsInsecure, true);
   check('curl component entrypoint installs without a checkout and preserves quoted path arguments');
+  await pipe(`${scope}/install.sh`, [...options, '--no-insecure'], 0);
+  assert.equal(JSON.parse(readFileSync(config, 'utf8')).tlsInsecure, false);
+  check('Release entrypoints forward TLS opt-out, updates preserve it and --no-insecure restores verification');
   const envRequests = requests.length;
   await pipe('install.sh', nativeArgs, 0, { DRDSH_COMPONENT: scope, DRDSH_VERSION: version, DRDSH_PREFIX: prefix });
   assert.ok(requests.slice(envRequests).includes(`/download/${version}/${asset}`));

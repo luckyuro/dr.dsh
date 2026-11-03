@@ -89,7 +89,7 @@ function killTree(child) {
   } catch {
     // Already gone, or never got its own group (a spawn that failed): fall back to the process itself.
     try {
-      killTree(child);
+      child.kill('SIGKILL');
     } catch {
       // Nothing left to kill.
     }

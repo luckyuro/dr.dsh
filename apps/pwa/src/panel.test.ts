@@ -10,12 +10,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { ControlClient } from './control.ts';
+import { ControlClient, ControlError } from './control.ts';
 import type { LifecycleState, RelayHealth, Status } from './control.ts';
 import { ControlPanel, panelView } from './panel.ts';
 import type { PanelState, PanelView } from './panel.ts';
 import { Tunnel } from './tunnel.ts';
 import { CONTROL_STREAM, LABELS, additionalData, carrier, deriveKey, nonceBytes, parseCarrier } from './tunnel.ts';
+import { NotificationFeed, type Notification, type NotificationView } from './notifications.ts';
 
 const ROOT = new Uint8Array(32).fill(3);
 
@@ -134,8 +135,8 @@ test('the failures get distinct sentences', () => {
   const daemonSilent = panelView(
     state({ lastFailure: { reason: 'timeout', message: 'the daemon did not answer' } }),
   );
-  assert.match(daemonSilent.headline, /computer is not answering/);
-  assert.match(daemonSilent.detail ?? '', /may have stopped/);
+  assert.match(daemonSilent.headline, /Cannot confirm the DSH status/);
+  assert.match(daemonSilent.detail ?? '', /busy or unreachable/);
 
   const notPaired = panelView(
     state({ connected: false, tunnelError: 'this device is not paired with that daemon any more' }),
@@ -161,7 +162,7 @@ test('a closed socket is not confused with a silent one', () => {
   assert.notEqual(closed.headline, silent.headline);
   assert.notEqual(closed.detail, silent.detail);
   assert.match(closed.detail ?? '', /network/);
-  assert.match(silent.detail ?? '', /stopped|asleep/);
+  assert.match(silent.detail ?? '', /busy or unreachable/);
 });
 
 test('a stale status is dropped when the tunnel dies', () => {
@@ -177,6 +178,183 @@ test('a stale status is dropped when the tunnel dies', () => {
 
   panel.disconnected('the relay closed the connection');
   assert.match(drawn.at(-1)?.headline ?? '', /Not connected/);
+});
+
+for (const reason of ['timeout', 'disconnected'] as const) {
+  test(`a ${reason} status probe retires notifications even when the carrier stays open`, async () => {
+    let rejectStatus: (error: Error) => void = () => {};
+    let notify: (notification: Notification) => void = () => {};
+    let stopCount = 0;
+    let stoppedPolling = false;
+    let feedView: NotificationView = { connected: false, entries: [], unread: 0, alert: null };
+    const drawn: PanelView[] = [];
+    const client = {
+      status: () => new Promise<Status>((_, reject) => { rejectStatus = reject; }),
+      onNotification(handler: (notification: Notification) => void) {
+        notify = handler;
+        return () => { stopCount += 1; };
+      },
+    } as unknown as ControlClient;
+    const feed = new NotificationFeed(view => { feedView = view; });
+    feed.connect(client);
+    notify({ event: 'goal_complete', severity: 'alert', atMs: 123, sessionRef: null });
+    assert.equal(feedView.unread, 1);
+    const panel = new ControlPanel({
+      control: () => client,
+      render: view => drawn.push(view),
+      schedule: () => () => { stoppedPolling = true; },
+      connectionLost: failure => { assert.equal(failure, reason); feed.disconnect(); },
+    });
+    panel.connected();
+    rejectStatus(new ControlError(reason, 'the old daemon session is gone'));
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(stoppedPolling, reason === 'disconnected', 'a timeout keeps polling and preserves the live proxy transport');
+    assert.equal(stopCount, 1);
+    assert.equal(feedView.connected, false);
+    assert.equal(feedView.entries.length, 0);
+    assert.equal(feedView.unread, 0);
+    assert.equal(feedView.alert, null);
+    notify({ event: 'goal_complete', severity: 'alert', atMs: 124, sessionRef: null });
+    assert.equal(feedView.entries.length, 0, 'a late callback from the failed session cannot restore old events');
+    assert.equal(drawn.at(-1)?.tone, 'error');
+  });
+}
+
+test('a refusal or malformed status response does not retire a connection that answered', async () => {
+  for (const reason of ['refused', 'malformed'] as const) {
+    let retired = false;
+    const panel = new ControlPanel({
+      control: () => ({ status: async () => { throw new ControlError(reason, 'the daemon answered'); } }) as unknown as ControlClient,
+      render: () => {},
+      schedule: () => () => {},
+      connectionLost: () => { retired = true; },
+    }, { connected: true });
+    await panel.refresh();
+    assert.equal(retired, false);
+  }
+});
+
+test('retiring overlapping status polls preserves the first disconnection and ignores late success', async () => {
+  const pending: { resolve: (value: Status) => void; reject: (error: Error) => void }[] = [];
+  const drawn: PanelView[] = [];
+  const client = { status: () => new Promise<Status>((resolve, reject) => pending.push({ resolve, reject })) } as unknown as ControlClient;
+  const panel = new ControlPanel({
+    control: () => client,
+    render: view => drawn.push(view),
+    schedule: () => () => {},
+    connectionLost: () => {
+      pending[1]!.reject(new ControlError('disconnected', 'the request was abandoned'));
+      pending[2]!.resolve(status());
+    },
+  }, { connected: true });
+  const refreshes = [panel.refresh(), panel.refresh(), panel.refresh()];
+  pending[0]!.reject(new ControlError('disconnected', 'the original connection was lost; reconnect'));
+  await Promise.all(refreshes);
+  assert.equal(drawn.length, 1, 'neither a close-induced rejection nor a stale success redraws the retired session');
+  assert.match(drawn[0]?.headline ?? '', /Cannot confirm the DSH status/);
+  assert.match(drawn[0]?.detail ?? '', /original connection was lost/);
+  assert.doesNotMatch(drawn[0]?.detail ?? '', /abandoned/);
+});
+
+test('an older timeout cannot replace a newer successful status or suspend notifications', async () => {
+  const pending: { resolve: (value: Status) => void; reject: (error: Error) => void }[] = [];
+  const drawn: PanelView[] = [];
+  let lost = 0;
+  const client = { status: () => new Promise<Status>((resolve, reject) => pending.push({ resolve, reject })) } as unknown as ControlClient;
+  const panel = new ControlPanel({
+    control: () => client,
+    render: view => drawn.push(view),
+    schedule: () => () => {},
+    connectionLost: () => { lost += 1; },
+  }, { connected: true });
+  const older = panel.refresh();
+  const newer = panel.refresh();
+  pending[1]!.resolve(status());
+  await newer;
+  pending[0]!.reject(new ControlError('timeout', 'the older status request expired'));
+  await older;
+  assert.equal(drawn.length, 1, 'a settled newer probe supersedes the older result');
+  assert.equal(drawn.at(-1)?.tone, 'ok');
+  assert.equal(drawn.at(-1)?.interfaceAvailable, true);
+  assert.equal(lost, 0, 'an obsolete failure cannot suspend notifications');
+});
+
+test('an older success cannot conceal a newer failed status probe', async () => {
+  const pending: { resolve: (value: Status) => void; reject: (error: Error) => void }[] = [];
+  const drawn: PanelView[] = [];
+  let restored = 0;
+  const client = { status: () => new Promise<Status>((resolve, reject) => pending.push({ resolve, reject })) } as unknown as ControlClient;
+  const panel = new ControlPanel({
+    control: () => client,
+    render: view => drawn.push(view),
+    schedule: () => () => {},
+    connectionRestored: () => { restored += 1; },
+  }, { connected: true });
+  const older = panel.refresh();
+  const newer = panel.refresh();
+  pending[1]!.reject(new ControlError('timeout', 'the newer status request expired'));
+  await newer;
+  pending[0]!.resolve(status());
+  await older;
+  assert.equal(drawn.length, 1);
+  assert.equal(drawn.at(-1)?.tone, 'error');
+  assert.equal(drawn.at(-1)?.interfaceAvailable, false);
+  assert.equal(restored, 0, 'an obsolete success cannot restore notifications');
+});
+
+test('starting another probe does not hide a failure while the newer probe is still pending', async () => {
+  const pending: { resolve: (value: Status) => void; reject: (error: Error) => void }[] = [];
+  const drawn: PanelView[] = [];
+  const client = { status: () => new Promise<Status>((resolve, reject) => pending.push({ resolve, reject })) } as unknown as ControlClient;
+  const panel = new ControlPanel({
+    control: () => client,
+    render: view => drawn.push(view),
+    schedule: () => () => {},
+  }, { connected: true });
+  const older = panel.refresh();
+  const newer = panel.refresh();
+  pending[0]!.reject(new ControlError('timeout', 'the first of overlapping probes expired'));
+  await older;
+  assert.equal(drawn.at(-1)?.tone, 'error', 'polling faster than the timeout must still expose an outage');
+  pending[1]!.resolve(status());
+  await newer;
+  assert.equal(drawn.at(-1)?.tone, 'ok', 'the newer successful probe still restores the connection');
+});
+
+test('a delayed status pauses notifications without closing the transport and later success restores them', async () => {
+  let slow = true;
+  let stopped = false;
+  let view: PanelView | undefined;
+  let feedView: NotificationView = { connected: false, entries: [], unread: 0, alert: null };
+  let notify: (notification: Notification) => void = () => {};
+  const client = {
+    status: async () => { if (slow) throw new ControlError('timeout', 'status was delayed'); return status(); },
+    onNotification: (handler: (notification: Notification) => void) => { notify = handler; return () => {}; },
+  } as unknown as ControlClient;
+  const feed = new NotificationFeed(next => { feedView = next; });
+  let suspended = false;
+  feed.connect(client);
+  notify({ event: 'goal_complete', severity: 'alert', atMs: 123, sessionRef: null });
+  const panel = new ControlPanel({
+    control: () => client,
+    render: next => { view = next; },
+    schedule: () => () => { stopped = true; },
+    connectionLost: reason => { assert.equal(reason, 'timeout'); suspended = true; feed.disconnect(); },
+    connectionRestored: () => { if (suspended) { feed.connect(client); suspended = false; } },
+  });
+  panel.connected();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(stopped, false);
+  assert.equal(feedView.connected, false);
+  assert.equal(feedView.entries.length, 0);
+  slow = false;
+  await panel.refresh();
+  assert.equal(view?.tone, 'ok');
+  assert.equal(feedView.connected, true);
+  assert.equal(feedView.entries.length, 0, 'old notifications are not replayed after recovery');
+  notify({ event: 'turn_complete', severity: 'notice', atMs: 124, sessionRef: null });
+  assert.equal(feedView.entries.length, 1, 'the recovered session receives new notifications');
+  panel.stop();
 });
 
 test('a refusal is shown as final rather than as a fault to retry', async () => {
@@ -364,4 +542,15 @@ test('the panel drives a real control client end to end', async () => {
   panel.stop();
   control.close();
   tunnel.close();
+});
+
+test('the embedded interface is available only for an answered running or attached DSH', () => {
+  for (const lifecycle of ['running', 'attached', 'starting', 'stopping', 'stopped', 'failed'] as const) {
+    assert.equal(panelView(state({ status: status({ state: lifecycle }) })).interfaceAvailable,
+      lifecycle === 'running' || lifecycle === 'attached', lifecycle);
+  }
+  for (const unavailable of [
+    { connected: false }, { socketClosed: true }, { status: null },
+    { lastFailure: { reason: 'timeout' as const, message: 'no answer' } },
+  ]) assert.equal(panelView(state(unavailable)).interfaceAvailable, false);
 });

@@ -6,11 +6,17 @@
 
 dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 DeepSeek Harness。**它不是 DSH 的 fork**，也不修改 DSH 核心。上游 DSH 位于另一个目录（`~/dsh-x/deepseek-harness`），只作参考与集成对象。
 
-当前阶段：**可自托管使用，提供 v0.1.0 二进制发布**。配对码 → 加密隧道 → 真实 DSH 界面这条链路已经在真实浏览器里跑通，
+当前阶段：**可自托管使用，提供 v0.2.0 二进制发布**。配对码 → 加密隧道 → 真实 DSH 界面这条链路已经在真实浏览器里跑通，
 中继可以自托管（二进制或 Docker），daemon 侧还有审计日志、崩溃报告、保活与多房间客户端。
-没有的东西同样重要，而且都写在文档里：**没有自动签名/可复现构建流水线**（已有手动构建脚本、Release tar 与 SHA-256；没有 npm 包，
+没有的东西同样重要，而且都写在文档里：**没有自动签名/可复现构建流水线**（已有手动构建脚本、Release tar 与 SHA-256；没有 npm registry 发布，
 见 [`docs/audit-scope.md`](docs/audit-scope.md) § 2.4）、**没有第三方审计**、**没有托管中继**。
 逐条状态见 [`docs/product/mvp.md`](docs/product/mvp.md) 的进度行。
+
+插件统一入口在 `plugins/dr.dsh`：单包携带原生隧道与管理程序，当前支持 DSH `0.2.2-alpha.2` 并回归 `0.2.1-rc.5`。本机
+`/_drdsh/manage` 页面通过独立授权调用原生管理层。安装、更新与接管使用 OS 持久作业；
+DSH 停止时页面也停止，不能把插件描述为独立常驻服务。见 [ADR-0023](docs/decisions/0023-plugin-local-management.md)。
+插件配置 `relayUrl` 可不安装 daemon 服务而独立连接；连接随宿主退出。常驻 daemon 负责可选的
+远程启停与崩溃恢复，见 [ADR-0026](docs/decisions/0026-plugin-owned-tunnel.md)。
 
 ## 五条硬规则
 
@@ -26,12 +32,13 @@ dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 Deep
 
 安装使用 Release 下载入口 `relay/install.sh` / `daemon/install.sh`，运维统一为
 `drdsh relay ...` / `drdsh daemon ...`；别名 `drdsh-relay` / `drdsh-daemon` 选择对应组件。各自的配置、程序、日志、服务与更新锁独立；
-PWA 属于 relay，插件属于 daemon。根 `install.sh` 可安装混合包，旧统一源码入口保留为 `scripts/install-legacy.sh`。
+PWA 属于 relay；旧安装的插件默认属于 daemon，DSH 包管理器安装的插件使用 `external` 归属。
+根 `install.sh` 可安装混合包，旧统一源码入口保留为 `scripts/install-legacy.sh`。
 修改管理逻辑时，保持更新和卸载一侧不改变另一侧 PID 或配置，见 ADR-0015。
 
 ```sh
 pnpm install
-pnpm run verify        # check:rs + lint:rs + test:rs + typecheck:ts + test:ts + lint:imports + docs:check
+pnpm run verify        # check:rs + lint:rs + test:rs + typecheck:ts + test:ts + test:cli + lint:imports + docs:check
 pnpm run docs:check    # 相对链接自检
 pnpm run lint:imports  # 强制"只有 dsh-surface.ts 能 import DSH"
 pnpm run fmt:rs        # cargo fmt --all
@@ -47,6 +54,10 @@ pnpm run typecheck:ts
 pnpm run test:ts
 ```
 
+单包插件由 `scripts/package-plugin.mjs --native <target>=<binary> --output <new.tgz>` 组装，
+`--native` 可重复；只能打包与当前接口匹配的程序，不能静默回落旧 Release。
+安装入口为 `dsh plugin --profile web add /absolute/path/plugin.tgz`，再从本机 DSH 页面授权管理。
+
 ## 实测脚本（单元测试看不见的东西）
 
 `pnpm run verify` 只跑静态检查与单元测试。**行为类声明必须在真实进程上实测**，这些脚本就是那些实测，
@@ -58,6 +69,7 @@ pnpm run test:ts
 | `scripts/systemd-smoke.mjs` | Linux 用户服务的特殊路径、首次启动、自启动开关、停止与重启 | systemd 用户会话 + Node；使用真实替身进程，不需要 Rust/DSH |
 | `scripts/browser-pairing-smoke.mjs <relay-url>` | 真实浏览器里用配对码走通、刷新后免输入、崩溃上报落盘 | 已构建的客户端 + 运行中的中继 + Playwright Chromium |
 | `scripts/browser-task-smoke.mjs <relay-url> [--full]` | 浏览器里跑真实任务；`--full` 含审批与长输出 | 同上（`--full` 需要一个会触发审批的提示词） |
+| `scripts/browser-embedded-smoke.mjs --dsh <dsh-path>` | 同页 Harness、真实 mux、并发 HTTP、Worker 更换、多房间隔离、第二客户端拒绝与重载恢复；`--check-slow-transfer` 另测大资源限速下的状态等待、断流提示和恢复 | 已构建 PWA 与二进制 + 真实 DSH + Chromium；不需要模型/API key，临时目录运行 |
 | `scripts/browser-offline-smoke.mjs` / `-soak-` / `-perf-` | 离线外壳、崩溃率（rule of three）、滚动性能 | 同上 |
 | `scripts/pwa-tunnel-smoke.mjs <relay-url> <room-key>` | Node 侧客户端经隧道取回真实 DSH 界面 | 运行中的中继 + 真实 daemon |
 | `scripts/pwa-control-smoke.mjs` / `pwa-crash-smoke.mjs` | 控制面（含 attach 拒绝）、崩溃上报全链路 | 后者自带中继与 daemon |
@@ -66,11 +78,22 @@ pnpm run test:ts
 | `scripts/browser-rooms-smoke.mjs` | 多房间：v1 存储迁移、第二次配对新增、切换连到被选中的机器 | 已构建的客户端与二进制 + Chromium |
 | `scripts/deploy-probe.mjs` | 中继的非回环警告、daemon 认出代理超时、保活救活 carrier | 已构建的两个二进制；可选 `qemu` |
 | `scripts/relay-transport-smoke.mjs` | daemon 按 WS/WSS 地址连接、WSS 配对、加密控制往返与证书拒绝 | 已构建的 `drdsh` + Node + OpenSSL；自带中继、TLS 代理与临时 CA，不需要 DSH |
+| `scripts/relay-backpressure-smoke.mjs` | 慢客户端的大载荷完整转发、其他房间不受阻塞、长期无进展时关闭回收 | 已构建的中继 + Node；自带有界 TCP 限速代理，不需要 DSH |
+| `scripts/dsh-upgrade-smoke.mjs <dsh-path>` | 真实 bundle 安装/移除、审批与提问回答保留、会话与目标事件元数据 | 已安装的 DSH + 其包管理器；临时 profile 与报告接收器，无需模型/API key |
+| `scripts/plugin-notification-smoke.mjs` | 真实插件 → 本机鉴权接收 → 加密隧道 → PWA 通知订阅，含拒绝、重连与 DSH 重启 | 已构建二进制 + Node；使用 DSH 替身，不需要模型/API key |
+| `scripts/daemon-management-smoke.mjs` | 本机管理、同状态目录单实例、运行中配对与撤销、旧 CLI 兼容 | 已构建二进制 + Node；自带中继与 DSH 替身，不需要模型/API key |
+| `scripts/plugin-owner-smoke.mjs` | 外部插件归属、旧配置兼容、独立报告开关及另一侧服务不受影响 | 已构建二进制与 PWA + 真实用户服务；只使用临时 prefix 与 DSH 替身 |
+| `scripts/plugin-management-smoke.mjs` | 真实插件 HTTP 管理接口与 OS 作业：授权、安装/更新/卸载/重装、幂等重试、失败结果、宿主强制退出后继续执行 | 已构建 `drdsh` + Node + launchd 或 systemd 用户会话；自带中继与 DSH 替身，不需要 PWA 或模型/API key |
 | `scripts/cpu-baseline-smoke.mjs` | 发布二进制与密码学在 2006/2008/2010 级 CPU 上可运行 | `qemu-user-static` + release 构建 |
 
 先 `cargo build --workspace`，再 `PATH=$PWD/target/test-bin:$PATH` 让 daemon 找到 `dsh` 包装脚本；
 浏览器脚本还需要 `pnpm --filter @dr.dsh/pwa build` 与一个带 `DSH_RELAY_CLIENT_DIR=apps/pwa/dist` 的中继。
 长跑（soak、探针、浏览器）请放到后台任务里跑，前台会被打断。
+插件管理改动还须覆盖真实 profile 的本机授权、远端 HTTP/WS 路径拒绝、OS 作业跨宿主退出、
+首次接管身份检查与清理；旧的报告/归属实测通过不能代替这些行为的验收。
+运行 `node scripts/plugin-management-smoke.mjs`，或加 `--drdsh /absolute/path/drdsh` 指定本机程序。
+该脚本在 2026-10-29 的本机 launchd 与 blade systemd 均通过 7/7；真实 DSH `0.2.1-rc.2` 的 Chromium
+管理页操作与回归结果统一记录在[本机管理验收](docs/operations/daemon-management.md#验证)，不要把脚本替身覆盖范围当成完整浏览器验收。
 
 ## 布局与"改动应该放哪"
 
@@ -80,9 +103,9 @@ pnpm run test:ts
 | 配对、密钥派生、AEAD | `crates/dr-dsh-crypto`（规范）+ `packages/crypto`（镜像） |
 | DSH 监督、代理、加密端点 | `crates/dr-dsh-daemon` |
 | 中继路由、房间、限制 | `crates/dr-dsh-relay` |
-| DSH 事件订阅与上报 | `plugins/dr.dsh`（只碰 `dsh-surface.ts` 里的契约假设） |
+| DSH 事件订阅、管理页面与本机授权 | `plugins/dr.dsh`（上游契约假设仍只放在 `dsh-surface.ts`） |
 | 远端页面、隧道改写 | `apps/pwa`（`routing.ts` 是纯函数，改它必须带测试） |
-| 统一 CLI、Release 安装与本机管理 | `crates/dr-dsh-cli` + `scripts/*release*.sh` |
+| 统一 CLI、Release 安装、本机管理与 OS 作业 | `crates/dr-dsh-cli` + `scripts/*release*.sh`；插件打包为 `scripts/package-plugin.mjs` |
 | 决策依据 | `docs/decisions/`（新增 ADR，而不是改旧 ADR 的结论） |
 
 ## 写代码时的取向
@@ -91,6 +114,7 @@ pnpm run test:ts
 - **拒绝要带原因。** 任何 `return Err`/`throw` 的用户可见路径都要说清楚是哪一侧失败、为什么、怎么办。失败透明是产品要求。
 - **不要在日志、`Debug`、错误信息里打印密钥或 payload。** `dr-dsh-crypto` 的类型已经这样做了，新增类型请照做。
 - **默认拒绝。** 新的端点、新的帧类型、新的配置项：默认关闭、默认最小权限。
+- **管理权限不能借用 DSH 登录或报告令牌。** `/_drdsh` 既要本机 capability，又要 daemon 的 HTTP/WS 代理拒绝；会停止宿主的操作交给独立 OS 作业，不能只把子进程 detached。
 - **不要为了"以后可能用到"加抽象。** 本仓库的骨架已经刻意留白，没有实现的东西写在文档的"未决事项"里，而不是提前抽象出来。
 
 ## 不要做的事

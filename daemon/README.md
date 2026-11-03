@@ -1,6 +1,6 @@
 # dr.dsh Daemon
 
-> v0.1.0: `drdsh daemon ...` and `drdsh-daemon ...` are equivalent. Release installation and
+> v0.2.0: `drdsh daemon ...` and `drdsh-daemon ...` are equivalent. Release installation and
 > management are native Rust; Node is needed by DSH only. No Cargo or pnpm is needed on the host.
 > Packages support macOS arm64 and Linux x86_64 musl. See [release installation](../docs/operations/releases.md).
 
@@ -20,12 +20,13 @@ The [relay](../relay/README.md) distributes the browser client (PWA) and forward
 
 ## Prerequisites
 
-- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) installed and configured, with local tasks working.
-  The current integration check covers DSH **`0.1.7-rc.2`**; **`0.1.5-rc.2`** and
-  **`0.1.6-alpha.2`** have historical checks. See the
-  [compatibility record](../docs/integration/dsh-surface.md) after upstream updates.
-- Node.js 24+ (or 22.19+ on the 22.x line) for DSH. Rust and a compiler are only needed for source builds.
-  Installing the base daemon does not require pnpm.
+- [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), either already installed or installed
+  automatically by v0.2.0. Model account/API key setup remains a user step.
+  The current integration check covers DSH **`0.2.2-alpha.2`** and **`0.2.1-rc.5`**.
+  Earlier checks remain in the
+  [compatibility record](../docs/integration/dsh-surface.md). Recheck compatibility after upstream updates.
+- Node.js **24.9+** and npm for the current DSH and automatic installation. Release daemon binaries
+  need no Rust or pnpm; npm dependencies may need their own native build prerequisites.
 - A macOS desktop login or Linux `systemctl --user` session. On Windows, use WSL2 with systemd enabled
   and DSH installed inside the same WSL2 environment.
 - A running relay, reachable through a `ws://` or `wss://` address.
@@ -45,19 +46,26 @@ drdsh-daemon status
 
 The installer detects your OS and CPU, downloads a prebuilt daemon from Release and verifies SHA-256.
 It installs under `~/.local` by default, without sudo. No source checkout is needed.
-Add `--version v0.1.1` to pin the binary version or `--prefix /path/to/install` for a custom directory.
+Add `--version v0.2.0` to pin the binary version or `--prefix /path/to/install` for a custom directory.
 
 | Option | Purpose | Default on first installation |
 | :--- | :--- | :--- |
-| `--dsh /absolute/path/to/dsh` | The executable used to launch DeepSeek Harness; the installer saves its absolute path | Find `dsh` on PATH |
+| `--dsh /absolute/path/to/dsh` | Select an existing executable and save its absolute path | v0.2.0 packages install pinned DSH privately; older releases find `dsh` on PATH |
 | `--workdir /path/to/your/project` | Optional startup working directory for DSH; must already exist | The directory where you run the installer |
 | `--dsh-home /path/to/dsh-home` | DSH's own configuration and data directory | `DSH_HOME`, or `~/.dsh` |
 
 For `--dsh`, use the executable file, not the Harness source directory. If `dsh` is a shell alias or
-function, supply an executable file that the background service can run. The installer does not install
-or configure upstream DSH. Reinstallation preserves omitted options. Add `--port 3081` if another
+function, supply an executable file that the background service can run. Reinstallation preserves
+omitted options. Add `--port 3081` if another
 process uses the default port `3080`. Wait for DSH HTTP status to say `responding`;
 use `drdsh-daemon logs` if it stays unresponsive.
+
+From v0.2.0, a first installation without `--dsh` downloads pinned
+DSH `0.2.2-alpha.2` to a private version directory and installs the bundled plugin. The daemon supplies
+its relay and report configuration when launching DSH. Existing DSH executables and external plugin
+ownership remain unchanged. This is available from v0.2.0; see
+[automatic DSH installation](../docs/operations/dsh-provisioning.md) for the package command,
+requirements and recovery. It does not sign in to your model provider.
 
 The `export` affects the current terminal only. Add it to your shell configuration or run
 `~/.local/bin/drdsh-daemon` directly. Keep the computer powered on, awake, and online.
@@ -141,17 +149,16 @@ Leave the command running and use the code within about five minutes:
 1. Open the **relay's HTTPS address** on your phone or another computer. For a same-host trial,
    use the [local relay](http://127.0.0.1:8787).
 2. Enter the code under **Pairing code or room key** and click **Connect**.
-3. After **Paired** appears, click **Connect** again.
-4. Click **Open the DeepSeek Harness interface** to use DSH in a new tab.
+3. Pairing automatically connects and opens Harness when DSH is running. No second click is needed.
 
-**Keep the original dr.dsh tab open:** it maintains the tunnel. The browser remembers pairings;
+**Keep the dr.dsh page open:** it maintains the tunnel. The floating **dr** button opens connection
+management, reload and disconnect controls. The browser remembers pairings;
 select a saved computer and connect on later visits. Run `drdsh-daemon pair` again after a failed
 or expired attempt. Your phone accesses the relay address; DSH's local port stays private.
 
 ## Connect to a remote relay
 
-WSS is available in the updated source build and has not been published to Release yet;
-see [build and release notes](../docs/operations/releases.md).
+v0.2.0 includes WSS, native TLS and private CA support; see [TLS configuration](../docs/operations/tls.md).
 
 `--relay` belongs to the daemon: it identifies the relay to connect to. Supply the scheme the
 endpoint actually serves; the daemon keeps `ws://` as WS and uses TLS for `wss://`.
@@ -170,7 +177,13 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/insta
 ```
 
 Use an origin without `/ws/daemon` or `/ws/client`; the daemon adds its endpoint path.
-WSS verifies the server certificate and hostname against the system's trusted roots.
+WSS verifies the server certificate and hostname against the system's trusted roots by default.
+Add `--insecure` to `run`, either pairing command, `install`, or `status` to skip certificate verification;
+`--no-insecure` restores it. Installation saves the choice; other commands override it for one invocation.
+v0.2.0 add `--ca-cert /path/ca.pem` for private CAs on run, pairing and installation.
+Use `run --attach <port> --attach-tls` for an existing HTTPS DSH loopback endpoint; installed managed
+HTTPS DSH uses `install --dsh-tls` for both readiness enforcement and health checks.
+See [TLS configuration](../docs/operations/tls.md) for certificates, Docker and plugin trust.
 The browser opens `https://relay.example.com`; both addresses must reach the same relay.
 See the [domain setup](../relay/README.md#custom-domain).
 
@@ -228,12 +241,77 @@ only change login autostart; use `start` / `stop` for immediate action.
 
 ## Optional plugin
 
-The Release bundle includes the plugin; no pnpm is needed. Register it with `drdsh daemon install plugin --source <bundle>`, or add `--with-plugin`
-when first installing the daemon. Remove it with `drdsh-daemon uninstall plugin`.
+v0.2.0 packages install the bundled plugin by default for a new daemon-owned installation.
+For an existing installation, use `drdsh daemon install plugin --source <bundle>` or add `--with-plugin`.
+No pnpm is needed. Remove it with `drdsh-daemon uninstall plugin`.
 Installing or removing the plugin restarts a previously running DSH host.
 
-The receiver for supplementary plugin notifications and background push are not implemented yet.
-You can handle approvals and questions in the real DSH interface.
+Installing the plugin enables the daemon's local report receiver. Turn completion, approval requests,
+goal completion and subagent completion travel through the encrypted tunnel to the connected dr.dsh page.
+The page shows an activity list and unread count, highlighting approvals and completed goals. Handle
+approvals and questions in the real DSH interface. Notifications contain only event type, severity,
+timestamp and an opaque session reference, never message content.
+
+For a source checkout, register the bundle in DSH and run `drdsh daemon run --plugin-reports`.
+`DSHD_PLUGIN_REPORTS=1` also enables reporting (`0` disables it; unset defaults to off). Installed
+management commands use an explicit `pluginReportsEnabled` value when set, falling back to the
+plugin installation record for legacy configurations. The receiver binds a random free
+port on `127.0.0.1`; the daemon passes its temporary report credential to the managed DSH process.
+No fixed port or saved token is needed. Ordinary local DSH runs leave reporting inactive; the local
+management page can still load on a compatible DSH version. Attach
+mode does not support reports.
+
+Notifications require paired-device authentication; legacy room-key-only connections do not receive
+them. Keep the dr.dsh tab and tunnel connected. Events are not stored or replayed while disconnected;
+reconnecting or switching computers clears the list. Web Push, system notifications and offline
+delivery are not implemented.
+Pairing and revocation take effect while the daemon is running, without restarting DSH.
+Revocation also closes that device's existing access.
+
+## Manage daemon from a DSH plugin
+
+A complete plugin bundle contains the page and a matching native daemon manager. The management
+surface supports **DSH `0.2.2-alpha.2`** and `0.2.1-rc.5`; see the
+[management acceptance record](../docs/operations/daemon-management.md#验证) for the tested scope. Native bundles support Linux x86_64 musl and macOS Apple Silicon, using
+the user's systemd or launchd session.
+
+Download `drdsh-plugin-0.2.0.tgz` and its `.sha256` from the
+[v0.2.0 Release](https://github.com/luckyuro/dr.dsh/releases/tag/v0.2.0),
+[verify the checksum](../docs/operations/releases.md#独立插件包), then install through DSH:
+
+```sh
+dsh plugin --profile web add /absolute/path/drdsh-plugin-0.2.0.tgz
+dsh web
+```
+
+Open DSH's authenticated local URL, then **dr.dsh 管理** (`/_drdsh/manage`). Use the page's local browser
+authorization or its private unlock-file fallback. Set the relay address, review the current DSH profile
+defaults, and install the daemon. If DSH was started manually, install without starting the service and
+confirm the page's handoff plan to restart that host under the daemon. Then create a pairing code in
+the page, copy it and submit it once in the relay's PWA to pair and connect.
+
+For access only while DSH is open, skip daemon installation and configure `relayUrl` using the
+[standalone plugin steps](../docs/integration/dsh-surface.md#42-不安装-daemon-服务的插件连接).
+
+DSH login alone does not grant management rights. A one-time local browser link expires after five
+minutes; management sessions last fifteen minutes and are lost when the plugin restarts. The daemon
+blocks this namespace for remote HTTP and WebSocket requests. Keep unlock-file contents private.
+
+Installation, update and operations that stop the host run as independent OS jobs with saved results.
+Stopping DSH closes the page too; reopen it after DSH returns and check the job's actual result.
+Stopping the whole daemon requires a local CLI or user service manager to start it again.
+
+The plugin installs the daemon with external plugin ownership, reports and local administration enabled.
+Its own package remains owned by DSH; daemon updates and removal do not unregister it. Existing CLI
+installations keep their previous ownership. `drdsh daemon manage` and the private Unix runtime socket
+remain available for local automation.
+
+Build the complete `.tgz` with `scripts/package-plugin.mjs --native <target>=<binary> --output <new.tgz>`;
+the native option may be repeated for both platforms. This is a local packaging workflow, not an npm
+registry publication. A source-only or legacy reporting bundle without matching native files cannot
+bootstrap the management page's native operations. See the
+[local management guide](../docs/operations/daemon-management.md) for packaging, authorization, jobs,
+handoff, configuration and JSON protocol details.
 
 ## Separate files and configuration
 

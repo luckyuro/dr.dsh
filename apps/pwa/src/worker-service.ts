@@ -31,7 +31,20 @@
  * @module @dr.dsh/pwa/worker-service
  */
 
-import { toDshPath } from './routing.ts';
+import { INTERFACE_PATH, toDshPath } from './routing.ts';
+
+/** A routing label, never a credential or a DSH query parameter. */
+export const VIEW_PARAMETER = 'drdshView';
+
+export function validViewId(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u.test(value);
+}
+
+function viewFromUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const view = new URL(value).searchParams.get(VIEW_PARAMETER);
+  return validViewId(view) ? view : undefined;
+}
 
 /** The tunnel, as the worker sees it: an opaque request/response channel. */
 export interface RequestOfficer {
@@ -99,7 +112,7 @@ export class WorkerTunnel {
    * @param port - the port the page handed over.
    */
   public attach(port: MessagePort): void {
-    if (this.port !== null) this.port.close();
+    this.detach();
     this.port = port;
     port.onmessage = (event: MessageEvent) => this.absorb(event.data as Inbound);
     port.start();
@@ -158,6 +171,125 @@ export class WorkerTunnel {
   }
 }
 
+/** Keeps every shell and its documents on the tunnel that shell handed over. */
+export class MissingWorkerView extends Error {}
+
+interface ViewRequest {
+  clientId: string;
+  clientUrl?: string;
+  requestUrl: string;
+  resultingClientId?: string;
+}
+
+export class WorkerViews {
+  private readonly views = new Map<string, { owner: string; tunnel: WorkerTunnel }>();
+  private readonly owners = new Map<string, string>();
+  private readonly documents = new Map<string, string>();
+  private readonly waiting = new Set<() => void>();
+  private retired = false;
+
+  public get isRetired(): boolean { return this.retired; }
+
+  public attach(owner: string, viewId: string, port: MessagePort): void {
+    this.requireActive();
+    if (!owner || !validViewId(viewId)) throw new Error('the local interface route is invalid; reconnect this page');
+    const existing = this.views.get(viewId);
+    if (existing && existing.owner !== owner) throw new Error('this interface belongs to another page; reconnect this page');
+    const previous = this.owners.get(owner);
+    if (previous && previous !== viewId) this.detach(owner, previous);
+    const tunnel = existing?.tunnel ?? new WorkerTunnel();
+    tunnel.attach(port);
+    this.views.set(viewId, { owner, tunnel });
+    this.owners.set(owner, viewId);
+    this.changed();
+  }
+
+  public bind(documentId: string, viewId: string): void {
+    this.requireActive();
+    if (!documentId || !this.views.has(viewId)) throw new Error('the interface tunnel is not ready; reconnect its parent page');
+    const previous = this.documents.get(documentId) ?? this.owners.get(documentId);
+    if (previous && previous !== viewId) throw new Error('the document belongs to another interface; reload it from its parent page');
+    if (this.documents.get(documentId) === viewId) return;
+    this.documents.set(documentId, viewId);
+    this.changed();
+  }
+
+  public isDocument(documentId: string): boolean {
+    return this.documents.has(documentId);
+  }
+
+  public detach(owner: string, viewId: string): void {
+    const view = this.views.get(viewId);
+    if (!view || view.owner !== owner) return;
+    view.tunnel.detach();
+    this.views.delete(viewId);
+    this.owners.delete(owner);
+    for (const [documentId, route] of this.documents) {
+      if (route === viewId) this.documents.delete(documentId);
+    }
+  }
+
+  public route(options: ViewRequest): { viewId: string; tunnel: WorkerTunnel } {
+    this.requireActive();
+    const url = new URL(options.requestUrl);
+    const explicit = url.pathname === INTERFACE_PATH ? viewFromUrl(options.requestUrl) : undefined;
+    const bound = this.documents.get(options.clientId) ?? this.owners.get(options.clientId);
+    const fromDocument = viewFromUrl(options.clientUrl);
+    if (bound && explicit && bound !== explicit) throw new Error('the requested interface belongs to another page; reconnect this page');
+    const viewId = explicit ?? bound ?? fromDocument;
+    const view = viewId === undefined ? undefined : this.views.get(viewId);
+    if (!viewId || !view) throw new MissingWorkerView('this interface has no connected parent page; reconnect that page');
+    if (options.clientId && fromDocument === viewId && !this.owners.has(options.clientId)) {
+      this.bind(options.clientId, viewId);
+    }
+    if (options.resultingClientId) this.bind(options.resultingClientId, viewId);
+    return { viewId, tunnel: view.tunnel };
+  }
+
+  /** A restarted worker waits for the original parent and document to identify themselves. */
+  public waitForRoute(options: ViewRequest, timeoutMs = 5_000): Promise<{ viewId: string; tunnel: WorkerTunnel }> {
+    return new Promise((resolve, reject) => {
+      const finish = () => { clearTimeout(timer); this.waiting.delete(attempt); };
+      const attempt = () => {
+        try {
+          const route = this.route(options);
+          finish();
+          resolve(route);
+        } catch (error) {
+          if (error instanceof MissingWorkerView) return;
+          finish();
+          reject(error);
+        }
+      };
+      const timer = setTimeout(() => {
+        finish();
+        reject(new MissingWorkerView('the interface route could not be restored; reconnect its parent page'));
+      }, timeoutMs);
+      this.waiting.add(attempt);
+      attempt();
+    });
+  }
+
+  private changed(): void {
+    for (const attempt of [...this.waiting]) attempt();
+  }
+
+  /** Long-lived responses must finish before a replacement worker can activate. */
+  public retire(): void {
+    if (this.retired) return;
+    this.retired = true;
+    for (const view of this.views.values()) view.tunnel.detach();
+    this.views.clear();
+    this.owners.clear();
+    this.documents.clear();
+    this.changed();
+  }
+
+  private requireActive(): void {
+    if (this.retired) throw new Error('the interface worker is updating; retry after the new worker takes control');
+  }
+}
+
 /**
  * Turns a request the browser gave the worker into one the tunnel can carry.
  *
@@ -184,6 +316,7 @@ export async function toOutbound(request: Request, origin: string): Promise<Omit
   // `/__dr/assets/x` and DSH never sees the request it wrote. Resolving every sub-resource
   // against DSH's root is what makes a single-page app's relative URLs work through a tunnel that
   // has to give the page a path of its own.
+  if (url.pathname === INTERFACE_PATH) url.searchParams.delete(VIEW_PARAMETER);
   const path = toDshPath(url.pathname) + url.search;
   const headers: [string, string][] = [];
   request.headers.forEach((value, name) => headers.push([name, value]));
@@ -235,6 +368,7 @@ export function injectWebSocketBootstrap(
   body: Uint8Array<ArrayBuffer>,
   contentType: string | undefined,
   isInterface: boolean,
+  viewId?: string,
 ): Uint8Array<ArrayBuffer> {
   if (!isInterface || contentType === undefined || !contentType.includes('text/html')) return body;
   const html = new TextDecoder().decode(body);
@@ -242,7 +376,8 @@ export function injectWebSocketBootstrap(
   // is an inline script in `<head>`, and a module in `<body>` would still be too late for the
   // application code that follows it.
   const at = html.indexOf('<script');
-  const tag = '<script src="/client/ws-bootstrap.js"></script>';
+  const route = validViewId(viewId) ? ` data-drdsh-view="${viewId}"` : '';
+  const tag = `<script src="/client/ws-bootstrap.js"${route}></script>`;
   const injected = at === -1 ? html.replace('</head>', `${tag}</head>`) : html.slice(0, at) + tag + html.slice(at);
   return new TextEncoder().encode(injected);
 }

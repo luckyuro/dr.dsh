@@ -10,8 +10,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { Session, decodeRoomKey, type SessionHost, type SessionPhase } from './session.ts';
+import { Session, decodeRoomKey, handWorkerView, openRelaySocket, type SessionHost, type SessionPhase } from './session.ts';
 import { Tunnel, type TunnelSocket } from './tunnel.ts';
+import { WorkerViews } from './worker-service.ts';
 
 /** A 32-byte key as the daemon prints it. */
 const ROOM_KEY = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
@@ -42,7 +43,7 @@ function droppingSocket(): TunnelSocket {
  * `Session.start` opens its own tunnel, so the socket has to be one that answers a
  * handshake — not a scripted stub, since the session drives it for real.
  */
-async function handshakenSocket(): Promise<{ socket: TunnelSocket }> {
+async function handshakenSocket(acceptDevice = false): Promise<{ socket: TunnelSocket }> {
   const handlers: ((data: Uint8Array<ArrayBuffer>) => void)[] = [];
   const closeHandlers: ((reason: string) => void)[] = [];
   const root = decodeRoomKey(ROOM_KEY);
@@ -90,6 +91,19 @@ async function handshakenSocket(): Promise<{ socket: TunnelSocket }> {
         new DataView(ack.buffer).setBigUint64(0, 0n, false);
         ack.set(sealed, 8);
         deliver(carrier(0, ack));
+        if (acceptDevice) {
+          // Device proof validation lives in device.test.ts; this fixture supplies the explicit
+          // verdict required before a stored identity can reach the worker handoff.
+          const accepted = new Uint8Array(await crypto.subtle.encrypt(
+            { name: 'AES-GCM', iv: nonceBytes(1), additionalData: additionalData(0, 1) },
+            sealKey,
+            new TextEncoder().encode(JSON.stringify({ type: 'resume_accept' })),
+          ));
+          const verdict = new Uint8Array(8 + accepted.length);
+          new DataView(verdict.buffer).setBigUint64(0, 1n, false);
+          verdict.set(accepted, 8);
+          deliver(carrier(0, verdict));
+        }
       });
     },
     receive(handler) {
@@ -126,7 +140,7 @@ function recordingHost(options: { readonly socket?: TunnelSocket; readonly failW
       order.push('prepareWorker');
       if (options.failWorker === true) throw new Error('the worker never took control');
     },
-    hand(serve) {
+    async hand(serve) {
       order.push('hand');
       // The session expects to start serving here; a real port would be answered by the
       // worker, so this records the call and returns the stop function the session keeps.
@@ -198,7 +212,7 @@ test('a stored room record connects with nothing typed', async () => {
   // challenge it. Since ADR-0007 the identity deliberately carries no room, which is why the caller
   // passes the room it selected — that is the whole difference between "one pairing" and "as many as
   // you have machines".
-  const { socket } = await handshakenSocket();
+  const { socket } = await handshakenSocket(true);
   const { host, order } = recordingHost({ socket });
   const record = await storedDevice();
   const session = new Session(host);
@@ -246,4 +260,258 @@ test('stopping an idle session is safe and reports idle', () => {
   session.stop();
   assert.equal(session.isReady, false);
   assert.deepEqual(phases.map(phase => phase.phase), ['idle']);
+});
+
+test('the session does not report ready before the worker acknowledges its route', async () => {
+  const { socket } = await handshakenSocket();
+  const { host, phases } = recordingHost({ socket });
+  let accept!: (stop: () => void) => void;
+  let handed!: () => void;
+  const handStarted = new Promise<void>(resolve => { handed = resolve; });
+  host.hand = async () => { handed(); return new Promise<() => void>(resolve => { accept = resolve; }); };
+  const session = new Session(host);
+  const starting = session.start({ roomKey: ROOM_KEY });
+  await handStarted;
+  assert.equal(phases.some(phase => phase.phase === 'ready'), false);
+  let stopped = 0;
+  accept(() => { stopped += 1; });
+  await starting;
+  assert.equal(phases.at(-1)?.phase, 'ready');
+  session.stop();
+  assert.equal(stopped, 1);
+});
+
+test('worker route handoff waits for acknowledgements, rebinds on upgrade, and stops its listener and ports', async () => {
+  const viewId = '11111111-1111-4111-8111-111111111111';
+  const events = new EventTarget();
+  const handed: { viewId: string; port: MessagePort }[] = [];
+  let unhands = 0;
+  const controller = () => ({
+    postMessage(value: unknown, transfer: Transferable[]) {
+      const message = value as { kind: string; viewId: string };
+      if (message.kind === 'unhand') { unhands += 1; return; }
+      const port = transfer[0];
+      assert.ok(port instanceof MessagePort);
+      handed.push({ viewId: message.viewId, port });
+    },
+  });
+  const host = {
+    controller: controller(),
+    addEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.addEventListener(type, listener); },
+    removeEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.removeEventListener(type, listener); },
+  };
+  let ready = 0;
+  let released = 0;
+  let stop: (() => void) | undefined;
+  const starting = handWorkerView(host, viewId, port => () => { released += 1; port.close(); }, () => { ready += 1; });
+  try {
+    assert.equal(ready, 0);
+    assert.equal(handed.length, 1);
+    handed[0]!.port.postMessage({ kind: 'handed', viewId });
+    stop = await starting;
+    assert.equal(ready, 1);
+    host.controller = controller();
+    events.dispatchEvent(new Event('controllerchange'));
+    assert.equal(handed.length, 2);
+    assert.equal(released, 1);
+    assert.equal(unhands, 1);
+    handed[1]!.port.postMessage({ kind: 'handed', viewId: 'another-view' });
+    await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(ready, 1);
+    handed[1]!.port.postMessage({ kind: 'handed', viewId });
+    for (let attempts = 0; ready !== 2 && attempts < 20; attempts += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(ready, 2);
+    stop();
+    assert.equal(released, 2);
+    assert.equal(unhands, 2);
+    events.dispatchEvent(new Event('controllerchange'));
+    assert.equal(handed.length, 2);
+  } finally {
+    stop?.();
+    for (const hand of handed) hand.port.close();
+  }
+});
+
+test('a rejected worker route closes the new port and never becomes ready', async () => {
+  let released = 0;
+  let removed = 0;
+  let ready = false;
+  const ports: MessagePort[] = [];
+  const host = {
+    controller: {
+      postMessage(value: unknown, transfer: Transferable[]) {
+        if ((value as { kind: string }).kind !== 'hand') return;
+        const port = transfer[0];
+        assert.ok(port instanceof MessagePort);
+        ports.push(port);
+        port.postMessage({ kind: 'failed', reason: 'the route belongs to another page' });
+      },
+    },
+    addEventListener() {},
+    removeEventListener() { removed += 1; },
+  };
+  try {
+    await assert.rejects(handWorkerView(host, '11111111-1111-4111-8111-111111111111', () => () => { released += 1; }, () => { ready = true; }), /another page/);
+    assert.equal(ready, false);
+    assert.equal(released, 1);
+    assert.equal(removed, 2);
+  } finally { for (const port of ports) port.close(); }
+});
+
+test('worker replacement detaches its old route and rejects pending HTTP in the previous worker', async () => {
+  const viewId = '11111111-1111-4111-8111-111111111111';
+  const previous = new WorkerViews();
+  const replacement = new WorkerViews();
+  const events = new EventTarget();
+  const controller = (views: WorkerViews) => ({
+    postMessage(value: unknown, transfer: Transferable[]) {
+      const message = value as { kind: string; viewId: string };
+      if (message.kind === 'unhand') { views.detach('shell', message.viewId); return; }
+      const port = transfer[0];
+      assert.ok(port instanceof MessagePort);
+      views.attach('shell', message.viewId, port);
+      port.postMessage({ kind: 'handed', viewId: message.viewId });
+    },
+  });
+  const host = {
+    controller: controller(previous),
+    addEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.addEventListener(type, listener); },
+    removeEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.removeEventListener(type, listener); },
+  };
+  const stop = await handWorkerView(host, viewId, port => () => port.close());
+  try {
+    const old = previous.route({ clientId: 'shell', requestUrl: 'https://relay.example/slow' });
+    const pending = old.tunnel.fetch({ method: 'GET', path: '/slow', headers: [], body: new Uint8Array(0) });
+    const rejected = assert.rejects(pending, /detached/);
+    host.controller = controller(replacement);
+    events.dispatchEvent(new Event('controllerchange'));
+    assert.throws(() => previous.route({ clientId: 'shell', requestUrl: 'https://relay.example/slow' }), /no connected parent/);
+    await rejected;
+    assert.equal(replacement.route({ clientId: 'shell', requestUrl: 'https://relay.example/new' }).viewId, viewId);
+  } finally {
+    stop();
+    previous.detach('shell', viewId);
+    replacement.detach('shell', viewId);
+  }
+});
+
+test('only the current worker can request restoration without a controller change', async () => {
+  const viewId = '11111111-1111-4111-8111-111111111111';
+  const events = new EventTarget();
+  const ports: MessagePort[] = [];
+  let hands = 0;
+  let ready = 0;
+  const host = {
+    controller: {
+      postMessage(value: unknown, transfer: Transferable[]) {
+        const message = value as { kind: string; viewId: string };
+        if (message.kind !== 'hand') return;
+        assert.equal(message.viewId, viewId);
+        hands += 1;
+        const port = transfer[0];
+        assert.ok(port instanceof MessagePort);
+        ports.push(port);
+        port.postMessage({ kind: 'handed', viewId });
+      },
+    },
+    addEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.addEventListener(type, listener); },
+    removeEventListener(type: 'controllerchange' | 'message', listener: EventListener) { events.removeEventListener(type, listener); },
+  };
+  const requestRestore = (source: unknown) => events.dispatchEvent(Object.assign(new Event('message'), { source, data: { kind: 'restore-views' } }));
+  const stop = await handWorkerView(host, viewId, port => () => port.close(), () => { ready += 1; });
+  try {
+    requestRestore({ postMessage() {} });
+    assert.equal(hands, 1);
+    requestRestore(host.controller);
+    assert.equal(hands, 2);
+    for (let attempts = 0; ready !== 2 && attempts < 20; attempts += 1) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.equal(ready, 2);
+    stop();
+    requestRestore(host.controller);
+    assert.equal(hands, 2);
+  } finally {
+    stop();
+    for (const port of ports) port.close();
+  }
+});
+
+test('stopping while the route is unacknowledged releases its controller listener immediately', async () => {
+  const abort = new AbortController();
+  let released = 0;
+  let removed = 0;
+  const ports: MessagePort[] = [];
+  const host = {
+    controller: { postMessage(_value: unknown, transfer: Transferable[]) {
+      if (transfer[0] instanceof MessagePort) ports.push(transfer[0]);
+    } },
+    addEventListener() {},
+    removeEventListener() { removed += 1; },
+  };
+  const pending = handWorkerView(host, '11111111-1111-4111-8111-111111111111', () => () => { released += 1; }, () => {}, () => {}, abort.signal);
+  const rejected = assert.rejects(pending, /connection ended/);
+  abort.abort();
+  await rejected;
+  assert.equal(released, 1);
+  assert.equal(removed, 2);
+  for (const port of ports) port.close();
+});
+
+async function withRelayReplies(replies: (() => unknown)[], run: (sockets: { closed: boolean }[]) => Promise<void>): Promise<void> {
+  const original = globalThis.WebSocket;
+  const sockets: { closed: boolean }[] = [];
+  class RelaySocket extends EventTarget {
+    closed = false;
+    binaryType = '';
+    constructor() { super(); sockets.push(this); queueMicrotask(() => this.dispatchEvent(new Event('open'))); }
+    send(): void {
+      const reply = replies.shift()?.();
+      queueMicrotask(() => this.dispatchEvent(reply === undefined ? new Event('close')
+        : new MessageEvent('message', { data: JSON.stringify(reply) })));
+    }
+    close(): void { this.closed = true; }
+  }
+  globalThis.WebSocket = RelaySocket as unknown as typeof WebSocket;
+  try { await run(sockets); } finally { globalThis.WebSocket = original; }
+}
+
+const noDaemon = (): unknown => ({ type: 'reject', reason: 'no daemon is serving this room' });
+const relayUrl = new URL('ws://localhost/ws/client');
+
+test('a newly paired daemon can re-register before the first encrypted connection', async () => {
+  await withRelayReplies([noDaemon, () => ({ type: 'ready' })], async sockets => {
+    const tunnel = await openRelaySocket(relayUrl, 'test-room', true);
+    assert.equal(sockets.length, 2);
+    assert.equal(sockets[0]?.closed, true);
+    assert.equal(sockets[1]?.closed, false);
+    tunnel.close();
+    assert.equal(sockets[1]?.closed, true);
+  });
+});
+
+test('an ordinary connection and a busy room are refused without retrying', async () => {
+  for (const [fresh, reply] of [[false, noDaemon], [true, () => ({ type: 'reject', reason: 'room is already in use' })]] as const) {
+    await withRelayReplies([reply], async sockets => {
+      await assert.rejects(openRelaySocket(relayUrl, 'test-room', fresh), /relay refused/);
+      assert.equal(sockets.length, 1);
+      assert.equal(sockets[0]?.closed, true);
+    });
+  }
+});
+
+test('the fresh-pairing retry window expires and closes rejected sockets', async context => {
+  let now = 0;
+  context.mock.method(Date, 'now', () => now);
+  await withRelayReplies([noDaemon, () => { now = 5_001; return noDaemon(); }], async sockets => {
+    await assert.rejects(openRelaySocket(relayUrl, 'test-room', true), /no daemon is serving/);
+    assert.equal(sockets.length, 2);
+    assert.ok(sockets.every(socket => socket.closed));
+  });
+});
+
+test('a relay closing before its greeting ends the connection instead of leaving a spinner', async () => {
+  await withRelayReplies([() => undefined], async sockets => {
+    await assert.rejects(openRelaySocket(relayUrl, 'test-room', true));
+    assert.equal(sockets.length, 1);
+    assert.equal(sockets[0]?.closed, true);
+  });
 });

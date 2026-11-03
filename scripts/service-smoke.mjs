@@ -73,6 +73,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from 'node
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const args = process.argv.slice(2);
+if (args.includes('--dump-config')) { console.log('[]'); process.exit(0); }
 if (args[0] === '--version') { console.log('0.1.5-rc.2'); }
 else if (args[0] === 'plugin') {
   if (args[1] !== '--profile' || args[2] !== 'web') throw new Error('unexpected profile');
@@ -80,7 +81,7 @@ else if (args[0] === 'plugin') {
   const registration = join(process.env.DSH_HOME, 'fixture-plugin.json');
   if (args[3] === 'add') {
     const manifest = JSON.parse(readFileSync(join(args[4], 'package.json'), 'utf8'));
-    const plugin = await import(pathToFileURL(join(args[4], 'src/index.ts')));
+    const plugin = await import(pathToFileURL(join(args[4], manifest.exports['.'])));
     let dispose;
     plugin.apply({ on() { return () => {}; }, effect(fn) { dispose = fn(); } });
     dispose?.();

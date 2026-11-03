@@ -5,9 +5,8 @@
 # host's process and filesystem namespaces, and that is a decision with security consequences this
 # project deliberately leaves to the operator (see docs/operations/install.md).
 #
-# Nothing here needs a C toolchain beyond what the Rust stage brings: the workspace's cryptography is
-# pure Rust (ADR-0001), which is also what keeps this image buildable for people on machines without
-# one — the same property M5's "old CPU" path depends on.
+# The TLS host uses ring and the C toolchain already present in the Rust build stage.
+# No compiler or daemon code is shipped in the runtime stage.
 
 # ------------------------------------------------------------------------------------------------
 # 1. The client bundle: the relay serves it, so it has to be in the image.
@@ -32,9 +31,8 @@ RUN corepack enable \
  && pnpm --filter '@dr.dsh/pwa' build
 
 # ------------------------------------------------------------------------------------------------
-# 2. The relay binary. Only its own crate (and the protocol crate it depends on) is compiled: the
-#    daemon and its DSH-facing dependencies are not in this image at all, which is the zero-knowledge
-#    argument expressed as a build step (ADR-0002).
+# 2. The CLI host with only its relay feature. TLS is in the host; the relay crate
+#    retains its crypto-free dependency graph, and daemon/DSH code is excluded.
 # ------------------------------------------------------------------------------------------------
 FROM rust:1.97.1-bookworm AS relay
 
@@ -45,8 +43,10 @@ WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 COPY apps/pwa/static/index.html ./apps/pwa/static/index.html
-RUN cargo build --release --locked -p dr-dsh-relay \
- && strip target/release/drdsh-relay
+COPY assets/brand ./assets/brand
+COPY scripts/release-install.sh ./scripts/release-install.sh
+RUN cargo build --release --locked -p dr-dsh-cli --no-default-features --features relay \
+ && strip target/release/drdsh
 
 # ------------------------------------------------------------------------------------------------
 # 3. Runtime: a slim base, a non-root user, no build tooling.
@@ -65,7 +65,8 @@ RUN apt-get update \
 # editor or a tool that writes private files by default produces — becomes a 404 in the container while
 # the same file works on the host, where the relay runs as its owner. Found exactly that way: the
 # manifest 404ed while its icons, created by a script with the usual umask, were fine.
-COPY --from=relay --chmod=0755 /src/target/release/drdsh-relay /usr/local/bin/drdsh-relay
+COPY --from=relay --chmod=0755 /src/target/release/drdsh /usr/local/bin/drdsh-relay
+COPY --chmod=0755 scripts/relay-healthcheck.sh /usr/local/bin/relay-healthcheck
 COPY --from=client --chmod=0644 /src/apps/pwa/dist /usr/share/dr.dsh/client
 
 # The relay forwards ciphertext and keeps nothing: a writable filesystem is not needed, and a
@@ -78,6 +79,6 @@ EXPOSE 8787
 USER drdsh
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD curl --fail --silent --show-error http://127.0.0.1:8787/healthz || exit 1
+  CMD ["/usr/local/bin/relay-healthcheck"]
 
-ENTRYPOINT ["/usr/local/bin/drdsh-relay"]
+ENTRYPOINT ["/usr/local/bin/drdsh-relay", "run"]

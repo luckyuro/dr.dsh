@@ -12,8 +12,12 @@
     - id: dr.dsh
       name: '@dr.dsh/dsh-plugin'
       config:
-        # Reports are POSTed here. Loopback only: the daemon never listens on a
-        # public interface, and the plugin has no way to reach one.
+        # Set relayUrl to an HTTP(S)/WS(S) origin to connect this DSH directly.
+        # The bundled native tunnel follows this plugin's lifetime; no daemon
+        # service is required. A supervising daemon takes precedence when present.
+        # relayUrl: 'wss://relay.example'
+        # The supervising daemon overrides this origin through DRDSH_REPORT_URL
+        # and supplies DRDSH_REPORT_TOKEN. Without both, reporting stays inactive.
         daemonUrl: 'http://127.0.0.1:8790'
         # Which events are worth reporting. Alerts are interruptions; the rest
         # are badge material (see docs/product/mvp.md § Notification taxonomy).

@@ -51,6 +51,10 @@ fn managed_command(p: &Paths) -> Result<()> {
 }
 
 fn plugin(config: &Config, p: &Paths, verb: &str) -> Result<()> {
+    ensure!(
+        config.owns_plugin(),
+        "The DSH bundle is externally owned; manage it through DSH instead of daemon installation."
+    );
     let mut command = Command::new(
         config
             .dsh
@@ -177,7 +181,9 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
         }
     }
     let with_plugin = scope == "daemon"
-        && (args.flag("with-plugin")
+        && config.owns_plugin()
+        && (!previous.as_ref().is_some_and(Config::installed)
+            || args.flag("with-plugin")
             || args.asset.as_deref() == Some("plugin")
             || previous
                 .as_ref()
@@ -188,9 +194,19 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
         "plugins/dr.dsh"
     });
     if with_plugin {
-        for name in ["package.json", "cordis.patch.yml", "src/index.ts"] {
+        for name in [
+            "package.json",
+            "cordis.patch.yml",
+            "web/manage.html",
+            "web/manage.js",
+        ] {
             regular(&plugin_source.join(name))?;
         }
+        regular(&plugin_source.join(if bundle.is_some() {
+            "src/index.js"
+        } else {
+            "src/index.ts"
+        }))?;
     }
     if args.flag("start") || args.flag("enable") || previous.as_ref().is_some_and(Config::installed)
     {
@@ -204,12 +220,45 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
         files::copy(&client, &stage.0.join("client"))?;
     }
     if with_plugin {
-        for name in ["package.json", "cordis.patch.yml", "src"] {
-            files::copy(
-                &plugin_source.join(name),
-                &stage.0.join("plugin").join(name),
-            )?;
+        if bundle.is_some() {
+            for name in ["package.json", "cordis.patch.yml", "src", "web"] {
+                files::copy(
+                    &plugin_source.join(name),
+                    &stage.0.join("plugin").join(name),
+                )?;
+            }
+        } else {
+            // Node intentionally refuses type stripping inside node_modules.
+            // Source installs use exactly the same ESM packager as releases.
+            ensure!(Command::new("node")
+                .arg(source.join("scripts/package-plugin-source.mjs"))
+                .arg(stage.0.join("plugin"))
+                .status().context("Cannot stage the plugin; install Node and repository pnpm dependencies, or use a Release package.")?.success(),
+                "Plugin ESM staging failed; run pnpm install and TypeScript checks before retrying. Existing services were not stopped.");
         }
+        let target = format!(
+            "{}-{}",
+            std::env::consts::ARCH,
+            if cfg!(target_os = "macos") {
+                "apple-darwin"
+            } else {
+                "unknown-linux-musl"
+            }
+        );
+        let native = stage.0.join("plugin/native").join(&target);
+        // The installed plugin always carries this installer, never an older
+        // Release payload that might not implement the current management API.
+        files::copy(&binary, &native.join("bin/drdsh"))?;
+        files::atomic_write(
+            &native.join("bundle.json"),
+            &serde_json::to_vec(&Bundle {
+                format: 1,
+                version: env!("CARGO_PKG_VERSION").into(),
+                target,
+                components: vec!["daemon".into()],
+            })?,
+            0o600,
+        )?;
         let manifest = stage.0.join("plugin/package.json");
         let mut value: serde_json::Value = serde_json::from_slice(&fs::read(&manifest)?)?;
         if let Some(object) = value.as_object_mut() {
@@ -217,6 +266,9 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
             object.remove("scripts");
         }
         files::atomic_write(&manifest, &serde_json::to_vec_pretty(&value)?, 0o600)?;
+    }
+    if scope == "daemon" {
+        crate::provision::ensure_dsh(&mut config, p)?;
     }
     let was_running =
         previous.as_ref().is_some_and(Config::installed) && service::state(p)?.running;
@@ -281,9 +333,10 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
         if scope == "relay" {
             config.components.push("client".into());
         }
-        if previous
-            .as_ref()
-            .is_some_and(|c| c.components.iter().any(|s| s == "plugin"))
+        if config.owns_plugin()
+            && previous
+                .as_ref()
+                .is_some_and(|c| c.components.iter().any(|s| s == "plugin"))
         {
             config.components.push("plugin".into());
         }
@@ -336,12 +389,16 @@ pub(crate) fn install(scope: &str, args: &Args, p: &Paths) -> Result<()> {
 
 pub(crate) fn uninstall(args: &Args, config: &Config, p: &Paths) -> Result<()> {
     let plugin_only = args.asset.as_deref() == Some("plugin");
+    ensure!(
+        !plugin_only || config.owns_plugin(),
+        "The DSH bundle is externally owned; uninstall it through DSH. The daemon and its service have not been changed."
+    );
     let running = plugin_only && config.installed() && service::state(p)?.running;
     if config.installed() {
         service::stop(config, p)?;
     }
     let result = (|| -> Result<()> {
-        if config.components.iter().any(|s| s == "plugin") {
+        if config.owns_plugin() && config.components.iter().any(|s| s == "plugin") {
             plugin(config, p, "remove")?;
             files::remove(&p.root.join("plugin"))?;
         }
@@ -389,4 +446,69 @@ pub(crate) fn uninstall(args: &Args, config: &Config, p: &Paths) -> Result<()> {
         if plugin_only { "plugin" } else { &p.scope }
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn externally_owned_bundle_is_not_copied_or_registered() -> Result<()> {
+        let temporary = tempfile::tempdir()?;
+        let source = temporary.path().join("bundle");
+        let prefix = temporary.path().join("installed");
+        files::mkdir(&source.join("bin"))?;
+        files::atomic_write(&source.join("bin/drdsh"), b"#!/bin/sh\nexit 0\n", 0o700)?;
+        let bundle = Bundle {
+            format: 1,
+            version: env!("CARGO_PKG_VERSION").into(),
+            target: format!(
+                "{}-{}",
+                std::env::consts::ARCH,
+                if cfg!(target_os = "macos") {
+                    "apple-darwin"
+                } else {
+                    "unknown-linux-musl"
+                }
+            ),
+            components: vec!["daemon".into()],
+        };
+        files::atomic_write(
+            &source.join("bundle.json"),
+            &serde_json::to_vec(&bundle)?,
+            0o600,
+        )?;
+        // This executable would fail any accidental plugin add/remove. The bundle
+        // deliberately has no plugin asset, as a DSH-owned package need not ship it.
+        let dsh = temporary.path().join("dsh");
+        files::atomic_write(&dsh, b"#!/bin/sh\nexit 79\n", 0o700)?;
+        let args = Args::parse(vec![
+            "install".into(),
+            "--prefix".into(),
+            prefix.to_string_lossy().into(),
+            "--source".into(),
+            source.to_string_lossy().into(),
+            "--dsh".into(),
+            dsh.to_string_lossy().into(),
+            "--workdir".into(),
+            temporary.path().to_string_lossy().into(),
+            "--plugin-owner".into(),
+            "external".into(),
+            "--plugin-reports".into(),
+            "--local-admin".into(),
+        ])?;
+        let p = Paths::new(&prefix, "daemon")?;
+        let _lock = files::DirectoryGuard::lock(&p.root)?;
+        install("daemon", &args, &p)?;
+        let config = Config::read(&p)?;
+        assert!(!config.owns_plugin());
+        assert!(config.plugin_reports_enabled());
+        assert_eq!(config.components, ["daemon"]);
+        assert!(!p.root.join("plugin").exists());
+        let remove = Args::parse(vec!["uninstall".into(), "plugin".into()])?;
+        assert!(uninstall(&remove, &config, &p).is_err());
+        assert!(p.bin.join("drdsh").is_file());
+        assert!(plugin(&config, &p, "add").is_err());
+        Ok(())
+    }
 }

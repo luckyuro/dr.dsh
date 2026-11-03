@@ -21,8 +21,22 @@ dr-dsh-daemon = { path = "../dr-dsh-daemon", optional = true }
 anyhow.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+dr-dsh-tls.workspace = true
+rustls.workspace = true
+tokio.workspace = true
+axum.workspace = true
+tracing-subscriber.workspace = true
 # Local service identity only; never a dependency of the relay crate (ADR-0017).
 sha2.workspace = true
+rand.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1", features = ["fs", "process"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+libproc = "0.14.11"
+# Read exact argv/environment boundaries for safe local DSH handoff; no system scan.
+sysinfo = { version = "0.37.2", default-features = false, features = ["system"] }
 
 [dev-dependencies]
 tempfile.workspace = true

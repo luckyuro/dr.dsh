@@ -42,6 +42,7 @@ function standInTunnel(
 ): Tunnel {
   const handlers = new Map<number, (payload: Uint8Array<ArrayBuffer>) => void>();
   return {
+    onClosed: () => () => {},
     on(streamId: number, handler: (payload: Uint8Array<ArrayBuffer>) => void) {
       handlers.set(streamId, handler);
       return () => handlers.delete(streamId);
@@ -141,6 +142,7 @@ test('two requests in flight are answered on their own streams', async () => {
 
 test('a tunnel that fails reaches the worker as a reason, not a hang', async () => {
   const failing = {
+    onClosed: () => () => {},
     on: () => () => {},
     async send() {
       throw new Error('the daemon refused the request: no websocket 7 is open');
@@ -164,4 +166,33 @@ test('stopping the officer leaves the worker saying it is unpaired', async () =>
     worker.fetch({ method: 'GET', path: '/', headers: [], body: new Uint8Array(0) }),
     /not paired|detached/,
   );
+});
+
+test('stopping the officer cancels an unfinished response and drains its late body without retaining the worker', async () => {
+  const handlers = new Map<number, (payload: Uint8Array<ArrayBuffer>) => void>();
+  const closed = new Set<(reason: string) => void>();
+  let sent!: () => void;
+  const started = new Promise<void>(resolve => { sent = resolve; });
+  const tunnel = {
+    on(streamId: number, handler: (payload: Uint8Array<ArrayBuffer>) => void) {
+      handlers.set(streamId, handler);
+      return () => { if (handlers.get(streamId) === handler) handlers.delete(streamId); };
+    },
+    onClosed(handler: (reason: string) => void) { closed.add(handler); return () => closed.delete(handler); },
+    async send() { sent(); },
+  } as unknown as Tunnel;
+  const { worker, served } = handoff(tunnel);
+  const pending = worker.fetch({ method: 'GET', path: '/events', headers: [], body: new Uint8Array(0) });
+  const rejected = assert.rejects(pending, /detached/);
+  await started;
+  served();
+  worker.detach();
+  await rejected;
+  assert.equal(handlers.size, 1);
+  for (const handler of handlers.values()) {
+    assert.doesNotThrow(() => handler(new Uint8Array([0x50, 0x58, 1, 5])));
+    handler(new Uint8Array([0x50, 0x58, 1, 6]));
+  }
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
 });

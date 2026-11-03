@@ -29,6 +29,7 @@ import { t } from './i18n.ts';
 
 import type { CrashReportBody } from './health.ts';
 import { CONTROL_STREAM, Tunnel, TunnelError } from './tunnel.ts';
+import { parseNotification, type Notification } from './notifications.ts';
 
 /** What the daemon is doing with the DSH process it owns. */
 export type LifecycleState =
@@ -111,15 +112,14 @@ export type ControlReason =
 const COMMAND_TIMEOUT_MS = 30_000;
 
 /**
- * How long a status request may take.
+ * How long a status request may wait without authenticated inbound traffic.
  *
- * Short, because a status request is answered inline from state the daemon already holds — it
- * cannot legitimately take seconds. It is also the request that *detects* a dead daemon: with the
- * command budget it took thirty seconds for a user staring at the panel to be told the daemon was
- * gone, which is indistinguishable from a hang. Measured, not guessed: the first failure smoke
- * against a killed daemon reported the truth after exactly 30s.
+ * Status replies share the carrier with DSH bundles. A real 11 MB load held eight replies behind
+ * body frames for 25 seconds, so traffic on other streams must count as progress. Silence still
+ * fails promptly, and an absolute bound stops unrelated traffic from hiding a missing reply.
  */
 const STATUS_TIMEOUT_MS = 5_000;
+const STATUS_MAX_WAIT_MS = 60_000;
 
 /**
  * How long a crash report may take.
@@ -144,20 +144,34 @@ export class ControlClient {
     { resolve: (value: Record<string, unknown>) => void; reject: (error: Error) => void; timer: ReturnType<typeof setTimeout> }
   >();
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeClosed: () => void;
+  private readonly notificationHandlers = new Set<(notification: Notification) => void>();
+  private closed = false;
 
   public constructor(tunnel: Tunnel) {
     this.tunnel = tunnel;
     this.unsubscribe = tunnel.on(CONTROL_STREAM, payload => this.absorb(payload));
+    this.unsubscribeClosed = tunnel.onClosed(() => this.close());
   }
 
   /** Stops listening. The tunnel itself is left alone: the caller owns it. */
   public close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.unsubscribe();
+    this.unsubscribeClosed();
+    this.notificationHandlers.clear();
     for (const [, waiting] of this.pending) {
       clearTimeout(waiting.timer);
       waiting.reject(new ControlError('disconnected', 'the request was abandoned'));
     }
     this.pending.clear();
+  }
+
+  /** Subscribes to unsolicited, validated metadata while this connection is alive. */
+  public onNotification(handler: (notification: Notification) => void): () => void {
+    if (!this.closed) this.notificationHandlers.add(handler);
+    return () => { this.notificationHandlers.delete(handler); };
   }
 
   /**
@@ -230,20 +244,45 @@ export class ControlClient {
     expect: string,
     timeoutMs: number,
   ): Promise<Record<string, unknown>> {
+    if (this.closed) throw new ControlError('disconnected', 'the control connection is closed; reconnect to your computer');
     const id = this.nextId;
     this.nextId += 1;
+    const startedAt = performance.now();
     const answer = new Promise<Record<string, unknown>>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const expire = () => {
+        const waiting = this.pending.get(id);
+        if (waiting === undefined) return;
+        let timeoutMessage = `the daemon did not answer the ${kind} within ${timeoutMs}ms`;
+        if (kind === 'status_request') {
+          const now = performance.now();
+          const lastProgress = Math.max(startedAt, this.tunnel.lastAuthenticatedInboundAt);
+          const remaining = Math.min(
+            STATUS_MAX_WAIT_MS - (now - startedAt),
+            timeoutMs - (now - lastProgress),
+          );
+          if (remaining > 0) {
+            // The map owns the latest timer so a reply or disconnect cancels a postponed check.
+            waiting.timer = setTimeout(expire, remaining);
+            return;
+          }
+          timeoutMessage = now - startedAt >= STATUS_MAX_WAIT_MS
+            ? 'the daemon did not answer the status_request within 60000ms'
+            : 'the daemon status reply is missing and no authenticated inbound traffic arrived for 5000ms';
+        }
         this.pending.delete(id);
         reject(
           new ControlError(
             'timeout',
-            `the daemon did not answer the ${kind} within ${timeoutMs}ms`,
+            timeoutMessage,
           ),
         );
-      }, timeoutMs);
+      };
+      const timer = setTimeout(expire, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
     });
+    // A disconnect can reject while tunnel.send is still sealing. Observe it now, then propagate
+    // the same rejection below, so closing a connection cannot create an unhandled rejection.
+    void answer.catch(() => {});
 
     const request: Record<string, unknown> = { kind, id };
     if (body !== undefined) request['body'] = body;
@@ -296,8 +335,17 @@ export class ControlClient {
       // frame is not an answer to anything.
       return;
     }
-    if (message === null || typeof message !== 'object') return;
+    if (this.closed || message === null || typeof message !== 'object' || Array.isArray(message)) return;
     const id = (message as { id?: unknown }).id;
+    if ((message as { kind?: unknown }).kind === 'notification') {
+      // Zero is reserved for daemon-initiated events; no notification may consume a pending reply.
+      if (id !== undefined && id !== null && id !== 0) return;
+      const notification = parseNotification((message as { body?: unknown }).body);
+      if (notification !== null) {
+        for (const handler of this.notificationHandlers) handler(notification);
+      }
+      return;
+    }
     if (typeof id !== 'number') return;
     const waiting = this.pending.get(id);
     if (waiting === undefined) return;

@@ -1,6 +1,6 @@
 # dr.dsh Daemon
 
-> v0.1.0：`drdsh daemon ...` 与 `drdsh-daemon ...` 等价。Release 安装和管理由 Rust 完成；
+> v0.2.0：`drdsh daemon ...` 与 `drdsh-daemon ...` 等价。Release 安装和管理由 Rust 完成；
 > 服务器不需要 Cargo 或 pnpm，Node 仅供 DSH。支持 macOS arm64 与 Linux x86_64 musl。
 > 见[发布与安装](../docs/operations/releases.md)。
 
@@ -20,10 +20,12 @@ Daemon 独立安装和运行，主动连接已有的 relay。
 
 ## 安装前准备
 
-- 已安装并配置好 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，能在本机运行任务。
-  本次集成验收覆盖 DSH **`0.1.7-rc.2`**；**`0.1.5-rc.2`** 和 **`0.1.6-alpha.2`** 有历史验收记录。
+- 使用已有 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，或让v0.2.0 包自动安装。
+  模型账号/API key 仍需自行配置。本次集成验收覆盖 DSH **`0.2.2-alpha.2`** 与 **`0.2.1-rc.5`**；
+  其余版本保留历史记录。
   上游更新后需重新核对[兼容记录](../docs/integration/dsh-surface.md)。
-- DSH 需要 Node.js 24+（或 22 系列的 22.19+）。Release 安装不需要 Rust、编译工具链或 pnpm。
+- 当前 DSH 与自动安装需要 **Node.js 24.9+ 和 npm**。daemon 二进制不需要 Rust 或 pnpm；
+  npm 依赖若需本机编译，还需其要求的构建工具。
 - macOS 图形登录会话或 Linux `systemctl --user` 会话；Windows 使用启用 systemd 的 WSL2，DSH 也安装在同一 WSL2 环境。
 - 一个运行中的中继，具有可访问的 `ws://` 或 `wss://` 地址。
 
@@ -41,18 +43,23 @@ drdsh-daemon status
 ```
 
 安装器自动识别系统和 CPU，从 Release 下载 daemon 并校验 SHA-256，默认安装到 `~/.local`，无需 sudo 或源码仓库。
-可追加 `--version v0.1.1` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
+可追加 `--version v0.2.0` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
 
 | 参数 | 用途 | 首次安装时的默认值 |
 | :--- | :--- | :--- |
-| `--dsh /absolute/path/to/dsh` | 用于启动 DeepSeek Harness 的可执行程序，安装器保存其绝对路径 | 在 PATH 中查找 `dsh` |
+| `--dsh /absolute/path/to/dsh` | 选择已有 DeepSeek Harness 可执行程序，保存其绝对路径 | v0.2.0 包私有安装固定 DSH；旧 Release 在 PATH 中查找 `dsh` |
 | `--workdir /path/to/your/project` | 可选的 DSH 启动工作目录，须已存在 | 执行安装命令时的当前目录 |
 | `--dsh-home /path/to/dsh-home` | DSH 自身的配置与数据目录 | `DSH_HOME`，未设置时为 `~/.dsh` |
 
 `--dsh` 应填写可执行文件，不能填写 Harness 源码目录。若平时的 `dsh` 是 shell 别名或函数，
-请提供后台服务可直接运行的可执行文件。安装器不安装或配置上游 DSH；重新安装时，省略的参数沿用已保存值。
+请提供后台服务可直接运行的可执行文件。重新安装时，省略的参数沿用已保存值。
 已有进程占用默认端口 `3080` 时可加 `--port 3081`。检查状态时，等待 DSH HTTP 显示 `responding`；
 持续失败时用 `drdsh-daemon logs` 查看原因。
+
+v0.2.0 包在首次安装且未指定 `--dsh` 时，下载固定的 DSH `0.2.2-alpha.2` 到私有版本
+目录，并装配随包插件；daemon 启动 DSH 时注入其 relay 与报告配置。已有 DSH 程序和外部
+插件归属会保留。v0.2.0 起可用；包内命令、前提与恢复方法见
+[DSH 自动安装](../docs/operations/dsh-provisioning.md)，模型登录仍由用户完成。
 
 `export` 只影响当前终端；可加入 shell 配置，也可直接运行 `~/.local/bin/drdsh-daemon`。
 电脑需要保持开机、联网且不休眠。
@@ -127,15 +134,15 @@ drdsh-daemon pair
 
 1. 在手机或另一台电脑打开**中继的 HTTPS 地址**。同机试用可打开 [本机中继](http://127.0.0.1:8787)。
 2. 将配对码填入 **Pairing code or room key**，点击 **Connect**。
-3. 显示 **Paired** 后，再点击一次 **Connect**。
-4. 点击 **Open the DeepSeek Harness interface**，在新标签页使用 DSH。
+3. 配对成功后自动连接；DSH 运行时，真实 Harness 界面直接显示在当前页面。无需再点一次。
 
-**保留原来的 dr.dsh 标签页**，它维持隧道。浏览器会保存配对，下次选择已登记电脑并连接即可。
+**保留 dr.dsh 页面**，它维持隧道。浮动 **dr** 按钮打开连接管理、重载与断开入口。
+浏览器会保存配对，下次选择已登记电脑并连接即可。
 配对失败或过期后重新运行 `drdsh-daemon pair`。手机访问中继地址，DSH 的本机端口不对外开放。
 
 ## 连接远端中继
 
-WSS 已在当前源码中实现，尚未发布到 Release；需要包含此改动的构建，见[构建与发布说明](../docs/operations/releases.md)。
+v0.2.0 已提供 WSS、原生 TLS 和私有 CA 支持，见[TLS 配置](../docs/operations/tls.md)。
 
 `--relay` 是 daemon 的参数，用来指定它连接的中继。按中继实际提供的协议填写：
 `ws://` 就使用 WS，`wss://` 就使用 TLS 连接。
@@ -154,7 +161,12 @@ curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/daemon/insta
 ```
 
 地址填写到主机和端口即可，不要追加 `/ws/daemon` 或 `/ws/client`，daemon 会自动选择端点。
-WSS 使用系统信任的根证书校验证书和主机名。
+WSS 默认使用系统信任的根证书校验证书和主机名。
+`run`、两种配对命令、`install` 和 `status` 可加 `--insecure` 跳过证书验证，
+`--no-insecure` 恢复；安装时保存选择，其他命令只覆盖当次运行。
+v0.2.0 支持在运行、配对和安装时加 `--ca-cert /path/ca.pem` 使用私有 CA。
+已有 HTTPS 回环 DSH 可用 `run --attach <port> --attach-tls` 附着；托管 HTTPS DSH
+安装时加 `--dsh-tls`，就绪检查和服务健康探针都会要求 HTTPS。详见 [TLS 配置](../docs/operations/tls.md)。
 浏览器打开 `https://relay.example.com`，两种地址应到达同一个中继。
 域名配置见 [Relay 说明](../relay/README.zh.md#使用域名)。
 
@@ -208,10 +220,61 @@ SSH 连接需要自行保持；退出 SSH 后转发停止，daemon 会等待中�
 
 ## 可选插件
 
-Release 包已带插件源文件，无需 pnpm。使用 `drdsh daemon install plugin --source <bundle>` 注册，或安装时加 `--with-plugin`。
+v0.2.0 包的新 daemon 归属安装默认装配随包插件，无需 pnpm。已有安装使用
+`drdsh daemon install plugin --source <bundle>` 注册，或安装时加 `--with-plugin`。
 卸载插件使用 `drdsh-daemon uninstall plugin`；安装或移除插件会重启原来运行的 DSH 宿主。
 
-插件的补充通知接收端和后台推送尚未实现。当前可在真实 DSH 界面中处理审批与提问。
+安装插件后，daemon 服务会启用本机报告接收器，将任务结束、审批请求、目标完成及子代理结束通知
+经加密隧道送到已配对且保持连接的 dr.dsh 页面。页面内显示通知列表与未读数，审批和目标完成会突出提示；
+处理审批与提问仍使用真实 DSH 界面。通知只有事件类型、严重度、时间和不透明会话引用，不包含正文。
+
+从源码直接运行时，先把 bundle 注册到 DSH，再使用 `drdsh daemon run --plugin-reports`；
+也可设置 `DSHD_PLUGIN_REPORTS=1`（`0` 关闭，未设置默认关闭）。安装管理优先使用显式的
+`pluginReportsEnabled`，旧配置继续按插件安装记录设置此开关。
+daemon 只监听 `127.0.0.1` 的随机空闲端口，并为受管 DSH 注入每次启动随机生成的报告令牌；
+不需要手工配置固定端口或保存令牌。手动启动 DSH 时报告保持停用，但兼容版本仍可加载本机
+管理页面；attach 模式不支持报告。
+
+通知需要配对设备身份鉴权，只有房间密钥的旧连接不会收到。断线时不保存或补发，重连和切换电脑会清空页面列表；
+保留 dr.dsh 标签页和隧道连接才能收到。后台 Web Push、系统通知权限和离线通知均未实现。
+配对和撤销会在 daemon 运行期间生效，无需重启 DSH；撤销会关闭该设备的现有访问。
+
+## 从 DSH 插件管理 Daemon
+
+完整插件包包含页面和匹配平台的原生管理器。当前兼容 **DSH `0.2.2-alpha.2`** 与 `0.2.1-rc.5`；
+原生管理验收范围见[本机管理记录](../docs/operations/daemon-management.md#验证)。原生包支持 Linux x86_64 musl 与 macOS Apple Silicon，
+需要当前用户的 systemd 或 launchd 会话。
+
+从 [v0.2.0 Release](https://github.com/luckyuro/dr.dsh/releases/tag/v0.2.0) 下载 `drdsh-plugin-0.2.0.tgz`
+及其 `.sha256`，按[校验步骤](../docs/operations/releases.md#独立插件包)验证后，通过 DSH 安装：
+
+```sh
+dsh plugin --profile web add /absolute/path/drdsh-plugin-0.2.0.tgz
+dsh web
+```
+
+打开 DSH 的本机登录链接，再点 **dr.dsh 管理**（`/_drdsh/manage`）。通过页面的本机浏览器
+授权或私有解锁文件取得管理权，填写中继地址，核对当前 DSH profile 的默认路径并安装 daemon。
+当前 DSH 是手动启动时，先安装不启动的服务，再检查并确认接管计划，让 daemon 重启并监督
+当前宿主。之后可直接在页面创建并复制配对码，到 Relay 的 PWA 一次提交完成配对与连接。
+
+只需要 DSH 运行期间远程访问时，也可跳过 daemon 安装，按[独立连接步骤](../docs/integration/dsh-surface.md#42-不安装-daemon-服务的插件连接)配置 `relayUrl`。
+
+DSH 登录本身不授予管理权。本机启动链接 5 分钟内单次有效，管理会话 15 分钟有效，插件
+重启后失效；daemon 拒绝远端 HTTP 和 WebSocket 到达管理命名空间。解锁文件内容必须保密。
+
+安装、更新和会停止宿主的操作由独立 OS 作业执行并保存结果。停止 DSH 会关闭管理页面；
+重新启动后打开页面、重新授权并查询实际结果。整个 daemon 已停止时，需本机 CLI 或用户
+服务管理器恢复它，不能指望已消失的页面继续响应。
+
+插件安装 daemon 时固定采用外部插件归属，并开启报告与本机管理。插件包继续由 DSH 拥有，
+daemon 更新或卸载不会注销插件；已有 CLI 安装保留原归属。
+`drdsh daemon manage` 与私有 Unix 运行时接口仍可用于本机自动化。
+
+使用 `scripts/package-plugin.mjs --native <target>=<binary> --output <new.tgz>` 构建完整包，
+`--native` 可重复以包含两种平台。这是本地打包入口，不表示已经发布 npm 包。
+只有源码或旧报告插件的包若缺少匹配 native，不能执行页面的原生管理操作。
+构建、授权、作业、接管、配置及 JSON 协议见[本机管理指南](../docs/operations/daemon-management.md)。
 
 ## 独立的文件与配置
 

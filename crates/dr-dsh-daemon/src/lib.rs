@@ -70,11 +70,21 @@ pub mod doctor;
 pub mod dsh;
 pub mod lifecycle;
 pub mod pairing;
+/// Plugin-scoped native tunnel, with credentials supplied over a private pipe.
+pub mod plugin;
 /// The proxy: DSH's HTTP surface, carried through the tunnel.
 pub mod proxy;
+/// Opt-in local plugin reports forwarded over an authenticated encrypted tunnel.
+pub mod reports;
 /// Where the room key comes from (ADR-0013).
 pub mod roomkey;
 pub mod state;
+
+/// Live device registry and serialized local authorization updates.
+pub mod registry;
+
+/// Opt-in local Unix-socket management protocol.
+pub mod admin;
 /// The carrier connection to a relay, with the sealing layer above it.
 pub mod transport;
 /// Outbound carrier connection to a relay, plus reconnect/backoff policy.
@@ -92,6 +102,7 @@ pub mod uplink;
 /// manager (systemd, launchd, a terminal): the daemon deliberately does not
 /// daemonize itself, because a background process nobody can find is exactly the
 /// failure mode `drdshd doctor` exists to prevent.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_command(
     config_path: Option<&std::path::Path>,
     relay: Option<&str>,
@@ -99,12 +110,109 @@ pub async fn run_command(
     room_key: Option<&str>,
     attach: Option<u16>,
     attach_token: Option<&str>,
+    attach_tls: bool,
+    plugin_reports: bool,
+) -> anyhow::Result<ExitCode> {
+    run_command_with_admin(
+        config_path,
+        relay,
+        port,
+        room_key,
+        attach,
+        attach_token,
+        attach_tls,
+        plugin_reports,
+        false,
+    )
+    .await
+}
+
+/// Runs the daemon with an explicitly requested local management socket.
+///
+/// # Errors
+/// Returns startup, state-lock, management or supervision failures.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_command_with_admin(
+    config_path: Option<&std::path::Path>,
+    relay: Option<&str>,
+    port: Option<u16>,
+    room_key: Option<&str>,
+    attach: Option<u16>,
+    attach_token: Option<&str>,
+    attach_tls: bool,
+    plugin_reports: bool,
+    local_admin: bool,
+) -> anyhow::Result<ExitCode> {
+    run_endpoint(
+        config_path,
+        relay,
+        port,
+        room_key,
+        attach,
+        attach_token,
+        attach_tls,
+        plugin_reports,
+        local_admin,
+        None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_endpoint(
+    config_path: Option<&std::path::Path>,
+    relay: Option<&str>,
+    port: Option<u16>,
+    room_key: Option<&str>,
+    attach: Option<u16>,
+    attach_token: Option<&str>,
+    attach_tls: bool,
+    plugin_reports: bool,
+    local_admin: bool,
+    bridge: Option<plugin::Bridge>,
 ) -> anyhow::Result<ExitCode> {
     use anyhow::Context as _;
+    let plugin_owned = bridge.is_some();
+    let (plugin_directory, parent_closed) = match bridge {
+        Some(bridge) => (Some(bridge.state_dir), Some(bridge.parent_closed)),
+        None => (None, None),
+    };
+
+    let admin_environment = std::env::var(admin::ENV_ENABLE).ok();
+    let local_admin = admin::enabled_setting(local_admin, admin_environment.as_deref())?;
+
+    let plugin_reports = if plugin_reports {
+        true
+    } else {
+        let environment = match std::env::var(reports::ENV_ENABLE) {
+            Ok(value) => Some(value),
+            Err(std::env::VarError::NotPresent) => None,
+            Err(_) => anyhow::bail!(
+                "DSHD_PLUGIN_REPORTS must be 1 or 0; correct the daemon service environment."
+            ),
+        };
+        reports::enabled_setting(false, environment.as_deref()).map_err(anyhow::Error::msg)?
+    };
+    if plugin_reports && attach.is_some() && !plugin_owned {
+        anyhow::bail!(
+            "plugin reports require managed DSH; attach cannot inject the local report credentials. Run without --attach or disable DSHD_PLUGIN_REPORTS."
+        );
+    }
 
     // Register before spawning DSH: service managers can stop us during startup,
     // and the default SIGTERM action would leave our child behind.
-    let shutdown_signal = termination_signal().context("cannot listen for shutdown signals")?;
+    let signal = termination_signal().context("cannot listen for shutdown signals")?;
+    let shutdown_signal = async move {
+        tokio::select! {
+            result = signal => result,
+            () = async move {
+                match parent_closed {
+                    Some(closed) => { let _ = closed.await; }
+                    None => std::future::pending::<()>().await,
+                }
+            } => Ok(()),
+        }
+    };
     tokio::pin!(shutdown_signal);
     let supervisor_config = dsh::SupervisorConfig {
         port: port.unwrap_or_else(|| dsh::SupervisorConfig::default().port),
@@ -112,6 +220,11 @@ pub async fn run_command(
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| dsh::SupervisorConfig::default().executable),
     };
+    if attach_tls && attach.is_none() {
+        anyhow::bail!(
+            "DSH TLS attach requires --attach <port>; select the loopback TLS endpoint first."
+        );
+    }
     if attach_token.is_some() && attach.is_none() {
         anyhow::bail!(
             "--attach-token only means something with --attach: without it the daemon starts \
@@ -130,6 +243,13 @@ pub async fn run_command(
     // interval nobody chose is the kind of configuration mistake that only shows up as a reconnect
     // loop an hour later. Read once, so one process has one answer for every reconnect.
     let keepalive = uplink::keepalive_from_env().map_err(anyhow::Error::msg)?;
+    let require_dsh_tls = match std::env::var("DSHD_DSH_TLS").as_deref() {
+        Ok("1") => true,
+        Ok("0") | Err(std::env::VarError::NotPresent) => false,
+        _ => anyhow::bail!(
+            "DSHD_DSH_TLS must be 1 (require HTTPS) or 0; correct the daemon service environment."
+        ),
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -154,8 +274,16 @@ pub async fn run_command(
     // (ADR-0013). The state directory is resolved here rather than later because the key lives in it —
     // and because a daemon that read one directory for its key and another for its registry would be a
     // bug nobody could see from the outside.
-    let state_directory =
-        state::state_dir().context("cannot locate the daemon's state directory")?;
+    let state_directory = match plugin_directory {
+        Some(directory) => state::canonical_directory(&directory)?,
+        None => state::state_dir().context("cannot locate the daemon's state directory")?,
+    };
+    #[cfg(unix)]
+    let _runtime_lock = state::FileLock::try_acquire(&state_directory, "runtime.lock")?
+        .context("another daemon already owns this state directory; manage the existing daemon instead of starting a second instance")?;
+    admin::cleanup_stale_socket(&state_directory)?;
+    let registry = registry::LiveRegistry::open(&state_directory)?;
+    let _registry_monitor = registry.monitor();
     let root = match relay {
         Some(_) => {
             let resolved = roomkey::resolve(&state_directory, room_key)?;
@@ -181,9 +309,25 @@ pub async fn run_command(
 
     // Attach mode holds no process and, by default, no token. It still needs a client, and the
     // two modes differ in exactly one input: where the authority-bound cookie comes from.
+    let report_server = if plugin_reports {
+        Some(reports::ReportServer::start().await.context(
+            "cannot start local plugin reports; check loopback networking and restart the daemon",
+        )?)
+    } else {
+        None
+    };
+    let report_credentials = report_server
+        .as_ref()
+        .map(reports::ReportServer::credentials);
+    let report_sink = report_server.as_ref().map(reports::ReportServer::sink);
     let (attach_handle, mut client, base_url, dsh_token) = match attach {
         Some(attach_port) => {
-            let base_url = format!("http://127.0.0.1:{attach_port}");
+            let scheme = if attach_tls || require_dsh_tls {
+                "https"
+            } else {
+                "http"
+            };
+            let base_url = format!("{scheme}://127.0.0.1:{attach_port}");
             println!("attaching to DSH already running on {base_url}");
             let mut client = dsh::DshClient::new(&base_url)
                 .context("the attach port did not yield a usable loopback URL")?;
@@ -226,7 +370,7 @@ pub async fn run_command(
             // of reading logs into one sentence.
             ensure_port_free(supervisor_config.port)?;
             let supervisor = tokio::select! {
-                result = dsh::Supervisor::start(supervisor_config.clone()) => {
+                result = dsh::Supervisor::start_with_reports(supervisor_config.clone(), report_credentials.as_ref()) => {
                     result.context("cannot supervise DSH")?
                 }
                 result = &mut shutdown_signal => {
@@ -237,6 +381,10 @@ pub async fn run_command(
                 }
             };
             let ready = supervisor.ready().clone();
+            anyhow::ensure!(
+                !require_dsh_tls || ready.base_url.starts_with("https://"),
+                "DSH announced HTTP while DSHD_DSH_TLS=1 requires HTTPS; configure the local DSH TLS endpoint before starting the daemon."
+            );
             println!(
                 "DSH is listening on {}:{} (pid {})",
                 ready.addr,
@@ -342,16 +490,46 @@ pub async fn run_command(
             // needed it for its own startup checks, and two starts would mean two DSH instances
             // racing for one port.
             .adopt(Box::new(supervisor))
-            .run(dsh::SupervisorSpawner::new(supervisor_config.clone())),
+            .run(
+                dsh::SupervisorSpawner::new(supervisor_config.clone())
+                    .with_reports(report_credentials.clone()),
+            ),
         // Nothing to adopt: the controller starts in `Running` for attach mode, so a driver with
         // no process simply watches for commands and refuses all of them.
-        None => lifecycle_driver.run(dsh::SupervisorSpawner::new(supervisor_config.clone())),
+        None => lifecycle_driver.run(
+            dsh::SupervisorSpawner::new(supervisor_config.clone())
+                .with_reports(report_credentials.clone()),
+        ),
     });
+
+    let facts = control::DaemonFacts {
+        owned: matches!(mode, lifecycle::Mode::Managed { .. }),
+        relay: std::sync::Arc::clone(&relay_state),
+        lifecycle: lifecycle_handle.clone(),
+        state_dir: state_directory.clone(),
+    };
+    let admin_server = if local_admin {
+        Some(
+            admin::Server::start(admin::Context::new(
+                facts.clone(),
+                registry.clone(),
+                relay.map(str::to_owned),
+                root,
+            ))
+            .await?,
+        )
+    } else {
+        None
+    };
+
+    if plugin_owned {
+        plugin::announce_ready(report_credentials.as_ref(), root.as_ref())?;
+    }
 
     let uplink_task = match (relay, root) {
         (Some(relay_url), Some(root)) => {
             let room = dr_dsh_crypto::room_id_for(&root);
-            let policy = device_policy()?;
+            let policy = registry.snapshot().policy;
             match &policy {
                 transport::DevicePolicy::Enrolled(registry) if registry.is_empty() => println!(
                     "devices: none enrolled, and this daemon has been paired before — so \
@@ -391,8 +569,7 @@ pub async fn run_command(
                 lifecycle: lifecycle_handle.clone(),
                 // Resolved here, at startup, and not per report: a daemon whose state directory
                 // changed while it ran would be writing reports somewhere a person would not look.
-                state_dir: state::state_dir()
-                    .context("cannot locate the state directory for crash reports")?,
+                state_dir: state_directory.clone(),
             };
             Some(tokio::spawn(async move {
                 uplink::run(
@@ -404,7 +581,7 @@ pub async fn run_command(
                         keepalive,
                         // The same directory the key and registry came from, resolved once at startup.
                         state_directory.clone(),
-                    ),
+                    ).with_reports(report_sink).with_registry(&registry),
                     move |next| {
                         println!("relay: {next:?}");
                         if let Ok(mut slot) = state.lock() {
@@ -460,8 +637,13 @@ pub async fn run_command(
                             return;
                         };
                         tokio::spawn(async move {
-                            if let Err(error) = proxy.handle(stream_id, &payload, &out).await {
-                                tracing::info!(stream = stream_id, %error, "proxied request failed");
+                            tokio::select! {
+                                result = proxy.handle(stream_id, &payload, &out) => {
+                                    if let Err(error) = result {
+                                        tracing::info!(stream = stream_id, %error, "proxied request failed");
+                                    }
+                                }
+                                () = out.closed() => {}
                             }
                         });
                     },
@@ -490,6 +672,8 @@ pub async fn run_command(
             println!("DSH could not be kept running; stopping the daemon");
         }
     }
+    drop(admin_server);
+    drop(report_server);
     let _ = shutdown_tx.send(true);
     if let Some(task) = uplink_task {
         // A refusal is the uplink's way of saying "an operator must act"; report it
@@ -502,10 +686,16 @@ pub async fn run_command(
     }
     // The driver owns the process now, so the shutdown goes through it. Stopping the
     // supervisor directly here would leave the driver believing DSH was still running.
-    let stopped = lifecycle_handle
-        .command(dr_dsh_proto::control::LifecycleOp::Stop)
-        .await;
-    if !stopped.ok {
+    let stopped = if matches!(mode, lifecycle::Mode::Managed { .. }) {
+        Some(
+            lifecycle_handle
+                .command(dr_dsh_proto::control::LifecycleOp::Stop)
+                .await,
+        )
+    } else {
+        None
+    };
+    if let Some(stopped) = stopped.filter(|stopped| !stopped.ok) {
         eprintln!(
             "drdshd: DSH may not have stopped cleanly: {}",
             stopped
@@ -624,47 +814,6 @@ fn ensure_port_free(port: u16) -> anyhow::Result<()> {
     }
 }
 
-/// Decides which clients this daemon will accept.
-///
-/// Enrolment wins as soon as there is any: a daemon with one paired device requires proofs,
-/// and does **not** also accept the room key, because "the room key still works" would make
-/// pairing decorative. A daemon with no registry entry keeps serving the room key, which is
-/// the documented path for a deployment that has never paired.
-///
-/// # Errors
-///
-/// Returns an error when the registry exists but cannot be read. Failing is the only safe
-/// reading: treating an unreadable registry as "no devices" would turn a corrupted file into
-/// an open door.
-fn device_policy() -> anyhow::Result<transport::DevicePolicy> {
-    use anyhow::Context as _;
-
-    let state = state::state_dir().context("cannot locate the daemon's state directory")?;
-    let registry_path = state::registry_path_in(&state);
-    // The *file's existence* decides, not the number of devices in it.
-    //
-    // An empty registry means "nobody may connect", and that is the state reached by revoking the
-    // last device. Treating it as "never paired" — which is what counting devices does — turns a
-    // revocation into a grant: `drdshd devices --revoke <last>` would re-open the room-key door the
-    // user was trying to close, and the command would have said "the device can no longer
-    // connect". Only a daemon whose registry file was never created has never been paired.
-    let paired = registry_path.exists();
-    let registry = dr_dsh_crypto::DeviceRegistry::load(&registry_path).with_context(|| {
-        format!(
-            "cannot read the device registry at {}; fix or move it rather than deleting it, \
-             because it is the only record of which devices may connect",
-            registry_path.display()
-        )
-    })?;
-    if paired {
-        // Including the empty registry: it admits nobody, which is the correct reading of
-        // "every device has been revoked".
-        Ok(transport::DevicePolicy::enrolled(registry))
-    } else {
-        Ok(transport::DevicePolicy::RoomKeyOnly)
-    }
-}
-
 /// Mints a pairing code, runs the exchange, and enrols the device that redeems it.
 ///
 /// The code is printed before the relay is dialed, because the user has to read it off this
@@ -683,13 +832,20 @@ pub async fn pair_command(
 ) -> anyhow::Result<ExitCode> {
     use anyhow::Context as _;
 
+    let state = state::state_dir().context("cannot locate the daemon's state directory")?;
+    if admin::available(&state)? {
+        return admin::legacy_pair(&state, relay, room_key, wait).await;
+    }
+    #[cfg(unix)]
+    let _pairing_lock = state::FileLock::try_acquire(&state, "pairing.lock")?.context(
+        "another pairing is already pending; complete or cancel it before creating another code",
+    )?;
     let Some(relay) = relay else {
         anyhow::bail!(
             "pairing needs --relay: the device that pairs is not on this machine, so the \
              exchange has to travel through the relay you will use afterwards"
         );
     };
-    let state = state::state_dir().context("cannot locate the daemon's state directory")?;
     // The device is about to be handed the room key this daemon serves, so pairing needs to know it.
     // Resolved exactly the way `run` resolves it — same file, same generation rule (ADR-0013) — which
     // is what makes "give both commands the same key" stop being something an operator can get wrong.
@@ -957,8 +1113,11 @@ pub fn devices_command(revoke: Option<&str>) -> anyhow::Result<ExitCode> {
     use anyhow::Context as _;
 
     let state = state::state_dir().context("cannot locate the daemon's state directory")?;
+    if admin::available(&state)? {
+        return admin::legacy_devices(&state, revoke);
+    }
     let registry_path = state::registry_path_in(&state);
-    let mut registry = dr_dsh_crypto::DeviceRegistry::load(&registry_path).with_context(|| {
+    let registry = dr_dsh_crypto::DeviceRegistry::load(&registry_path).with_context(|| {
         format!(
             "cannot read the device registry at {}",
             registry_path.display()
@@ -968,8 +1127,7 @@ pub fn devices_command(revoke: Option<&str>) -> anyhow::Result<ExitCode> {
     if let Some(id) = revoke {
         let target = dr_dsh_crypto::device::DeviceId::from_base64url(id)
             .with_context(|| format!("{id:?} is not a device id"))?;
-        if registry.revoke(&target) {
-            registry.save(&registry_path)?;
+        if registry::revoke(&state, &target)? {
             audit(
                 &state,
                 audit::Event::DeviceRevoked,

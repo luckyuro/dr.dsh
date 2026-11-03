@@ -44,9 +44,12 @@ if [ "$drdsh_flavor" != daemon ]; then
 fi
 if [ "$drdsh_flavor" != relay ]; then
   mkdir "$drdsh_stage/bundle/plugin"
-  for drdsh_file in src package.json cordis.patch.yml; do
-    cp -R "$drdsh_root/plugins/dr.dsh/$drdsh_file" "$drdsh_stage/bundle/plugin/"
-  done
+  node "$drdsh_root/scripts/package-plugin-source.mjs" "$drdsh_stage/bundle/plugin"
+  # The plugin's executor survives daemon updates in its private cache. Embed
+  # only the native payload, avoiding a recursive copy of the daemon bundle.
+  mkdir -p "$drdsh_stage/bundle/plugin/native/$drdsh_target/bin"
+  cp "$drdsh_binary" "$drdsh_stage/bundle/plugin/native/$drdsh_target/bin/drdsh"
+  printf '{"format":1,"version":"%s","target":"%s","components":["daemon"]}\n' "$drdsh_version" "$drdsh_target" > "$drdsh_stage/bundle/plugin/native/$drdsh_target/bundle.json"
   ln -s drdsh "$drdsh_stage/bundle/bin/drdsh-daemon"
 fi
 printf '{"format":1,"version":"%s","target":"%s","components":[%s]}\n' "$drdsh_version" "$drdsh_target" "$drdsh_components" > "$drdsh_stage/bundle/bundle.json"
@@ -60,7 +63,7 @@ printf '{"format":1,"version":"%s","target":"%s","components":[%s]}\n' "$drdsh_v
 } > "$drdsh_stage/bundle/install.sh"
 chmod 755 "$drdsh_stage/bundle/install.sh"
 cp "$drdsh_root/docs/operations/releases.md" "$drdsh_stage/bundle/README.md"
-COPYFILE_DISABLE=1 tar --exclude='*.test.ts' -czf "$drdsh_stage/package.tar.gz" -C "$drdsh_stage/bundle" .
+COPYFILE_DISABLE=1 tar --no-xattrs --exclude='*.test.ts' -czf "$drdsh_stage/package.tar.gz" -C "$drdsh_stage/bundle" .
 mkdir -p "$(dirname -- "$drdsh_output")"
 mv "$drdsh_stage/package.tar.gz" "$drdsh_output"
 printf 'Packaged %s\n' "$drdsh_output"

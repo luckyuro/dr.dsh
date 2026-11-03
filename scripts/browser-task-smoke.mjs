@@ -20,10 +20,12 @@
  * whose DSH has never been given a workspace. The path is relative to the home directory, because
  * that is where the picker starts.
  *
+ * CHROMIUM_BIN and PLAYWRIGHT_MODULE may select a browser and Playwright installation.
  * Its exit code is the result.
  */
 
-import { chromium } from 'playwright-core';
+const playwright = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright-core');
+const { chromium } = playwright.default ?? playwright;
 
 const [relayUrl, roomKey, ...rest] = process.argv.slice(2);
 if (relayUrl === undefined || roomKey === undefined) {
@@ -122,7 +124,7 @@ async function sendMessage(iface, text) {
   // Typed rather than assigned: the interface's editor tracks input events, and setting the text
   // directly leaves it believing the box is empty — the send then does nothing, with no error.
   await composer.type(text, { delay: 12 });
-  await iface.keyboard.press('Enter');
+  await iface.page().keyboard.press('Enter');
   return before;
 }
 
@@ -158,7 +160,7 @@ async function needsWorkspace(iface) {
   );
 }
 
-const CHROME = `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
+const CHROME = process.env.CHROMIUM_BIN ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
 const results = [];
 /** Checks that could not be run at all, as opposed to failed. Reported, never counted as passing. */
 let skipped = 0;
@@ -185,11 +187,12 @@ try {
   await page.goto(relayUrl, { waitUntil: 'domcontentloaded' });
   await page.fill('#key', roomKey);
   await page.click('#connect');
-  await page.waitForSelector('#panel:not([hidden])', { timeout: 30_000 });
+  await page.waitForSelector('#panel:not([hidden])', { state: 'attached', timeout: 30_000 });
 
-  const popup = context.waitForEvent('page', { timeout: 30_000 });
-  await page.click('#open');
-  const iface = await popup;
+  await page.waitForSelector('#harness-frame', { state: 'visible', timeout: 30_000 });
+  const iface = await (await page.locator('#harness-frame').elementHandle()).contentFrame();
+  if (iface === null) throw new Error('the connected page has no embedded Harness document');
+  check('the connection opens Harness in the same page', context.pages().length === 1);
   await iface.waitForFunction(() => typeof window.__DSH_BOOT__ !== 'undefined', undefined, {
     timeout: 30_000,
   });
@@ -208,7 +211,9 @@ try {
   const muxOpen = await iface.evaluate(
     () =>
       new Promise(resolve => {
-        const socket = new WebSocket(`ws://${location.host}/api/remote.mux`);
+        const url = new URL('api/remote.mux', document.baseURI);
+        url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const socket = new WebSocket(url.href);
         let answered = false;
         socket.addEventListener('open', () => {
           socket.send(
@@ -264,7 +269,7 @@ try {
   // The picker's popover leaves a modal mask over the page, so it is dismissed the way a person
   // dismisses it. Without this the next click lands on the mask and the run fails with a pointer-event
   // error that has nothing to do with the product.
-  await iface.keyboard.press('Escape');
+  await iface.page().keyboard.press('Escape');
   await iface.waitForTimeout(700);
 
   // Both languages: the interface's language is a user setting, so an English-only selector is a
@@ -281,7 +286,7 @@ try {
     await composer.click();
     await composer.type(prompt, { delay: 20 });
     check('the prompt is in the composer', (await composer.innerText()).includes(prompt.trim()));
-    await iface.keyboard.press('Enter');
+    await iface.page().keyboard.press('Enter');
 
     await iface.waitForFunction(text => document.body.innerText.includes(text), prompt.trim(), {
       timeout: 30_000,

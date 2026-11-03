@@ -131,17 +131,87 @@ async fn a_frame_travels_from_client_to_daemon_unchanged() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
-async fn a_daemon_frame_reaches_every_client() -> Result<(), Box<dyn std::error::Error>> {
+async fn a_second_client_is_refused_without_interrupting_the_active_session()
+-> Result<(), Box<dyn std::error::Error>> {
     let addr = start_relay(8).await?;
     let (mut daemon, _) = park(addr, "/ws/daemon", "daemon", ROOM).await?;
     let (mut first, _) = park(addr, "/ws/client", "client", ROOM).await?;
-    let (mut second, _) = park(addr, "/ws/client", "client", ROOM).await?;
+    let (mut second, reply) = park(addr, "/ws/client", "client", ROOM).await?;
+    let rejection: serde_json::Value = serde_json::from_str(&reply)?;
+    assert_eq!(rejection["type"], "reject");
+    assert_eq!(
+        rejection["reason"],
+        "room is already in use; close the other dr.dsh tab or device connection, then reconnect"
+    );
 
-    let frame = carrier(b"broadcast", 1)?;
-    daemon.send(Message::Binary(frame.clone().into())).await?;
+    // Even a refused peer that immediately sends its salt cannot insert it into
+    // the first client's established session or receive that session's frames.
+    let _ = second
+        .send(Message::Binary(carrier(b"second-client-salt", 0)?.into()))
+        .await;
+    for index in 1..=3 {
+        let request = carrier(b"active-client-request", index)?;
+        first.send(Message::Binary(request.clone().into())).await?;
+        assert_eq!(next_binary(&mut daemon).await?, request);
+        let answer = carrier(b"active-daemon-answer", index)?;
+        daemon.send(Message::Binary(answer.clone().into())).await?;
+        assert_eq!(next_binary(&mut first).await?, answer);
+    }
+    match tokio::time::timeout(Duration::from_secs(5), second.next()).await? {
+        None | Some(Ok(Message::Close(_))) | Some(Err(_)) => {}
+        Some(Ok(other)) => return Err(format!("a refused peer received {other:?}").into()),
+    }
 
-    assert_eq!(next_binary(&mut first).await?, frame);
-    assert_eq!(next_binary(&mut second).await?, frame);
+    // The old session is released before another browser is admitted. The
+    // reconnect starts from a fresh carrier rather than reusing its counters.
+    first.close(None).await?;
+    assert!(next_text(&mut daemon).await?.contains("session over"));
+    let (mut replacement, reply) = park(addr, "/ws/daemon", "daemon", ROOM).await?;
+    assert!(reply.contains("ready"), "{reply}");
+    let (mut next, reply) = park(addr, "/ws/client", "client", ROOM).await?;
+    assert!(reply.contains("ready"), "{reply}");
+    let request = carrier(b"next-client-request", 1)?;
+    next.send(Message::Binary(request.clone().into())).await?;
+    assert_eq!(next_binary(&mut replacement).await?, request);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_replacement_daemon_releases_the_previous_client_before_accepting_another()
+-> Result<(), Box<dyn std::error::Error>> {
+    let addr = start_relay(8).await?;
+    let (mut old_daemon, _) = park(addr, "/ws/daemon", "daemon", ROOM).await?;
+    let (mut old_client, _) = park(addr, "/ws/client", "client", ROOM).await?;
+    let (mut replacement, reply) = park(addr, "/ws/daemon", "daemon", ROOM).await?;
+    assert!(reply.contains("ready"), "{reply}");
+    assert!(next_text(&mut old_client).await?.contains("session over"));
+
+    let (mut next, reply) = park(addr, "/ws/client", "client", ROOM).await?;
+    assert!(reply.contains("ready"), "{reply}");
+    let _ = old_daemon.close(None).await;
+    let _ = old_client.close(None).await;
+    let request = carrier(b"new-session-request", 1)?;
+    next.send(Message::Binary(request.clone().into())).await?;
+    assert_eq!(next_binary(&mut replacement).await?, request);
+    let answer = carrier(b"new-session-answer", 1)?;
+    replacement
+        .send(Message::Binary(answer.clone().into()))
+        .await?;
+    assert_eq!(next_binary(&mut next).await?, answer);
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_pairing_daemon_can_leave_after_its_receipt_without_losing_the_receipt()
+-> Result<(), Box<dyn std::error::Error>> {
+    let addr = start_relay(8).await?;
+    let (mut daemon, _) = park(addr, "/ws/daemon", "daemon", ROOM).await?;
+    let (mut client, _) = park(addr, "/ws/client", "client", ROOM).await?;
+    let receipt = carrier(b"opaque-pairing-receipt", 0)?;
+    daemon.send(Message::Binary(receipt.clone().into())).await?;
+    daemon.close(None).await?;
+    assert_eq!(next_binary(&mut client).await?, receipt);
+    client.close(None).await?;
     Ok(())
 }
 

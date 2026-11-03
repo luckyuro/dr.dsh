@@ -15,7 +15,7 @@
  * event names and payloads require the real-harness upgrade smoke test. Cordis
  * accepts arbitrary event names, so a static name set cannot detect an upgrade.
  *
- * ## What is relied on (DSH 0.1.7-rc.2)
+ * ## What is relied on (DSH 0.2.2-alpha.2)
  *
  * | Assumption | Evidence in DSH |
  * | :--- | :--- |
@@ -30,10 +30,12 @@
  * @module
  */
 
+import type { IncomingMessage, ServerResponse } from 'node:http';
+
 /** DSH release this surface was verified against. */
-export const VERIFIED_DSH_VERSION = '0.1.7-rc.2';
+export const VERIFIED_DSH_VERSION = '0.2.2-alpha.2';
 /** Exact upstream source revision reviewed for this integration. */
-export const VERIFIED_DSH_REVISION = '477b4f420553e8a52c2fbccc464d7561b239c443';
+export const VERIFIED_DSH_REVISION = 'f3803c96974ad4a94195fb97e5c637e9c2a3afe3';
 
 /**
  * The minimal shape of the Cordis context this plugin uses.
@@ -205,4 +207,233 @@ export function observeHarness(
     throw error;
   }
   return dispose;
+}
+
+/** Current launcher facts, copied from DSH's profileContext rather than inferred from argv. */
+export interface DshManagementProfile {
+  readonly name: string;
+  readonly home: string;
+  readonly dir: string;
+  readonly cwd: string;
+  readonly installAnchor: string;
+}
+
+/** A route retains the Node response until its handler has completed. */
+export type DshManagementRouteHandler = (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+
+/** Management resources may need asynchronous cleanup when their owning DSH fiber unloads. */
+export type DshManagementDisposer = () => void | Promise<void>;
+
+/**
+ * The optional Web surface available to the management implementation.
+ *
+ * DSH's request check is only the browser trust fence. It accepts the daemon's
+ * authenticated proxy too, so the management handler must additionally require
+ * its own authorization and the daemon must refuse to proxy this namespace.
+ */
+export interface DshManagementSurface {
+  readonly origin: string;
+  readonly port: number;
+  readonly profile: DshManagementProfile;
+  /** Obtain DSH's own launch credential for the scoped native tunnel, never for a browser response. */
+  attachCredentials(): { port: number; token: string };
+  /** Register inside /_drdsh; the caller owns request authentication and the response. */
+  registerRoute(path: string, kind: 'exact' | 'prefix', handler: DshManagementRouteHandler): () => void;
+  /** Apply DSH's Host/Origin and authenticated browser/API peer checks. */
+  requestRejection(req: IncomingMessage): 401 | 403 | undefined;
+  /** Request DSH's bounded graceful application shutdown after the caller has replied. */
+  requestHostExit(): void;
+  /** Run only after DSH commits successful startup; cancelled when this surface unloads. */
+  onReady(fn: () => void): () => void;
+  /** Add a fixed, non-secret link to the authenticated DSH index. */
+  registerManagementLink(): () => void;
+}
+
+interface ManagementFiber {
+  dispose(): Promise<void>;
+}
+
+interface ManagementContext extends DshContextLike {
+  get(key: string): unknown;
+  inject(dependencies: string[], callback: (ctx: ManagementContext) => void): ManagementFiber;
+}
+
+/**
+ * The runtime members used here were checked in DSH 0.2.1-rc.5 and 0.2.2-alpha.2:
+ * dsh-host-webserver's WebServer, dsh-client-connection's HostConnectionHandle,
+ * dsh-app-boot's ProfileContext and dsh-cmdline's AppExit/AppReady. A separate
+ * injected child keeps missing Web services and management setup failures from
+ * cancelling the report observer in the parent plugin.
+ */
+export function watchManagementSurface(
+  ctx: DshContextLike,
+  onReady: (surface: DshManagementSurface) => void | DshManagementDisposer,
+  onError: (error: Error) => void,
+): () => void {
+  const report = (error: unknown): void => {
+    // Diagnostics are observers too: a broken logger must not fail DSH's boot.
+    try { onError(error instanceof Error ? error : new Error('dr.dsh: management setup failed; check plugin compatibility.')); } catch { /* Preserve the host and reporter. */ }
+  };
+  const context = ctx as ManagementContext;
+  if (typeof context.inject !== 'function' || typeof context.get !== 'function') {
+    report(new Error(`dr.dsh: management needs DSH ${VERIFIED_DSH_VERSION}'s optional service injection; reporting remains available.`));
+    return () => {};
+  }
+  let stopped = false;
+  let fiber: ManagementFiber | undefined;
+  try {
+    fiber = context.inject(['webServer', 'connection'], child => {
+      if (stopped) return;
+      const disposers: DshManagementDisposer[] = [];
+      let disposed = false;
+      const dispose = async (): Promise<void> => {
+        if (disposed) return;
+        disposed = true;
+        for (const stop of disposers.splice(0).reverse()) {
+          try { await stop(); } catch (error) { report(error); }
+        }
+      };
+      const own = (stop: () => void): (() => void) => {
+        let active = true;
+        const release = (): void => {
+          if (!active) return;
+          active = false;
+          stop();
+        };
+        disposers.push(release);
+        return release;
+      };
+      try {
+        child.effect(() => dispose, 'dr.dsh: optional management surface');
+        const surface = managementSurface(child, own, report, () => !disposed && !stopped);
+        const stop = onReady(surface);
+        if (typeof stop === 'function') disposers.push(stop);
+      } catch (error) {
+        // Catch inside the child: leaving a FAILED fiber would make optional UI
+        // setup participate in DSH's startup failure audit.
+        void dispose();
+        report(error);
+      }
+    });
+  } catch (error) {
+    report(error);
+  }
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    // Cordis owns this child on parent unload; explicit callers may stop early.
+    try { void fiber?.dispose().catch(report); } catch (error) { report(error); }
+  };
+}
+
+function managementSurface(
+  ctx: ManagementContext,
+  own: (stop: () => void) => () => void,
+  report: (error: unknown) => void,
+  active: () => boolean,
+): DshManagementSurface {
+  const server = record(ctx.get('webServer'));
+  const connection = record(ctx.get('connection'));
+  const profile = record(ctx.get('profileContext'));
+  const appExit = ctx.get('appExit');
+  const appReady = record(ctx.get('appReady'));
+  if (typeof server?.getOrigin !== 'function' || typeof server.register !== 'function'
+    || typeof connection?.requestRejection !== 'function' || typeof appExit !== 'function'
+    || typeof appReady?.onReady !== 'function') {
+    throw new Error(`dr.dsh: this DSH build lacks the Web management lifecycle contract verified with ${VERIFIED_DSH_VERSION}; reporting remains available.`);
+  }
+  for (const key of ['name', 'home', 'dir', 'cwd', 'installAnchor']) {
+    if (typeof profile?.[key] !== 'string' || profile[key] === '') {
+      throw new Error(`dr.dsh: DSH did not provide its current profile ${key}; restart through the DSH CLI before managing the daemon.`);
+    }
+  }
+  const port = server.port;
+  const origin = new URL(server.getOrigin.call(server) as string);
+  if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65535
+    || !['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password
+    || origin.search || origin.hash || origin.pathname !== '/'
+    || Number(origin.port || (origin.protocol === 'https:' ? 443 : 80)) !== port) {
+    throw new Error('dr.dsh: DSH did not provide a usable listening origin; wait for Web startup before managing the daemon.');
+  }
+  const ensureActive = (): void => {
+    if (!active()) throw new Error('dr.dsh: this management surface has closed; reload the DSH page before retrying.');
+  };
+  const register = server.register;
+  const reject = connection.requestRejection;
+  const ready = appReady.onReady;
+  let unlink: (() => void) | undefined;
+  return {
+    origin: origin.origin,
+    port,
+    profile: Object.freeze({
+      name: profile!.name as string,
+      home: profile!.home as string,
+      dir: profile!.dir as string,
+      cwd: profile!.cwd as string,
+      installAnchor: profile!.installAnchor as string,
+    }),
+    attachCredentials() {
+      ensureActive();
+      // Use the same public launch-token producer as web-app. No cookie forging
+      // or trust-fence exemptions are needed for the local native companion.
+      if (origin.protocol !== 'http:' || typeof connection.authenticatedUrl !== 'function') {
+        throw new Error('dr.dsh: plugin relay access requires DSH HTTP loopback and its authenticatedUrl contract; use a supported local Web listener.');
+      }
+      const base = `http://127.0.0.1:${port}/`;
+      let url: URL;
+      try { url = new URL(connection.authenticatedUrl.call(connection, base) as string); }
+      catch { throw new Error('dr.dsh: DSH did not provide a valid local launch URL; update the plugin and restart DSH.'); }
+      const token = url.searchParams.get('token');
+      if (url.origin !== new URL(base).origin || url.pathname !== '/' || url.hash
+        || url.username || url.password || !token || !/^[A-Za-z0-9_-]{43}$/u.test(token)
+        || [...url.searchParams.keys()].some(key => key !== 'token') || url.searchParams.getAll('token').length !== 1) {
+        throw new Error('dr.dsh: DSH returned an unsupported local launch credential; update the plugin before connecting the relay.');
+      }
+      return { port, token };
+    },
+    registerRoute(path, kind, handler) {
+      ensureActive();
+      if ((path !== '/_drdsh' && !path.startsWith('/_drdsh/')) || path.endsWith('/')
+        || /[?#%\\\u0000-\u0020]/u.test(path) || new URL(path, origin).pathname !== path
+        || !['exact', 'prefix'].includes(kind)) {
+        throw new Error('dr.dsh: management routes must use a canonical path inside /_drdsh; fix the plugin route registration.');
+      }
+      return own(register.call(server, { path, kind, handler }) as () => void);
+    },
+    requestRejection(req) {
+      ensureActive();
+      const rejection: unknown = reject.call(connection, req);
+      if (rejection !== undefined && rejection !== 401 && rejection !== 403) {
+        throw new Error('dr.dsh: DSH returned an unknown browser authorization result; update the plugin before managing the daemon.');
+      }
+      return rejection;
+    },
+    requestHostExit() {
+      ensureActive();
+      appExit(0);
+    },
+    onReady(fn) {
+      ensureActive();
+      return own(ready.call(appReady, () => {
+        if (!active()) return;
+        try { fn(); } catch (error) { report(error); }
+      }) as () => void);
+    },
+    registerManagementLink() {
+      ensureActive();
+      if (unlink !== undefined) return unlink;
+      unlink = own(ctx.on('webserver/index-inject', value => {
+        if (!active() || !Array.isArray(value)) return;
+        value.push({
+          kind: 'style',
+          text: '#drdsh-management-entry{position:fixed;right:16px;bottom:16px;z-index:1000;padding:7px 11px;border:1px solid #9ca3af;border-radius:8px;background:#fff;color:#111827;font:13px system-ui,sans-serif;text-decoration:none;box-shadow:0 2px 8px #0002}#drdsh-management-entry:focus-visible{outline:3px solid #2563eb;outline-offset:2px}@media(prefers-color-scheme:dark){#drdsh-management-entry{background:#1f2937;color:#f9fafb;border-color:#6b7280}}',
+        }, {
+          kind: 'html',
+          placement: 'body',
+          html: '<a id="drdsh-management-entry" href="./_drdsh/manage" target="_blank" rel="noopener noreferrer">dr.dsh 管理</a>',
+        });
+      }));
+      return unlink;
+    },
+  };
 }

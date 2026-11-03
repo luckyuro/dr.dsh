@@ -161,9 +161,10 @@ try {
     { timeout: 40_000 },
   );
 
-  const popup = context.waitForEvent('page', { timeout: 30_000 });
-  await page.click('#open');
-  const iface = await popup;
+  await page.waitForSelector('#harness-frame', { state: 'visible', timeout: 30_000 });
+  const iface = await (await page.locator('#harness-frame').elementHandle()).contentFrame();
+  if (iface === null) throw new Error('the connected page has no embedded Harness document');
+  check('the connection opens Harness in the same page', context.pages().length === 1);
   await iface.waitForFunction(() => typeof window.__DSH_BOOT__ !== 'undefined', undefined, {
     timeout: 30_000,
   });

@@ -43,7 +43,7 @@ use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 
 use crate::config::Config;
-use crate::rooms::{Departure, Hub, Outbound, ParkError, Role, SharedHub};
+use crate::rooms::{Departure, Hub, Outbound, ParkError, Parked, Role, SharedHub};
 
 /// Shared ingress state.
 #[derive(Clone)]
@@ -248,7 +248,7 @@ async fn app_shell(State(ingress): State<Ingress>) -> Response {
                 // `'self'`: the icon is served from the client directory and nothing else is allowed
                 // to be an image.
                 "default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; \
-                 img-src 'self'; manifest-src 'self'; \
+                 img-src 'self'; manifest-src 'self'; frame-src 'self'; \
                  connect-src 'self' http://127.0.0.1:* ws://127.0.0.1:*; base-uri 'none'; \
                  form-action 'none'; frame-ancestors 'none'",
             ),
@@ -317,13 +317,19 @@ async fn run_socket(socket: WebSocket, ingress: Ingress, role: Role) {
             Err(error) => Err(error),
         }
     };
-    let (id, mut outbound) = match park {
+    let Parked {
+        id,
+        mut outbound,
+        mut closing,
+    } = match park {
         Ok((parked, _known)) => parked,
         Err(error) => {
             let reason = match error {
                 ParkError::NoDaemon => "no daemon is serving this room",
                 ParkError::AtCapacity { .. } => "relay is at capacity",
-                ParkError::TooManyClients { .. } => "room holds too many clients",
+                ParkError::RoomInUse => {
+                    "room is already in use; close the other dr.dsh tab or device connection, then reconnect"
+                }
                 ParkError::Gone => "room is gone",
             };
             tracing::info!(?role, reason, "refused a connection");
@@ -349,86 +355,115 @@ async fn run_socket(socket: WebSocket, ingress: Ingress, role: Role) {
     // Two loops, one connection: reads from the socket are routed onward, writes to
     // the socket come from the hub. Neither touches a payload.
     let keepalive = ingress.keepalive;
-    let writer = tokio::spawn(async move {
-        // The interval lives in the writer because the writer owns the sink: a keepalive sent from the
-        // read loop would need the sink shared between two tasks for a two-byte frame.
-        let mut ticker = keepalive.map(|every| {
-            // `interval` fires its first tick immediately, which would ping every peer the moment it
-            // parks — noise at exactly the moment the connection is provably alive, and it made a
-            // routing test read a keepalive as a leaked frame. `interval_at` starts the clock one
-            // interval out instead. Found by that test failing, not by reading the docs.
-            let mut ticker = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
-            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-            ticker
-        });
-        loop {
-            let outbound = match ticker.as_mut() {
-                Some(ticker) => tokio::select! {
-                    outbound = outbound.recv() => outbound,
-                    _ = ticker.tick() => {
-                        // A WebSocket ping, not a carrier frame: the peer's own implementation answers
-                        // it, no application code is involved, and it is not forwarded to anyone.
-                        if sink.send(Message::Ping(Vec::new().into())).await.is_err() {
-                            return;
-                        }
-                        continue;
+    let mut writer = tokio::spawn(async move {
+        let forwarding = async {
+            let mut ticker = keepalive.map(|every| {
+                let mut ticker =
+                    tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+                ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+                ticker
+            });
+            loop {
+                let message = match ticker.as_mut() {
+                    Some(ticker) => tokio::select! {
+                        frame = outbound.recv() => frame.map(|Outbound::Frame(bytes)| Message::Binary(bytes.into())),
+                        _ = ticker.tick() => Some(Message::Ping(Vec::new().into())),
+                    },
+                    None => outbound
+                        .recv()
+                        .await
+                        .map(|Outbound::Frame(bytes)| Message::Binary(bytes.into())),
+                };
+                let message = message?;
+                match tokio::time::timeout(FORWARD_PROGRESS_TIMEOUT, sink.send(message)).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(_)) => {
+                        return Some(
+                            "relay could not write to the peer; reconnect to resume the tunnel",
+                        );
                     }
-                },
-                None => outbound.recv().await,
-            };
-            let Some(outbound) = outbound else { break };
-            match outbound {
-                Outbound::Frame(bytes) => {
-                    if sink.send(Message::Binary(bytes.into())).await.is_err() {
-                        return;
-                    }
-                }
-                Outbound::Close(reason) => {
-                    let _ = sink
-                        .send(Message::Text(
-                            format!("{{\"type\":\"close\",\"reason\":\"{reason}\"}}").into(),
-                        ))
-                        .await;
-                    let _ = sink.close().await;
-                    return;
+                    Err(_) => return Some(STALLED_PEER),
                 }
             }
-        }
-        let _ = sink.close().await;
+        };
+        // A release must interrupt a blocked socket write, even with all 64 data
+        // slots occupied. Closing is independent of those slots and bounded too.
+        let (reason, cancelled) = tokio::select! {
+            biased;
+            _ = closing.changed() => (*closing.borrow(), true),
+            reason = forwarding => (reason, false),
+        };
+        let _ = tokio::time::timeout(CLOSE_GRACE, async {
+            if let Some(reason) = reason {
+                let _ = sink
+                    .send(Message::Text(
+                        format!("{{\"type\":\"close\",\"reason\":\"{reason}\"}}").into(),
+                    ))
+                    .await;
+            }
+            let _ = sink.close().await;
+        })
+        .await;
+        if cancelled { None } else { reason }
     });
 
-    while let Some(message) = stream.next().await {
-        match message {
-            Ok(Message::Binary(bytes)) => {
-                if let Err(reason) = crate::rooms::validate_frame(&bytes) {
-                    // The writer owns the sink, so the reason goes to the log and the
-                    // peer sees the connection close. Sending a text reply here would
-                    // mean sharing the sink between two tasks for one diagnostic.
-                    tracing::info!(room = %hello.room, reason, "closing a peer that sent an invalid frame");
-                    break;
+    let reader = async {
+        while let Some(message) = stream.next().await {
+            match message {
+                Ok(Message::Binary(bytes)) => {
+                    if let Err(reason) = crate::rooms::validate_frame(&bytes) {
+                        tracing::info!(
+                            ?role,
+                            id,
+                            reason,
+                            "closing a peer that sent an invalid frame"
+                        );
+                        return None;
+                    }
+                    let route = {
+                        let mut hub = ingress
+                            .hub
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        hub.route(&hello.room, role, id, bytes.to_vec())
+                    };
+                    let Ok(route) = route else { return None };
+                    // Only one frame per source waits outside the fixed-size queue.
+                    // No hub lock survives this await: another room can still route,
+                    // disconnect, or replace a daemon while this peer catches up.
+                    let failure =
+                        match tokio::time::timeout(FORWARD_PROGRESS_TIMEOUT, route.deliver()).await
+                        {
+                            Ok(Ok(_)) => None,
+                            Ok(Err(reason)) => Some(reason),
+                            Err(_) => Some(STALLED_PEER),
+                        };
+                    if let Some(reason) = failure {
+                        let mut hub = ingress
+                            .hub
+                            .lock()
+                            .unwrap_or_else(|poisoned| poisoned.into_inner());
+                        let _ = hub.close_route(&hello.room, role, id, &route, reason);
+                        return Some(reason);
+                    }
                 }
-                let routed = {
-                    let mut hub = ingress
-                        .hub
-                        .lock()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
-                    hub.route(&hello.room, role, id, bytes.to_vec())
-                };
-                match routed {
-                    Ok(_) => {}
-                    Err(_) => break,
+                Ok(Message::Text(_)) => {
+                    return Some("relay requires binary carrier frames after the handshake");
                 }
+                Ok(Message::Close(_)) | Err(_) => break,
+                Ok(Message::Ping(_) | Message::Pong(_)) => {}
             }
-            // The data path is binary; a text frame means the peer is confused
-            // about the protocol, and ending the connection says so unambiguously.
-            Ok(Message::Text(_)) => {
-                tracing::info!(room = %hello.room, "closing a peer that sent text on the data path");
-                break;
-            }
-            Ok(Message::Close(_)) | Err(_) => break,
-            // Ping/Pong are answered by axum; a peer's pings are not ours to route.
-            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) => {}
         }
+        None
+    };
+    // Either half ending cancels the other half, including a reader waiting for
+    // queue space. A failed writer must never leave a silent, parked room behind.
+    let (reason, writer_finished) = tokio::select! {
+        reason = reader => (reason, false),
+        result = &mut writer => (result.unwrap_or(Some("relay writer stopped; reconnect to resume the tunnel")), true),
+    };
+    if let Some(reason) = reason {
+        tracing::info!(?role, id, reason, "closing carrier session");
     }
 
     let left = {
@@ -460,7 +495,16 @@ async fn run_socket(socket: WebSocket, ingress: Ingress, role: Role) {
         }
         Departure::Nothing => {}
     }
-    writer.abort();
+    if !writer_finished {
+        // Unparking closes the independent cancellation channel. Give the named
+        // close a bounded chance to arrive before dropping the socket outright.
+        let _ = tokio::time::timeout(
+            CLOSE_GRACE + std::time::Duration::from_millis(100),
+            &mut writer,
+        )
+        .await;
+        writer.abort();
+    }
     tracing::info!(?role, room = %hello.room, id, "unparked");
 }
 
@@ -516,6 +560,11 @@ async fn send_reject(
 
 /// How long a peer has to announce itself.
 const HANDSHAKE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Limit time without forwarding progress, rather than total transfer duration.
+const FORWARD_PROGRESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const CLOSE_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+const STALLED_PEER: &str = "relay stopped the tunnel after 30 seconds without forwarding progress; check the receiving device or network and reconnect";
 
 #[cfg(test)]
 mod tests {

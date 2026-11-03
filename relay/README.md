@@ -32,7 +32,7 @@ systemd user session; without `--start` / `--enable`, they remain stopped withou
 For offline use, download and verify `drdsh-relay-x86_64-unknown-linux-musl.tar.gz`, extract it and run
 its `sh install.sh --start`. This release provides only daemon on macOS; relay can be built from source.
 See [release installation](../docs/operations/releases.md) for mixed packages, platforms and pinned versions.
-Use `--version v0.1.1` to pin the binary version or `--prefix /path/to/install` to change the install directory.
+Use `--version v0.2.0` to pin the binary version or `--prefix /path/to/install` to change the install directory.
 
 ### Source installation
 
@@ -52,7 +52,13 @@ manager for migration regression checks; new releases use `scripts/build-release
 ## Make it reachable
 
 The relay listens on `127.0.0.1:8787` by default. Other devices need a reachable **HTTPS entry point
-with a trusted certificate**, reverse-proxying to this port on the same host.
+with a trusted certificate**. v0.2.0 support native HTTPS/WSS with
+`drdsh relay run --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`, or an HTTPS reverse proxy.
+Installation accepts the same certificate options, plus `--tls-server-name` for local health checks
+and `--ca-cert` for a private CA. These additions are not in an existing Release yet.
+`install --insecure` saves skipped certificate verification for local HTTPS health checks;
+`--no-insecure` restores verification. `status` accepts either flag as a one-time override.
+See [TLS configuration](../docs/operations/tls.md).
 See the [self-hosting guide](../docs/operations/self-hosting.md) for configuration examples.
 
 Give users the browser's HTTPS address. Configure the daemon's `--relay` with the actual WS or WSS
@@ -166,12 +172,14 @@ Manage this instance with Compose:
 | Stop and remove the container | `docker compose down` |
 
 The image builds from source and includes the PWA. The host does not need Rust, Node.js, or DSH.
-Your reverse proxy still provides HTTPS.
+Mount certificates and set `DSH_RELAY_TLS_CERT` / `DSH_RELAY_TLS_KEY` for native HTTPS/WSS,
+or keep using your HTTPS reverse proxy. The health check also supports TLS.
 
 ## Implementation and boundaries
 
 The relay lives in [`crates/dr-dsh-relay`](../crates/dr-dsh-relay); its client is in [`apps/pwa`](../apps/pwa).
-The relay cannot decrypt sessions, holds no keys, and has no session database. It also distributes
+The relay crate cannot decrypt sessions, holds no session keys, and has no session database. The CLI
+host holds the TLS certificate key when configured. It also distributes
 client code, so its infrastructure must be trusted. See the [security model](../docs/security.md) and
 [relay design decision](../docs/decisions/0002-zero-knowledge-relay.md).
 

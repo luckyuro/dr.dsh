@@ -90,7 +90,7 @@ try {
 
   const fixture = join(scratch, 'fixture.mjs');
   const dsh = join(scratch, 'dsh');
-  writeFileSync(fixture, `process.argv[2] = process.argv[process.argv.indexOf('--port') + 1];\nawait import(${JSON.stringify(new URL('../crates/dr-dsh-daemon/tests/fixtures/fake-dsh.mjs', import.meta.url).href)});\n`);
+  writeFileSync(fixture, `if (process.argv.includes('--dump-config')) { console.log('[]'); process.exit(0); }\nprocess.argv[2] = process.argv[process.argv.indexOf('--port') + 1];\nawait import(${JSON.stringify(new URL('../crates/dr-dsh-daemon/tests/fixtures/fake-dsh.mjs', import.meta.url).href)});\n`);
   writeFileSync(dsh, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(fixture)} "$@"\n`, { mode: 0o755 });
   const daemonEnv = { ...process.env, HOME: scratch, DSHD_DSH: dsh, DSHD_STATE_DIR: join(scratch, 'state') };
   const pair = start(daemonBinary, [...(multicall ? ['daemon'] : []), 'pair', '--relay', ws, '--wait', '90'], daemonEnv);

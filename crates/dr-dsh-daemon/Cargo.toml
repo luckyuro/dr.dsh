@@ -15,6 +15,7 @@ path = "src/bin/drdshd.rs"
 [dependencies]
 dr-dsh-proto.workspace = true
 dr-dsh-crypto.workspace = true
+dr-dsh-tls.workspace = true
 tokio.workspace = true
 axum.workspace = true
 futures-util.workspace = true
@@ -25,11 +26,14 @@ http-body-util.workspace = true
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
 # tokio-tungstenite leaves provider selection to its caller. Use ring without the
 # default AWS-LC build so the existing Linux musl release toolchain stays sufficient.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls.workspace = true
+hyper-rustls = { version = "0.27", default-features = false, features = ["http1", "ring", "tls12"] }
 async-trait.workspace = true
 bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+serde_yaml = "0.9"
+tempfile.workspace = true
 base64.workspace = true
 sha2.workspace = true
 hkdf.workspace = true
@@ -39,8 +43,11 @@ thiserror.workspace = true
 anyhow.workspace = true
 rand.workspace = true
 
+[target.'cfg(unix)'.dependencies]
+# Safe OS locks and no-follow opens, also on the workspace's Rust 1.88 baseline.
+rustix = { version = "1", features = ["fs", "process"] }
+
 [dev-dependencies]
-tempfile.workspace = true
 # The carrier's end-to-end test stands up a real relay in-process rather than
 # mocking one: the property under test is about what the relay *sees*, and a mock
 # would be written to agree with us.

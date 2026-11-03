@@ -1,9 +1,17 @@
 //! Multicall CLI. Package metadata and invocation names select supported components.
 
 mod files;
+#[cfg(feature = "daemon")]
+mod handoff;
 mod install;
+#[cfg(feature = "daemon")]
+mod jobs;
+#[cfg(feature = "daemon")]
+mod manage;
 mod management;
+mod provision;
 mod service;
+mod tls;
 
 use anyhow::{Context, Result, bail, ensure};
 use management::{Args, Config, Paths, absolute};
@@ -16,6 +24,7 @@ const HELP: &str = "drdsh — remote access to your own DeepSeek Harness
   drdsh relay  run|install|update|uninstall|start|stop|restart|status|logs|enable|disable
   drdsh daemon run|install|update|uninstall|start|stop|restart|status|logs|enable|disable
   drdsh daemon pair|doctor|devices|audit|crashes|room-key
+  drdsh daemon manage [--prefix <path>]  one JSON request on stdin
   drdsh install [options]         install every component in this bundle
   drdsh --version
 
@@ -100,15 +109,17 @@ fn runtime(scope: &str, args: Vec<String>) -> Result<ExitCode> {
         #[cfg(feature = "relay")]
         "relay" => {
             let mut config = dr_dsh_relay::config::Config::from_env_and_args()?;
+            let mut cert = std::env::var_os("DSH_RELAY_TLS_CERT").map(PathBuf::from);
+            let mut key_file = std::env::var_os("DSH_RELAY_TLS_KEY").map(PathBuf::from);
             let mut args = args.into_iter();
             ensure!(
                 args.next().as_deref() == Some("run"),
                 "Relay foreground command must be run; use drdsh relay --help."
             );
             while let Some(key) = args.next() {
-                let value = args.next().context(
-                    "Relay foreground option needs a value; use --bind or --client-dir.",
-                )?;
+                let value = args
+                    .next()
+                    .context("Relay foreground option needs a value; use drdsh relay --help.")?;
                 match key.as_str() {
                     "--bind" => {
                         config.bind = value
@@ -116,18 +127,33 @@ fn runtime(scope: &str, args: Vec<String>) -> Result<ExitCode> {
                             .context("Relay --bind must be an IP address and port.")?
                     }
                     "--client-dir" => config.client_dir = Some(PathBuf::from(value)),
+                    "--tls-cert" => cert = Some(PathBuf::from(value)),
+                    "--tls-key" => key_file = Some(PathBuf::from(value)),
                     _ => {
-                        bail!("Unknown relay foreground option {key}; use --bind or --client-dir.")
+                        bail!("Unknown relay foreground option {key}; use drdsh relay --help.")
                     }
                 }
             }
-            Ok(dr_dsh_relay::run_with_config(config))
+            match (cert, key_file) {
+                (Some(cert), Some(key)) => tls::run_relay(config, &cert, &key),
+                (None, None) => Ok(dr_dsh_relay::run_with_config(config)),
+                _ => bail!(
+                    "Relay TLS requires both --tls-cert and --tls-key (or DSH_RELAY_TLS_CERT and DSH_RELAY_TLS_KEY); no plaintext fallback was started."
+                ),
+            }
         }
         _ => bail!("Unknown component {scope}; choose relay or daemon."),
     }
 }
 
 fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
+    #[cfg(feature = "daemon")]
+    if args
+        .first()
+        .is_some_and(|argument| argument == "__job-worker")
+    {
+        return jobs::worker(&args[1..]);
+    }
     if let Some(scope) = alias(name) {
         unavailable(scope)?;
     }
@@ -216,7 +242,23 @@ fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
             return exec(command);
         }
     }
+    #[cfg(feature = "daemon")]
+    if scope == "daemon" && args.first().is_some_and(|action| action == "manage") {
+        return manage::run(&args[1..]);
+    }
     unavailable(&scope)?;
+    #[cfg(feature = "daemon")]
+    if scope == "daemon"
+        && args
+            .first()
+            .is_some_and(|action| action == "plugin-connect")
+    {
+        ensure!(
+            args.len() == 1,
+            "plugin-connect accepts configuration only over the plugin's private stdin pipe."
+        );
+        return dr_dsh_daemon::plugin::run();
+    }
     if args
         .first()
         .is_some_and(|a| a == "--version" || a == "version")
@@ -307,6 +349,37 @@ fn run(name: &str, mut args: Vec<String>) -> Result<ExitCode> {
         {
             command.env("DSH_RELAY_CLIENT_DIR", root.join("client"));
         }
+    }
+    // Set trust only on the child before Tokio starts; mutating process-wide
+    // environment inside a multi-threaded Rust runtime would be unsafe.
+    let tls_flags = args
+        .iter()
+        .filter(|arg| matches!(arg.as_str(), "--insecure" | "--no-insecure"))
+        .count();
+    ensure!(
+        tls_flags <= 1,
+        "Specify --insecure or --no-insecure once; they cannot be used together."
+    );
+    if let Some(index) = args
+        .iter()
+        .position(|arg| matches!(arg.as_str(), "--insecure" | "--no-insecure"))
+    {
+        ensure!(
+            scope == "daemon" && ["run", "pair", "pair-as-device"].contains(&args[0].as_str()),
+            "TLS verification flags apply to daemon run/pair/pair-as-device or either component's install/status."
+        );
+        let insecure = args.remove(index) == "--insecure";
+        command.env(
+            dr_dsh_tls::ENV_TLS_INSECURE,
+            if insecure { "1" } else { "0" },
+        );
+    }
+    if let Some(index) = args.iter().position(|a| a == "--ca-cert") {
+        ensure!(index + 1 < args.len(), "--ca-cert needs a PEM CA file.");
+        let ca = absolute(Path::new(&args.remove(index + 1)))?;
+        args.remove(index);
+        dr_dsh_tls::certificates(&ca)?;
+        command.env(dr_dsh_tls::ENV_CA_CERT, ca);
     }
     command.args(["__runtime", &scope]).args(args);
     exec(command)

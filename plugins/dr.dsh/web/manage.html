@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>dr.dsh · 本机管理</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/_drdsh/manage.css">
+  <script src="/_drdsh/manage.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/_drdsh/manage">dr<span>.</span>dsh</a>
+    <div class="sidebar-caption">你的设备，由你掌控</div>
+    <nav aria-label="管理页面">
+      <a href="#overview" class="selected">概览 <span>01</span></a>
+      <a href="#configuration">连接与配置 <span>02</span></a>
+      <a href="#devices">配对与设备 <span>03</span></a>
+      <a href="#maintenance">维护 <span>04</span></a>
+    </nav>
+    <div class="local-note"><span class="dot"></span> 本机管理入口<br><small>独立授权 · 配置保存在本机</small></div>
+    <a class="back" href="/">返回 DSH ↗</a>
+  </aside>
+  <main>
+    <header><div><p class="eyebrow">DEEPSEEK HARNESS / LOCAL CONTROL</p><h1>连接你的 DSH。</h1><p class="subtitle">从这台电脑出发，让其他设备安全地接入。</p></div><button id="lock" class="quiet" hidden>锁定管理页</button></header>
+    <div id="notice" role="status" aria-live="polite" hidden></div>
+    <section id="authorization" class="card authorization">
+      <div class="section-heading"><span class="step">◎</span><div><p class="eyebrow">仅限本机授权</p><h2>打开管理权限</h2></div></div>
+      <p>在运行 DSH 的电脑上打开授权页面，或读取该电脑上的私有授权文件。管理权限在 15 分钟后失效。</p>
+      <button id="open-local" class="primary">在本机浏览器授权 ↗</button>
+      <details><summary>无桌面环境或通过 SSH 连接</summary><p>读取下列文件中的授权码，或在本机选择该文件。授权码只用于此页面，不会保存到浏览器。</p><code id="capability-path">正在读取文件位置…</code>
+        <form id="unlock-form"><label for="capability">本机授权码</label><div class="inline"><input id="capability" type="password" autocomplete="off" spellcheck="false" required placeholder="粘贴私有文件中的授权码"><button type="submit">解锁</button></div></form>
+        <label class="file-label">选择授权文件 <input id="capability-file" type="file"></label>
+      </details>
+      <p class="muted">如果此页尚未通过 DSH 身份验证，请先返回 DSH 完成登录，再打开管理页。</p>
+    </section>
+    <div id="dashboard" hidden>
+      <section id="overview" class="section">
+        <div class="section-title"><h2>运行概览</h2><button id="refresh" class="quiet">刷新状态 ↻</button></div>
+        <div class="metrics"><div class="card metric"><p>后台服务</p><strong id="service-status">—</strong><span id="service-detail">正在读取</span></div><div class="card metric"><p>DSH 宿主</p><strong id="host-status">—</strong><span id="host-detail">—</span></div><div class="card metric"><p>已配对设备</p><strong id="device-count">—</strong><span>只允许已登记的设备访问</span></div></div>
+        <div class="card instance"><div><p class="eyebrow">当前实例</p><code id="instance-prefix">—</code></div><span class="badge" id="profile-name">web</span></div>
+        <div id="handoff-card" class="card accent" hidden><h3>让 daemon 接管当前 DSH</h3><p>安装已准备好。接管会关闭当前手动启动的 DSH，再由后台服务使用同一 profile 和端口启动。请先保存正在进行的工作。</p><button id="handoff" class="primary">检查并接管 DSH</button><p id="handoff-detail" class="muted"></p></div>
+        <div class="card"><div class="section-title"><h3>后台作业</h3><button id="jobs-refresh" class="quiet">查看作业</button></div><p class="muted">安装、更新和重启由系统服务执行。页面断开后仍会继续；重新授权后可查看结果。</p><div id="jobs" class="empty">暂无作业</div></div>
+      </section>
+      <section id="configuration" class="section">
+        <div class="section-title"><h2>连接与配置</h2><span class="muted">保存后重启生效</span></div>
+        <form id="config-form" class="card">
+          <label for="relay">中继地址 <span class="required">*</span></label><input id="relay" name="relay" type="text" inputmode="url" required placeholder="wss://relay.example.com" autocomplete="off"><p class="hint">填写你部署的中继地址。使用 ws:// 或 wss://，无需附加路径。</p>
+          <div class="form-grid"><div><label for="port">DSH 端口</label><input id="port" name="port" type="number" min="1" max="65535" required></div><div><label for="workdir">工作目录</label><input id="workdir" name="workdir" type="text" placeholder="使用当前 DSH 工作目录"></div></div>
+          <details><summary>高级配置</summary><label for="dsh">DSH 可执行文件</label><input id="dsh" name="dsh" type="text" placeholder="默认使用当前 DSH 的启动器"><label for="dsh-home">DSH home</label><input id="dsh-home" name="dshHome" type="text"><label for="ca-cert">中继 CA 证书路径（可选）</label><input id="ca-cert" name="caCert" type="text" placeholder="使用系统信任根"><label class="checkbox"><input id="dsh-tls" type="checkbox">为本机 DSH 启用 HTTPS</label><label class="checkbox"><input id="insecure-tls" type="checkbox">跳过中继证书验证（仅供受控调试）</label><p class="hint">跳过验证会失去对中继身份的确认。优先配置正确的 CA 证书。</p></details>
+          <div class="form-footer"><p id="config-note">安装将保留现有 DSH 插件，并启用本机管理与事件报告。</p><button id="save-config" class="primary" type="submit">安装后台服务</button></div>
+        </form>
+      </section>
+      <section id="devices" class="section"><div class="section-title"><h2>配对与设备</h2><button id="devices-refresh" class="quiet">刷新设备</button></div>
+        <div class="card"><div class="section-title"><div><h3>连接另一台设备</h3><p class="muted">在另一台设备打开中继网页，输入配对码后即可进入 DSH。</p></div><button id="pair-begin">生成配对码</button></div><div id="pairing" hidden><p class="pair-code" id="pair-code"></p><p id="pair-detail" class="muted" role="status"></p><div class="actions"><button id="pair-copy" hidden>复制配对码</button><button id="pair-cancel" class="quiet">取消本次配对</button></div></div></div>
+        <div id="device-list" class="card empty">启动 daemon 后可以查看设备。</div>
+      </section>
+      <section id="maintenance" class="section"><div class="section-title"><h2>维护</h2><span class="muted">操作当前实例</span></div>
+        <div class="card"><h3>服务与 DSH</h3><p class="muted">停止受管 DSH 或 daemon 会关闭此页。需要从远程控制面启动 DSH，或在本机重新启动后返回。</p><div class="actions"><button data-operation="service.start">启动 daemon</button><button data-operation="service.restart" data-confirm="重启 daemon 会暂时关闭当前 DSH。后台作业会继续运行，是否重启？">重启 daemon</button><button data-operation="lifecycle.restart" data-confirm="重启 DSH 会断开当前页面。是否继续？">重启 DSH</button><button data-operation="lifecycle.stop" data-confirm="停止 DSH 后当前页面将无法使用。可从远程控制面或本机重新启动 DSH。是否停止？">停止 DSH</button><button data-operation="service.stop" data-confirm="停止 daemon 会同时停止受管 DSH。需要在本机重新启动才能恢复远程访问。是否停止？">停止 daemon</button></div><div class="actions"><button data-operation="service.enable">启用登录自启动</button><button data-operation="service.disable">关闭登录自启动</button></div></div>
+        <div class="card"><h3>检查与记录</h3><div class="actions"><button data-read="doctor">运行诊断</button><button data-read="logs.tail">运行日志</button><button data-read="audit.read">审计记录</button><button data-read="crashes.read">崩溃记录</button></div><pre id="diagnostics" tabindex="0">选择一项查看结果。</pre></div>
+        <div class="card"><h3>安装包</h3><p class="muted">更新使用当前插件附带的原生版本。升级插件后，在这里应用新版本。卸载 daemon 会保留配置、配对状态和 DSH 插件。</p><div class="actions"><button data-operation="update" data-confirm="应用当前插件附带的 daemon 版本会重启受管 DSH。是否继续？">应用插件附带版本</button><button class="danger" data-operation="uninstall" data-confirm="卸载后台 daemon 并停止受管 DSH？配置与配对状态会保留，DSH 插件也会保留。">卸载 daemon</button></div></div>
+      </section>
+    </div>
+    <footer>dr.dsh <span>本机配置 · 端到端加密 · 自托管中继</span></footer>
+  </main>
+</body>
+</html>

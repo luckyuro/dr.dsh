@@ -112,7 +112,7 @@ try {
 
   // 2. The panel appears and reports a healthy state. This is the tunnel *and* the control plane
   //    working inside a browser, which is the first thing the criteria ask for.
-  await page.waitForSelector('#panel:not([hidden])', { timeout: 30_000 });
+  await page.waitForSelector('#panel:not([hidden])', { state: 'attached', timeout: 30_000 });
   await page.waitForFunction(
     () => document.getElementById('panel')?.dataset.tone === 'ok',
     undefined,
@@ -121,12 +121,11 @@ try {
   const headline = await page.textContent('#headline');
   check('the panel reports a healthy state', /running/i.test(headline ?? ''), headline ?? '(none)');
 
-  // 3. The interface opens in its own tab, because the tunnel lives in *this* page: a page owns
-  //    the carrier socket and answers the worker's requests, and a navigation replaces that page.
-  //    Opening it in place is what made the interface's HTML arrive and every asset after it hang.
-  const popup = context.waitForEvent('page', { timeout: 30_000 });
-  await page.click('#open');
-  const iface = await popup;
+  // 3. The embedded interface keeps the shell alive to carry HTTP and WebSocket traffic.
+  await page.waitForSelector('#harness-frame', { state: 'visible', timeout: 30_000 });
+  const iface = await (await page.locator('#harness-frame').elementHandle()).contentFrame();
+  if (iface === null) throw new Error('the connected page has no embedded Harness document');
+  check('the connection opens Harness in the same page', context.pages().length === 1);
   await iface.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {});
   // The interface boots its own module system; give it the moment that takes.
   await iface.waitForFunction(() => typeof window.__DSH_BOOT__ !== 'undefined', undefined, {

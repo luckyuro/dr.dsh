@@ -1,0 +1,20 @@
+[package]
+name = "dr-dsh-tls"
+description = "TLS transport for the CLI host and daemon, outside the relay crate"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+rustls.workspace = true
+rustls-native-certs = "0.8"
+tokio.workspace = true
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

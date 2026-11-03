@@ -6,6 +6,11 @@
 
 ## 1. 组件模型
 
+支持两种运行方式：插件配置 `relayUrl` 后可独立启动随包原生隧道，无需安装 daemon 服务；
+需要远程启动、重启或崩溃恢复时，启用常驻 daemon。两者复用相同的加密、配对和代理代码。
+独立模式的连接随 DSH 退出，状态报告为 `owned=false`；下图描述常驻 daemon 模式。
+两种模式的权限和生命周期差异见 [ADR-0026](decisions/0026-plugin-owned-tunnel.md)。
+
 ```
                     ┌──────────────────────────────────────────────┐
    用户的手机 / 平板 │  远程客户端（PWA）                            │
@@ -46,15 +51,32 @@
 
 **状态**：内存中的房间表（`crates/dr-dsh-relay/src/rooms.rs`），有上限（`DSH_RELAY_MAX_ROOMS`）。进程重启即遗忘，这不影响正确性：房间是可重建的路由句柄，不是数据。
 
-**数据路径（已实现，M0）**：一条连接在握手时声明角色与房间，之后每个二进制消息都被当作 carrier 帧校验后投递：daemon 的帧扇出给该房间的全部客户端，客户端的帧投给 daemon。整个数据路径是"一次查表 + 一次通道发送"，中继既不解析 payload，也不留副本。
+**数据路径**：一条连接在握手时声明角色与房间，之后每个二进制消息都被当作 carrier 帧校验后投递：
+daemon 和该房间唯一的活跃客户端相互转发。当前 carrier 只支持一个加密会话，第二客户端在握手
+阶段明确拒绝，避免新握手污染旧会话。中继不解析或持久化 payload，见
+[ADR-0024](decisions/0024-embedded-harness-session-isolation.md)。
 
-**房间的生命周期**：daemon 离开时房间立刻停止对外宣告（此时到达的客户端会得到 `reject`，而不是无限等待一个不会来的对端）；房间本身在仍有客户端时保留，这样重连的 daemon 可以继续服务它们；两端都空了才释放容量槽。这一条有集成测试覆盖（`crates/dr-dsh-relay/tests/routing.rs`）。
+每连接发送队列固定为 64 帧。队列满时在房间锁外等待容量，以背压限制读取速度，不能丢弃
+密文帧后继续发送。关闭信号独立于数据队列，单次排队或写入 30 秒没有进展时结束连接；
+见 [ADR-0021](decisions/0021-bounded-relay-backpressure.md)。这不依赖端点实现协议窗口流控。
 
-**默认监听**：`127.0.0.1:8787`（`DSH_RELAY_BIND`），生产部署时由运维自己的反向代理终止 TLS 并对外暴露。默认回环的理由是"安全默认"：即使中继只承载密文，把公网暴露也应当是显式动作。
+**房间的生命周期**：daemon 离开时房间立刻停止对外宣告，新客户端得到 `reject`。已排队的末尾
+回执仍可交付；daemon 重新注册时关闭并移除旧客户端，旧会话不能沿用新 carrier 的盐和计数器。
+两端都空了才释放容量槽。旧连接迟到的清理不能移除替代它的新连接；这些行为由
+`crates/dr-dsh-relay/tests/routing.rs` 与房间单元测试覆盖。
+
+**默认监听**：`127.0.0.1:8787`（`DSH_RELAY_BIND`）。`drdsh relay` 的 CLI 宿主可通过
+`--tls-cert` / `--tls-key` 直接提供 HTTPS/WSS，也可由反向代理终止 TLS。TLS 库只进入宿主和
+daemon，不进入 relay crate（[ADR-0018](decisions/0018-tls-transport.md)）。默认回环的理由是
+"安全默认"：即使中继只承载密文，把公网暴露也应当是显式动作。
 
 **对外端点**：`GET /healthz`（只有计数，从不列出房间）、`GET /`（静态应用壳）、`GET /client/<module>.js`（客户端模块）、`GET /ws/daemon`、`GET /ws/client`。握手与拒绝规则的规范描述在 [`protocol.md`](protocol.md) § 5.1。
 
-**客户端如何被服务**：页面外壳（中继提供）打开隧道，把 `MessageChannel` 的一端交给 Service Worker，另一端由页面用 `proxy.ts` 服务。Worker 不再改写 URL 后自行 `fetch`——那会拦截它自己，页面永远不加载。协议只有四种消息（`hand` / `request` / `response` / `failed`），`id` 负责并发配对。
+**客户端如何被服务**：页面外壳打开隧道，把专属 `MessageChannel` 的一端交给 Service Worker，
+另一端由页面用 `proxy.ts` 服务。每次交接绑定外壳、viewId 和 iframe 文档，HTTP 请求只进入所属
+视图。`hand` / `handed` 确认交接，`bind-view` / `bound` 绑定文档，`unhand` 释放路由；
+`request` / `response` / `failed` 通过 id 对应请求。Worker 不自行 fetch 隧道地址，避免递归拦截。
+后台线程冷启动时请求外壳恢复端口；更新时先结束旧 Worker 的长驻请求，再由新 Worker 接管。
 
 **客户端分发**：中继把客户端模块从 `DSH_RELAY_CLIENT_DIR` 指向的目录读出（由 `pnpm --filter @dr.dsh/pwa build` 产出）。它不内嵌构建产物——那意味着把生成物提交进仓库并逐行评审。未安装客户端时仍然提供一页说明如何构建，而不是 404：404 会让"缺一个目录"看起来像"中继坏了"。只提供扁平 `.js` 模块，且拒绝 `..`、绝对路径、反斜杠与 `.ts`。
 
@@ -71,7 +93,11 @@
 
 - 只以常量 `127.0.0.1` 访问 DSH；配置里没有 host 字段。
 - 只接受四种生命周期操作，且不接受任何远端传入的启动参数。
-- 本地控制端点只监听回环并需要本地令牌。
+- 报告端点只监听回环并需要报告令牌；本机管理使用默认关闭的私有 Unix socket，不共享报告权限。
+
+受管 DSH 启动前检查其合成配置；默认 auto 目录选择器改用 DSH 内置的主机目录浏览器，
+通过私有临时 overlay 随子进程生效。已有显式目录选择配置与 attach 实例保持原行为；不改
+用户 profile override 或包依赖，见 [ADR-0025](decisions/0025-host-directory-browser.md)。
 
 **状态**（daemon 自己的目录，权限 `0600`）：
 
@@ -83,15 +109,31 @@
 
 ### 1.3 DSH 插件 `@dr.dsh/dsh-plugin`（可选）
 
-**职责**：在 DSH 进程内订阅插件能看到的事件，转推给本地 daemon。
+**职责**：在 DSH 进程内订阅事件，转推最小化通知；在本机 DSH 中提供 `/_drdsh/manage`
+页面，调用原生管理层安装、配置、配对与维护 daemon。
 
 **为什么可选**：最要紧的两类通知（审批、提问）已经由 DSH 自己的跨进程事件通道转发，不需要插件。插件补的是 `session/event`、`subagent/*`、`goal/changed` 这些不跨进程的事件，以及未来的生命周期控制路由。没有插件时，远程访问、生命周期管理、关键通知全部可用。
 
-**边界**：不加密、不代理、不管理生命周期。它是本项目唯一 import `@deepseek-ai/*` 的地方，且所有此类假设被限制在 `plugins/dr.dsh/src/dsh-surface.ts` 一个文件内（ADR-0003）。
+**边界**：插件本身不实现隧道密码学或进程监督；独立模式由其持有随包原生连接的生命周期。
+页面的生命周期操作交给独立 daemon 或 OS 作业；
+DSH 停止时插件页面也停止。DSH 的事件、Web 服务和启动生命周期假设均限制在
+`plugins/dr.dsh/src/dsh-surface.ts`（ADR-0003）。管理服务按可选子树加载，失败不取消事件报告。
+当前兼容基准与实际验收版本见 [DSH 集成面](integration/dsh-surface.md)，历史事件报告兼容不代表管理面兼容。
 
 ### 1.4 远程客户端 PWA
 
 **职责**：配对；建立并维持隧道；把 DSH 请求改写进隧道；展示 DSH 界面；展示状态、离线提示与通知。
+
+连接成功且 DSH 运行时，shell 在当前页内嵌入 Harness 文档，自己继续持有加密隧道。iframe 的
+WebSocket 通过校验来源后的专属 MessagePort 交给父页；HTTP 通过 Service Worker 按 viewId
+绑定到对应 shell，多个房间不共用最后一次交接的端口。HTTP 与 WS 共用每隧道的流号分配器，
+加密发送按计数器顺序排队。配对表单支持回车提交；配对完成后直接使用新身份连接，无需再次点击。
+新配对引起 daemon 权限更新与重新注册时，仅对中继明确的空房间拒绝短暂重试（约 5 秒）；
+房间占用、设备拒绝和加密握手失败仍直接报告。断开或切换电脑先销毁旧 iframe 文档，再关闭其传输，
+避免旧文档在切换期间继续请求或将主动关闭记为页面故障。
+连接暂时失败会保留已保存的配对并给出留空重连指引。首次连接使用完整页面；进入 Harness 后由可拖拽、左右吸附的
+浮动按钮打开连接管理对话框，重载与断开入口放在对话框里。关闭对话框保留 iframe 和会话，
+Harness 本身占满视口。按钮的位置保存在当前浏览器，窗口变小后会限制在可见范围内。
 
 **边界**：不持有 DSH 凭据；除隧道之外没有触达 DSH 的路径。
 
@@ -104,7 +146,7 @@
 `relay/install.sh` / `daemon/install.sh` 从 Release 安装对应组件；统一入口为 `drdsh relay ...` /
 `drdsh daemon ...`，名称别名为 `drdsh-relay` / `drdsh-daemon`。混合包也运行两个独立服务进程。
 各自在 `<prefix>/lib/dr.dsh/relay`、`<prefix>/lib/dr.dsh/daemon` 安装程序，使用独立的
-`relay.json` / `daemon.json`、服务身份、日志与更新锁。PWA 归 relay，插件归 daemon；
+`relay.json` / `daemon.json`、服务身份、日志与更新锁。PWA 归 relay，插件默认归 daemon；
 更新仅重启相关宿主，见 [ADR-0015](decisions/0015-independent-relay-and-daemon.md)。
 两侧的新安装管理都由 `dr-dsh-cli` Rust 程序实现；Node 仅供 DSH、插件和构建/测试。
 各包共用同平台的同一二进制，通过包清单和调用名限制组件；该二进制包含 daemon 密码学实现，
@@ -117,6 +159,45 @@
 通过用户级 launchd / systemd 启停 Rust 二进制。PWA 随中继分发；插件通过 DSH 的 web profile
 安装命令注册。该运维入口不增加网络接口或协议消息，见
 [ADR-0014](decisions/0014-installation-and-services.md) 与[命令说明](operations/cli.md)。该统一入口保留为旧安装兼容路径。
+
+### 本机结构化管理与运行状态
+
+`drdsh daemon manage` 提供版本化 JSON 入口；`daemon.json` 仍是唯一安装配置来源。
+插件可显式设为外部归属，由 DSH 包管理器管理；报告开关独立于插件包归属。
+运行时管理默认关闭，启用后只在私有 Unix socket 上提供状态、配对、设备与 DSH 生命周期操作。
+该接口不接入 DSH RPC、TCP 或远端隧道，报告令牌不授予管理权限。
+
+每个规范化状态目录用 OS 文件锁保证单个 daemon；设备事务锁独立且只覆盖短暂的读改写。
+配对提交合并最新登记，运行中设备变更立即通知鉴权策略；旧 CLI 直接修改文件时，daemon 每
+200 毫秒检查。首次配对关闭纯房间密钥会话，撤销关闭对应设备的活跃代理和通知，登记丢失或
+损坏时拒绝访问。设备变更无需重启 DSH。
+
+协议和运行边界见[本机管理接口](operations/daemon-management.md) 与
+[ADR-0022](decisions/0022-plugin-managed-daemon-foundation.md)。
+
+### 插件页面、原生包与 OS 作业
+
+```text
+本机 DSH 页面 → DSH 鉴权 + 本机 capability → 插件闭集 JSON → 原生 CLI
+                                                        ├─ daemon.json
+                                                        ├─ 私有运行时 socket
+                                                        └─ systemd / launchd 作业
+远端隧道 → daemon 代理 → 拒绝 /_drdsh 管理命名空间
+```
+
+DSH 包管理器安装的单包包括页面与匹配平台的 native。native 复制到插件目录以外的私有缓存，
+先检查清单、平台、版本和文件类型，再校验缓存完整性；缺包明确失败，不使用旧 Release 凑数。
+页面不能提供 native 下载地址或命令，只能选择本机管理层公开的操作和配置字段。
+
+DSH 的登录、真实 loopback 连接和同源检查之后，管理 API 还需要独立的短期 Bearer。
+它由 `0600` 本机 capability 或 5 分钟单次启动链接换取，15 分钟失效，插件卸载或 DSH 重启即撤销。
+首页仅注入固定入口，不放秘密；本机启动链接只交 OS 浏览器与私有文件。daemon 对 HTTP 与
+WebSocket 共用路径拒绝，分离 query 后按有界解码与点目录归一检查 `/_drdsh`。
+
+安装、更新、卸载和会终止宿主的操作提交独立 OS 作业，持久结果不依赖页面或 DSH 存活。
+首次接管先准备不启动的安装，再由原生层识别当前宿主的进程身份，用户确认后重新校验并交接。
+普通 attach 模式不自动取得停止手动进程的权限。停止服务后页面可能不可达，须以保存的 job ID
+和实际运行状态判断结果。设计与代价见 [ADR-0023](decisions/0023-plugin-local-management.md)。
 
 ### 2.1 启动与就绪
 
@@ -143,9 +224,9 @@ drdshd run
 DshClient ──▶ 中继 ──▶ daemon ──▶ loopback ──▶ 真实的 dsh web
 ```
 
-`GET /` 经加密隧道取回 DSH 自己的首页（以 DSH 注入的 `__DSH_BOOT__` 为证），authority 与 cookie 由 daemon 替换；`/api/remote.mux` 的 `$events` 就绪项也经同一路径往返。2026-09-26 在 DSH `0.1.7-rc.2` 上的实测结果见[兼容记录](integration/dsh-surface.md#2026-09-26-兼容验收dsh-017-rc2)。
+`GET /` 经加密隧道取回 DSH 自己的首页（以 DSH 注入的 `__DSH_BOOT__` 为证），authority 与 cookie 由 daemon 替换；`/api/remote.mux` 的 `$events` 就绪项也经同一路径往返。2026-10-22 在 DSH `0.2.1-rc.2` 上的进程与浏览器实测结果见[兼容记录](integration/dsh-surface.md#2026-10-22-兼容验收dsh-021-rc2)。
 
-**为什么必须解析就绪行**：DSH 没有 daemon 模式，也没有本地发现文件；就绪行是它提供给监督者的正式接口（其源码注释写明"监督者应在观察到该行后立即建立连接"）。它是本项目中唯一一处依赖非版本化上游契约的地方，因此：
+**为什么必须解析就绪行**：DSH 没有 daemon 模式，也没有本地发现文件；就绪行是它提供给监督者的接口（其源码注释写明"监督者应在观察到该行后立即建立连接"）。与插件管理服务一样，这些契约没有独立的稳定版本承诺，因此：
 
 - 解析逻辑集中在一处；
 - 解析失败时给出明确错误（"DSH 已启动但未打印就绪行，可能是版本不兼容"），而不是静默等待；
@@ -221,6 +302,14 @@ DshClient ──▶ 中继 ──▶ daemon ──▶ loopback ──▶ 真实�
 
 第一条路径是免费的：它本来就是 DSH 的界面流量，被我们原样代理。第二条路径是插件存在的全部理由。
 
+插件路径已实现四类事件：`turn_complete`、`approval_requested`（含用户提问）、`goal_complete`、
+`subagent_complete`；`agent/status` 不上报。显式启用插件报告后，daemon 在 `127.0.0.1` 随机端口
+接受带临时 Bearer 令牌的 `POST /report`，再发已有 `notification` 控制消息给完成设备鉴权的连接。
+端口与令牌只传给受管 DSH 子进程，不写配置；attach 模式拒绝启用。
+队列有界，未连接不保存；PWA 的通知列表在断开、重连、切换机器时清空。
+不新增 relay 接口，不改变共享 wire 格式，也不启用 Web Push，见
+[ADR-0020](decisions/0020-plugin-realtime-notifications.md)。
+
 ### 2.5 生命周期操作
 
 ```
@@ -287,5 +376,5 @@ DshClient ──▶ 中继 ──▶ daemon ──▶ loopback ──▶ 真实�
 
 - **局域网直连是否需要**：若引入，需要一个额外的监听面与信任规则（`docs/product/mvp.md` § 六）。
 - **一个 daemon 管理多个 DSH 实例**：状态模型需要扩展（每个实例一份 `Status`？房间与实例的关系？）。
-- **daemon 本地控制端点是否改用 unix domain socket**：会提高跨平台成本，收益是更小的本地暴露面。
+- **本机管理的 Windows 支持**：当前私有 Unix socket 与 OS 作业覆盖 macOS/Linux；原生 Windows 的权限与服务实现仍需独立设计。
 - **推送通道的具体实现**：Web Push 与自托管推送的选择，取决于 Web Push 端到端边界的结论（ADR-0006）。

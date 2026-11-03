@@ -18,7 +18,11 @@
  * Exit codes: 0 all checks passed, 1 a check failed, 2 the run could not start.
  */
 
-import { chromium } from 'playwright-core';
+const playwright = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright-core');
+const { chromium } = playwright.default ?? playwright;
+
+import { OFFLINE_CACHE } from '../apps/pwa/src/offline.ts';
+import { reloadOffline, restoreOnline } from './browser-network.mjs';
 
 const [relayUrl, roomKey, ...flags] = process.argv.slice(2);
 if (relayUrl === undefined || roomKey === undefined) {
@@ -27,7 +31,7 @@ if (relayUrl === undefined || roomKey === undefined) {
 }
 const headed = flags.includes('--headed');
 /** Where Playwright's Chromium lives in this environment. */
-const CHROME = `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
+const CHROME = process.env.CHROMIUM_BIN ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
 
 const results = [];
 let failures = 0;
@@ -46,6 +50,7 @@ const context = await browser.newContext();
 const page = await context.newPage();
 const consoleErrors = [];
 page.on('console', message => {
+  if (message.location().url.endsWith('/healthz') && message.text().includes('ERR_INTERNET_DISCONNECTED')) return;
   if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 160));
 });
 page.on('pageerror', error => consoleErrors.push(`uncaught: ${error.message}`));
@@ -63,27 +68,27 @@ try {
   // One reload so the pre-cache is in place and this document itself was served under the worker.
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 });
 
-  const cached = await page.evaluate(async () => {
+  const cached = await page.evaluate(async cacheName => {
     const names = await caches.keys();
-    const cache = await caches.open('dr.dsh-client-v3');
+    const cache = await caches.open(cacheName);
     const keys = await cache.keys();
     return { names, paths: keys.map(request => new URL(request.url).pathname).sort() };
-  });
+  }, OFFLINE_CACHE);
   check(
     'the service worker cached the client\'s own files',
-    cached.names.includes('dr.dsh-client-v3') && cached.paths.includes('/'),
+    cached.names.includes(OFFLINE_CACHE) && cached.paths.includes('/'),
     cached.paths.join(', ') || 'nothing cached',
   );
 
   // 2. Cut the network and reload. Without the cache this is the browser's own error page, which is
   //    what "the offline experience" was before this round.
-  await context.setOffline(true);
-  await page.reload({ waitUntil: 'domcontentloaded', timeout: 20_000 });
+  await reloadOffline(context, page);
   const title = await page.title();
   check('the shell still loads with no network', title === 'dr.dsh', `title ${JSON.stringify(title)}`);
 
   // 3. And it says so. The sentence has to be the page's, not the browser's: the check reads the DOM
   //    the shell drew.
+  await page.waitForFunction(() => document.getElementById('state')?.dataset.phase === 'offline', undefined, { timeout: 10_000 });
   const notice = await page.evaluate(() => ({
     phase: document.getElementById('state')?.dataset.phase ?? '',
     text: document.getElementById('state')?.textContent ?? '',
@@ -103,7 +108,7 @@ try {
   check('the shell\'s own code ran while offline', wired);
 
   // 4. Back online: the notice goes away and a connection works, so the offline path is not a dead end.
-  await context.setOffline(false);
+  await restoreOnline(context, page);
   await page.evaluate(() => window.dispatchEvent(new Event('online')));
   await page.waitForFunction(
     () => document.getElementById('state')?.dataset.phase !== 'offline',
@@ -112,7 +117,7 @@ try {
   );
   await page.fill('#key', roomKey);
   await page.click('#connect');
-  await page.waitForSelector('#panel:not([hidden])', { timeout: 30_000 });
+  await page.waitForSelector('#panel:not([hidden])', { state: 'attached', timeout: 30_000 });
   await page.waitForFunction(
     () => document.getElementById('panel')?.dataset.tone === 'ok',
     undefined,
@@ -124,6 +129,8 @@ try {
   check('no console errors', consoleErrors.length === 0, consoleErrors.slice(0, 2).join(' | ') || undefined);
 } catch (error) {
   check('the offline run completed', false, error.message);
+  console.error('Browser errors:', consoleErrors.join(' | '));
+  console.error('Offline state:', await page.evaluate(() => ({ online: navigator.onLine, phase: document.getElementById('state')?.dataset.phase })));
 } finally {
   await browser.close();
 }

@@ -1,8 +1,8 @@
 # A self-hosted relay, in one command: `docker compose up --build`.
 #
-# What this file deliberately does not do is terminate TLS. The relay speaks plain HTTP/WebSocket, and
-# putting a proxy in front of it is the operator's decision — with two consequences that are easy to
-# get wrong and are called out in docs/operations/docker.md:
+# The default remains loopback HTTP. Native TLS is available by mounting certificates
+# and setting DSH_RELAY_TLS_CERT/KEY; see docs/operations/tls.md. A reverse proxy
+# is also supported, with two requirements:
 #
 #   1. the carrier socket is **long-lived and quiet**; a proxy whose read timeout is shorter than the
 #      tunnel's idle window will close it on a schedule, and the daemon will reconnect forever;
@@ -28,7 +28,7 @@ services:
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8787/healthz"]
+      test: ["CMD", "/usr/local/bin/relay-healthcheck"]
       interval: 30s
       timeout: 3s
       retries: 3

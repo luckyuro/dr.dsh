@@ -485,6 +485,131 @@ fn the_service_is_reachable_through_the_module_paths_the_daemon_uses() {
     let _ = std::mem::size_of::<ProxyMessage>();
 }
 
+#[tokio::test]
+async fn local_management_http_and_upgrade_are_refused_before_connecting_to_dsh()
+-> Result<(), Box<dyn std::error::Error>> {
+    // A listening socket with no HTTP server distinguishes "did not dial" from
+    // an upstream authorization error or a refusal after sending the request.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let dsh = DshClient::new(&format!("http://{}", listener.local_addr()?))?;
+    let proxy = service::ProxyService::new(Arc::new(dsh));
+    let (outbox, mut inbox) = tokio::sync::mpsc::channel(4);
+    for request in [
+        ProxyMessage::RequestStart(message::RequestHead {
+            id: 41,
+            method: "POST".to_owned(),
+            target: "/%2e/_drdsh/api/execute?capability=never-log-me".to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        }),
+        ProxyMessage::WsOpen(message::WsOpen {
+            id: 42,
+            target: "/a/%252e%252e/%255fdrdsh/api/execute".to_owned(),
+            headers: Vec::new(),
+        }),
+    ] {
+        let mut payload = Vec::new();
+        message::encode(&request, &mut payload)?;
+        assert!(tokio::time::timeout(PATIENCE, proxy.handle(1, &payload, &outbox)).await??);
+        let failure = tokio::time::timeout(PATIENCE, inbox.recv())
+            .await?
+            .ok_or("the proxy did not report a refusal")?;
+        match message::decode(&failure.payload)? {
+            ProxyMessage::Failure(failure) => {
+                assert!(failure.reason.contains("local daemon management"));
+                assert!(!failure.reason.contains("never-log-me"));
+            }
+            other => return Err(format!("expected a refusal, got {other:?}").into()),
+        }
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), listener.accept())
+            .await
+            .is_err(),
+        "a refused HTTP request or WebSocket upgrade must not connect to DSH"
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_live_tunnel_refuses_local_management_and_keeps_ordinary_requests_usable()
+-> Result<(), Box<dyn std::error::Error>> {
+    let relay = start_relay().await?;
+    let (dsh, log) = start_fake_dsh().await?;
+    let relay_url = format!("ws://{relay}");
+    let key = room_key(14);
+    let room = dr_dsh_crypto::room_id_for(&key);
+    let state = Arc::new(Mutex::new(None));
+    let daemon = start_daemon(&relay_url, room.clone(), key, dsh, Arc::clone(&state)).await?;
+    wait_for_parked(&state).await?;
+    let mut client =
+        tokio::time::timeout(PATIENCE, Transport::join(&relay_url, &room, &key)).await??;
+    let before = lock(&log).len();
+
+    for target in [
+        "/_drdsh",
+        "/_drdsh/manage?launch=private",
+        "/./_drdsh/manage",
+        "/%2e/_drdsh/manage",
+        "/a/%2e%2e/_drdsh/manage",
+        "/%255fdrdsh%252fapi/execute",
+    ] {
+        for request in [
+            ProxyMessage::RequestStart(message::RequestHead {
+                id: 43,
+                method: "GET".to_owned(),
+                target: target.to_owned(),
+                headers: Vec::new(),
+                body: Vec::new(),
+            }),
+            ProxyMessage::WsOpen(message::WsOpen {
+                id: 44,
+                target: target.to_owned(),
+                headers: Vec::new(),
+            }),
+        ] {
+            let mut payload = Vec::new();
+            message::encode(&request, &mut payload)?;
+            client.send(1, &payload).await?;
+            let frame = tokio::time::timeout(PATIENCE, client.next_inbound()).await??;
+            match message::decode(&frame.payload)? {
+                ProxyMessage::Failure(failure) => {
+                    assert!(
+                        failure.reason.contains("local daemon management"),
+                        "{target}"
+                    );
+                    assert!(!failure.reason.contains("private"));
+                }
+                other => return Err(format!("expected a refusal, got {other:?}").into()),
+            }
+            assert_eq!(
+                lock(&log).len(),
+                before,
+                "refused target reached DSH: {target}"
+            );
+        }
+    }
+
+    let target = "/assets/100%25%20complete.js?next=/_drdsh/manage&search=../data";
+    let (head, _) = proxy_request(
+        &mut client,
+        1,
+        message::RequestHead {
+            id: 45,
+            method: "GET".to_owned(),
+            target: target.to_owned(),
+            headers: Vec::new(),
+            body: Vec::new(),
+        },
+    )
+    .await?;
+    assert_eq!(head.status, 200);
+    assert!(lock(&log).iter().any(|request| request.uri == target));
+    client.close().await?;
+    daemon.abort();
+    Ok(())
+}
+
 /// A WebSocket upgrade survives the tunnel in both directions.
 ///
 /// This is the route that makes the remote interface *live*: DSH's session feed is a

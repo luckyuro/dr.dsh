@@ -35,6 +35,12 @@ pub enum Command {
         room_key: Option<String>,
         /// Attach to a DSH that is already running on this port.
         attach: Option<u16>,
+        /// Use HTTPS/WSS when attaching to the loopback DSH instance.
+        attach_tls: bool,
+        /// Accept local reports from the supervised DSH plugin.
+        plugin_reports: bool,
+        /// Expose private Unix-socket administration to the local plugin and CLI.
+        local_admin: bool,
         /// The process token the attached DSH printed, for reaching its interface.
         attach_token: Option<String>,
     },
@@ -112,6 +118,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             port: None,
             room_key: None,
             attach: None,
+            attach_tls: false,
+            plugin_reports: false,
+            local_admin: false,
             attach_token: None,
         });
     };
@@ -125,6 +134,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
     let mut clear = false;
     let mut wait = None;
     let mut attach = None;
+    let mut attach_tls = false;
+    let mut plugin_reports = false;
+    let mut local_admin = false;
     let mut attach_token = None;
     let mut code = None;
     let mut name = None;
@@ -153,6 +165,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
                 })?);
             }
             "--attach-token" => attach_token = Some(next_value(&mut args, "--attach-token")?),
+            "--attach-tls" => attach_tls = true,
+            "--plugin-reports" => plugin_reports = true,
+            "--local-admin" => local_admin = true,
             "--code" => code = Some(next_value(&mut args, "--code")?),
             "--name" => name = Some(next_value(&mut args, "--name")?),
             "--out" => out = Some(PathBuf::from(next_value(&mut args, "--out")?)),
@@ -166,6 +181,19 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             other => bail!("unknown flag {other:?}; run `drdshd --help`"),
         }
     }
+    if plugin_reports && (verb != "run" || attach.is_some()) {
+        bail!(
+            "--plugin-reports requires managed run mode; attach cannot inject the local report credentials into an existing DSH process."
+        );
+    }
+    if attach_tls && (verb != "run" || attach.is_none()) {
+        bail!(
+            "--attach-tls requires run --attach <port>; use HTTPS only when the local DSH endpoint provides TLS."
+        );
+    }
+    if local_admin && verb != "run" {
+        bail!("--local-admin enables the running daemon's local socket; use it with run only");
+    }
     Ok(match verb.as_str() {
         "run" => Command::Run {
             config,
@@ -173,6 +201,9 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             port,
             room_key,
             attach,
+            attach_tls,
+            plugin_reports,
+            local_admin,
             attach_token,
         },
         "pair" => Command::Pair {
@@ -279,6 +310,9 @@ pub fn run_with_args(args: Vec<OsString>) -> Result<ExitCode> {
             port,
             room_key,
             attach,
+            attach_tls,
+            plugin_reports,
+            local_admin,
             attach_token,
         } => {
             // The daemon is a long-running supervisor, so it needs a runtime
@@ -288,13 +322,16 @@ pub fn run_with_args(args: Vec<OsString>) -> Result<ExitCode> {
                 .enable_all()
                 .build()
                 .context("cannot start the async runtime")?;
-            runtime.block_on(crate::run_command(
+            runtime.block_on(crate::run_command_with_admin(
                 config.as_deref(),
                 relay.as_deref(),
                 port,
                 room_key.as_deref(),
                 attach,
                 attach_token.as_deref(),
+                attach_tls,
+                plugin_reports,
+                local_admin,
             ))
         }
     }
@@ -307,8 +344,8 @@ pub fn help_text() -> String {
         "drdshd — dr.dsh local daemon\n\
          \n\
          USAGE:\n    drdshd [run] [--config <path>] [--relay <url>] [--port <port>]\n\
-         \x20   drdshd run --relay <url> --room-key <key>\n\
-         \x20   drdshd run --attach <port> [--attach-token <token>]\n\
+         \x20   drdshd run --relay <url> --room-key <key> [--plugin-reports]\n\
+         \x20   drdshd run --attach <port> [--attach-token <token>] [--attach-tls]\n\
          \x20   drdshd room-key\n\
          \x20   drdshd pair [--config <path>] [--relay <url>] [--room-key <key>]\n\
          \x20             [--wait <seconds>]\n\
@@ -324,6 +361,14 @@ pub fn help_text() -> String {
          OPTIONS:\n\
          \x20   --config <path>   configuration file (default: the platform config dir)\n\
          \x20   --relay <url>     ws:// or wss:// relay to dial, overriding the configuration file\n\
+         \x20   --attach-tls      require HTTPS for the --attach loopback endpoint\n\
+         \x20   --plugin-reports  accept local plugin reports (managed DSH only)\n\
+         \x20   --local-admin     enable private Unix-socket management (default: disabled)\n\
+         \x20   DSHD_ADMIN=1      enable local management for an installed daemon\n\
+         \x20   DSHD_PLUGIN_REPORTS=1  enable plugin reports for an installed daemon (default: 0)\n\
+         \x20   DRDSH_CA_CERT     additional PEM CA file for HTTPS/WSS clients\n\
+         \x20   DSHD_DSH_TLS=1    require an HTTPS DSH readiness URL (or attached endpoint)\n\
+         \x20   DRDSH_TLS_INSECURE=1  skip HTTPS/WSS certificate verification (default: 0)\n\
          \x20   --room-key <key>  the shared key that encrypts the tunnel; by default it is read\n\
          \x20                     from, or generated into, the state directory (ADR-0013)\n\
          \x20   --port <port>     port DSH is started on (default 3080)\n\
@@ -362,6 +407,9 @@ mod tests {
                 port: None,
                 room_key: None,
                 attach: None,
+                attach_tls: false,
+                plugin_reports: false,
+                local_admin: false,
                 attach_token: None,
             }
         );
@@ -377,6 +425,9 @@ mod tests {
                 relay: None,
                 port: Some(46_120),
                 attach: None,
+                attach_tls: false,
+                plugin_reports: false,
+                local_admin: false,
                 attach_token: None,
                 room_key: None,
             }
@@ -393,6 +444,9 @@ mod tests {
                 relay: Some("wss://r.example".to_owned()),
                 port: None,
                 attach: None,
+                attach_tls: false,
+                plugin_reports: false,
+                local_admin: false,
                 attach_token: None,
                 room_key: Some("abc".to_owned()),
             }
@@ -422,6 +476,9 @@ mod tests {
                 port: None,
                 room_key: None,
                 attach: None,
+                attach_tls: false,
+                plugin_reports: false,
+                local_admin: false,
                 attach_token: None,
             }
         );
@@ -431,6 +488,20 @@ mod tests {
     #[test]
     fn unknown_verb_is_rejected() {
         assert!(parse_str(&["frobnicate"]).is_err());
+    }
+
+    #[test]
+    fn plugin_reports_are_explicit_and_require_managed_run() -> TestResult {
+        assert!(matches!(
+            parse_str(&["run", "--plugin-reports"])?,
+            Command::Run {
+                plugin_reports: true,
+                ..
+            }
+        ));
+        assert!(parse_str(&["run", "--attach", "3080", "--plugin-reports"]).is_err());
+        assert!(parse_str(&["pair", "--plugin-reports"]).is_err());
+        Ok(())
     }
 
     #[test]

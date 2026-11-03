@@ -55,6 +55,21 @@ pub mod rooms;
 /// sockets per room has nothing to gain from a current-thread runtime.
 #[must_use]
 pub fn run() -> ExitCode {
+    if std::env::var_os("DSH_RELAY_TLS_CERT").is_some()
+        || std::env::var_os("DSH_RELAY_TLS_KEY").is_some()
+        || std::env::args_os().skip(1).any(|arg| {
+            arg.to_str().is_some_and(|arg| {
+                matches!(arg, "--tls-cert" | "--tls-key")
+                    || arg.starts_with("--tls-cert=")
+                    || arg.starts_with("--tls-key=")
+            })
+        })
+    {
+        eprintln!(
+            "drdsh-relay: this raw relay binary has no TLS implementation; use `drdsh relay run` from dr-dsh-cli with the same TLS settings, or terminate TLS in a reverse proxy. No plaintext listener was started."
+        );
+        return ExitCode::FAILURE;
+    }
     match config::Config::from_env_and_args() {
         Ok(config) => run_with_config(config),
         Err(error) => {

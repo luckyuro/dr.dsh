@@ -11,4 +11,7 @@ node_modules/
 .dr.dsh/
 *.local.toml
 docs/
-scripts/
+scripts/*
+!scripts/release-install.sh
+!scripts/relay-healthcheck.sh
+output/

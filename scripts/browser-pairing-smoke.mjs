@@ -11,7 +11,7 @@
  *   2. the pairing lands, and the page says which device it is
  *   3. the record is in IndexedDB, not only in memory
  *   4. a daemon that **requires** the device accepts it, and the panel goes healthy
- *   5. the DSH interface opens in its own tab and renders through the tunnel
+ *   5. the DSH interface opens inside the connected page and renders through the tunnel
  *   6. after a reload the page still knows the device, and connects with nothing typed — an
  *      enrolled daemon refuses a client without the identity, so this is also the check that
  *      the restored key is the enrolled one
@@ -19,8 +19,9 @@
  *      browser half of M5's "crash reporting usable", which no node-side test can reach
  *
  * Usage:
- *   node scripts/browser-pairing-smoke.mjs <relay-url> [--drdshd <path>] [--port <n>]
+ *   node scripts/browser-pairing-smoke.mjs <relay-ws-url> [--drdshd <path>] [--port <n>]
  *                                          [--state-dir <path>] [--headed]
+ *   CHROMIUM_BIN and PLAYWRIGHT_MODULE may select a browser and Playwright installation.
  *
  * The relay must already be running and serving this build of the client (that is what every other
  * smoke script assumes too). Exit codes: 0 all checks passed, 1 a check failed, 2 the run could not
@@ -29,15 +30,16 @@
 
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { chromium } from 'playwright-core';
+const playwright = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright-core');
+const { chromium } = playwright.default ?? playwright;
 
 const args = process.argv.slice(2);
 const relayUrl = args[0];
 if (relayUrl === undefined || relayUrl.startsWith('--')) {
   console.error(
-    'usage: node scripts/browser-pairing-smoke.mjs <relay-url> [--drdshd <path>] [--port <n>]\n' +
+    'usage: node scripts/browser-pairing-smoke.mjs <relay-ws-url> [--drdshd <path>] [--port <n>]\n' +
       '                                              [--state-dir <path>] [--headed]',
   );
   process.exit(2);
@@ -61,7 +63,8 @@ const stateDir = option('--state-dir', join('target', `browser-pairing-state-${p
 const dshPath = option('--dsh-path', 'target/test-bin');
 const headed = args.includes('--headed');
 /** Where Playwright's Chromium lives in this environment. */
-const CHROME = `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
+const CHROME = process.env.CHROMIUM_BIN
+  ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
 
 if (!existsSync(drdshd)) {
   console.error(`${drdshd} does not exist; run \`cargo build --workspace\` first`);
@@ -83,11 +86,34 @@ function daemonEnv() {
   return {
     ...process.env,
     DSHD_STATE_DIR: stateDir,
+    DSH_HOME: resolve(stateDir, 'dsh-home'),
     PATH: `${dshPath}:${process.env.PATH ?? ''}`,
   };
 }
 
 const roomKey = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString('base64url');
+let servingDaemon = null;
+
+async function startDaemon() {
+  const daemon = spawn(drdshd, ['run', '--local-admin', '--relay', relayUrl, '--port', port, '--room-key', roomKey], {
+    env: daemonEnv(),
+  });
+  servingDaemon = daemon;
+  let log = '';
+  daemon.stdout.on('data', chunk => { log += String(chunk); });
+  daemon.stderr.on('data', chunk => { log += String(chunk); });
+  const deadline = Date.now() + 60_000;
+  while (Date.now() < deadline) {
+    if (/index reachable/.test(log) && /relay: Connected/.test(log)) return { daemon, log: () => log };
+    if (daemon.exitCode !== null) break;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  daemon.kill('SIGTERM');
+  throw new Error('The isolated DSH daemon did not become ready; check the DSH executable and port.');
+}
+// Installed daemons pair through the live local socket. Starting first exercises the user's
+// one-submit journey and the immediate switch from room-key access to an enrolled identity.
+const serving = await startDaemon();
 
 // ---------------------------------------------------------------------------------------------
 // A code, minted the way a user gets one. `--room-key` is the key the daemon will serve: the
@@ -121,10 +147,10 @@ if (code === null) {
   console.error('the daemon never printed a pairing code');
   console.error(pairingLog.trim().split('\n').slice(-4).join('\n'));
   pairing.kill('SIGKILL');
+  servingDaemon.kill('SIGTERM');
   process.exit(2);
 }
 console.log(`relay: ${relayUrl}`);
-console.log(`code:  ${code}`);
 
 // The acceptance criterion's clock: from the moment the code exists on screen to the moment the
 // interface is visible. Everything the person does — read it, type it, press Connect — is inside
@@ -144,34 +170,14 @@ const context = await browser.newContext();
 const page = await context.newPage();
 
 const consoleErrors = [];
-page.on('console', message => {
+context.on('console', message => {
   if (message.type() === 'error') consoleErrors.push(message.text());
 });
-page.on('pageerror', error => consoleErrors.push(`uncaught: ${error.message}`));
-
-/** Starts the daemon that will serve the room, with the enrolled registry in place. */
-async function startDaemon() {
-  const daemon = spawn(drdshd, ['run', '--relay', relayUrl, '--port', port, '--room-key', roomKey], {
-    env: daemonEnv(),
-  });
-  let log = '';
-  daemon.stdout.on('data', chunk => {
-    log += String(chunk);
-  });
-  daemon.stderr.on('data', chunk => {
-    log += String(chunk);
-  });
-  const deadline = Date.now() + 40_000;
-  while (Date.now() < deadline) {
-    if (/room:/.test(log)) return { daemon, log: () => log };
-    if (/exited before announcing readiness|no DSH/.test(log)) break;
-    await new Promise(resolve => setTimeout(resolve, 200));
-  }
-  return { daemon, log: () => log };
-}
+context.on('weberror', error => consoleErrors.push(`uncaught: ${error.error().message}`));
 
 try {
-  await page.goto(relayUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
+  const pageUrl = relayUrl.replace(/^ws:/u, 'http:').replace(/^wss:/u, 'https:');
+  await page.goto(pageUrl, { waitUntil: 'domcontentloaded', timeout: 20_000 });
   check('the page loaded', (await page.title()) === 'dr.dsh', await page.title());
 
   // A fresh context has no stored device, so the page must not claim one.
@@ -187,69 +193,54 @@ try {
   const counted = await page.evaluate(() => window.__DR_DSH_HEALTH__?.errors ?? 0);
   check('the page counted the injected failure', counted === 1, `${counted} error(s)`);
 
-  // 1. Type the code, as a person does: with its dashes.
+  // Submit once with the keyboard; no second click may be needed after pairing.
   await page.fill('#key', code);
-  await page.click('#connect');
+  await page.press('#key', 'Enter');
   await page.waitForFunction(
-    () => /Paired as/.test(document.getElementById('state')?.textContent ?? ''),
+    () => /Paired as/.test(document.getElementById('device')?.textContent ?? ''),
     undefined,
     { timeout: 60_000 },
   );
-  const pairedText = (await page.textContent('#state')) ?? '';
+  const pairedText = (await page.textContent('#device')) ?? '';
   check('the page reports the device it paired as', /Paired as \S+/.test(pairedText), pairedText.trim());
 
-  // 2. The record has to be in IndexedDB, not only in the page: that is what a reload reads.
+  // 2. Identity and room must both be stored: a reload needs the same device key and room key.
   const stored = await page.evaluate(
     () =>
       new Promise(resolve => {
-        const request = indexedDB.open('dr.dsh', 1);
+        const request = indexedDB.open('dr.dsh', 2);
         request.onsuccess = () => {
           const database = request.result;
-          const get = database.transaction('device', 'readonly').objectStore('device').get('this-device');
-          get.onsuccess = () => {
-            const record = get.result;
+          const transaction = database.transaction(['identity', 'rooms'], 'readonly');
+          const identity = transaction.objectStore('identity').get('this-device');
+          const rooms = transaction.objectStore('rooms').getAll();
+          transaction.oncomplete = () => {
+            const record = identity.result;
             database.close();
             resolve(
               record === undefined
                 ? null
-                : { deviceId: record.deviceId, room: record.room, hasKey: typeof record.privateKey === 'string' },
+                : {
+                    deviceId: record.deviceId,
+                    hasKey: typeof record.privateKey === 'string',
+                    hasRoom: rooms.result.some(room => typeof room.roomKey === 'string'),
+                  },
             );
           };
-          get.onerror = () => resolve(null);
+          transaction.onerror = () => resolve(null);
         };
         request.onerror = () => resolve(null);
       }),
   );
   check(
-    'the device record is in IndexedDB',
-    stored !== null && typeof stored.deviceId === 'string' && stored.hasKey === true,
+    'the device identity and room are in IndexedDB',
+    stored !== null && typeof stored.deviceId === 'string' && stored.hasKey === true && stored.hasRoom === true,
     stored === null ? 'nothing stored' : `device ${stored.deviceId}`,
   );
 
-  // 3. A daemon that *requires* the device. Started after pairing, because the policy is decided
-  //    from the registry at startup — which is the sequence the operator follows too.
-  const { daemon, log: daemonLog } = await startDaemon();
-  if (!/room:/.test(daemonLog())) {
-    check('the daemon started', false, daemonLog().trim().split('\n').slice(-3).join(' | '));
-    await browser.close();
-    console.log('skipping the rest: no DSH is available to supervise');
-    process.exit(failures === 0 ? 2 : 1);
-  }
-  check(
-    'the daemon requires the enrolled device',
-    /devices: 1 enrolled/.test(daemonLog()),
-    (daemonLog().split('\n').find(line => line.includes('devices:')) ?? '').trim(),
-  );
-  // The daemon has to have reached DSH before a connection can serve the interface.
-  const readyDeadline = Date.now() + 40_000;
-  while (Date.now() < readyDeadline && !/index reachable/.test(daemonLog())) {
-    await new Promise(resolve => setTimeout(resolve, 250));
-  }
-
-  // 4. Connect with nothing typed: the stored device is the credential.
-  await page.fill('#key', '');
-  await page.click('#connect');
-  await page.waitForSelector('#panel:not([hidden])', { timeout: 40_000 });
+  check('live pairing preserves the serving daemon process', serving.daemon.exitCode === null);
+  // The shell must use the identity it just enrolled without another user action.
+  await page.waitForSelector('#panel:not([hidden])', { state: 'attached', timeout: 40_000 });
   await page.waitForFunction(
     () => document.getElementById('panel')?.dataset.tone === 'ok',
     undefined,
@@ -258,10 +249,11 @@ try {
   const headline = (await page.textContent('#headline')) ?? '';
   check('an enrolled daemon accepts the paired browser', /running/i.test(headline), headline.trim());
 
-  // 5. The interface, in its own tab, through the tunnel — the "see the DSH interface" half.
-  const popup = context.waitForEvent('page', { timeout: 30_000 });
-  await page.click('#open');
-  const iface = await popup;
+  // 5. The interface appears automatically in the connected shell through the tunnel.
+  await page.waitForSelector('#harness-frame', { state: 'visible', timeout: 30_000 });
+  const iface = await (await page.locator('#harness-frame').elementHandle()).contentFrame();
+  if (iface === null) throw new Error('the connected page has no embedded Harness document');
+  check('the connection opens Harness in the same page', context.pages().length === 1);
   await iface.waitForLoadState('domcontentloaded', { timeout: 30_000 }).catch(() => {});
   await iface
     .waitForFunction(() => typeof window.__DSH_BOOT__ !== 'undefined', undefined, { timeout: 30_000 })
@@ -269,13 +261,46 @@ try {
   await iface
     .waitForFunction(() => document.querySelectorAll('*').length > 100, undefined, { timeout: 30_000 })
     .catch(() => {});
+  // DSH resolves the mux relative to its document, just like its HTTP assets.
+  // A root-absolute probe would miss a broken /__dr/api/remote.mux translation.
+  const muxReady = await iface.evaluate(() => new Promise(resolve => {
+    const url = new URL('api/remote.mux', document.baseURI);
+    url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(url.href);
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.close();
+      resolve(ok);
+    };
+    const timer = setTimeout(() => finish(false), 10_000);
+    socket.addEventListener('open', () => socket.send(JSON.stringify({
+      type: 'open', streamId: 'pairing-smoke', endpoint: '$events', payload: { args: {} },
+    })));
+    socket.addEventListener('message', event => {
+      try {
+        const message = JSON.parse(String(event.data));
+        if (message.type === 'item' && message.streamId === 'pairing-smoke'
+          && message.value?.type === 'ready') finish(true);
+      } catch { finish(false); }
+    });
+    socket.addEventListener('error', () => finish(false));
+    socket.addEventListener('close', () => finish(false));
+  }));
+  check('the interface relative live socket answers $events', muxReady === true);
+  // The loading screen also has DOM nodes; wait for interactive DSH chrome.
+  await iface.getByRole('button', { name: /new session|新建会话|新会话/i }).first()
+    .waitFor({ timeout: 20_000 });
   const served = await iface.evaluate(() => ({
     hasBoot: typeof window.__DSH_BOOT__ !== 'undefined',
     nodes: document.querySelectorAll('*').length,
     title: document.title,
+    visibleTextLength: document.body.innerText.trim().length,
   }));
-  check('the DSH interface rendered through the tunnel', served.hasBoot && served.nodes > 20,
-    `${served.nodes} nodes, title ${JSON.stringify(served.title)}`);
+  check('the DSH interface rendered through the tunnel', served.hasBoot && served.nodes > 100 && served.visibleTextLength > 0,
+    `${served.nodes} nodes, ${served.visibleTextLength} visible characters, title ${JSON.stringify(served.title)}`);
 
   // Criterion 1's other half, and the reason this is measured rather than asserted by hand: "under
   // two minutes" is a claim about a person's experience, and a stopwatch in a test is the only kind
@@ -352,13 +377,17 @@ try {
     consoleErrors.length === 0,
     consoleErrors.slice(0, 3).join(' | ') || undefined,
   );
-
-  daemon.kill('SIGTERM');
-  await new Promise(resolve => setTimeout(resolve, 1000));
-  daemon.kill('SIGKILL');
 } catch (error) {
+  console.error('Connection state:', await page.locator('#state').textContent());
   check('the browser run completed', false, error.message);
 } finally {
+  // A failed browser assertion must also release DSH's port. Otherwise the
+  // next run attaches to the orphan and tests a different lifecycle mode.
+  if (servingDaemon !== null) {
+    servingDaemon.kill('SIGTERM');
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    servingDaemon.kill('SIGKILL');
+  }
   pairing.kill('SIGKILL');
   await browser.close();
 }

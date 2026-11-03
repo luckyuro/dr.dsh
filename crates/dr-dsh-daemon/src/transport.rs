@@ -126,7 +126,7 @@ pub enum TransportError {
 /// because "the room key still works" would make enrolment decorative. A daemon that has
 /// never been paired has no device to challenge, so it falls back — which is the documented
 /// path for a deployment that has not paired yet, not a convenience.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DevicePolicy {
     /// Enrolment has not happened: the room key is the only credential.
     RoomKeyOnly,
@@ -300,8 +300,17 @@ impl Transport {
         role: Role,
     ) -> Result<Self, TransportError> {
         let url = parking_url(relay_url, role)?;
+        let connector = if url.starts_with("wss://") {
+            Some(tokio_tungstenite::Connector::Rustls(std::sync::Arc::new(
+                dr_dsh_tls::client_config(None).map_err(|error| {
+                    TransportError::Transport(format!("relay TLS configuration failed: {error:#}"))
+                })?,
+            )))
+        } else {
+            None
+        };
         let (mut socket, _response) =
-            tokio_tungstenite::connect_async(&url)
+            tokio_tungstenite::connect_async_tls_with_config(&url, None, false, connector)
                 .await
                 .map_err(|source| TransportError::Connect {
                     url: url.clone(),
@@ -927,6 +936,26 @@ impl Transport {
     ///
     /// Returns a [`TransportError`] when the close handshake cannot be sent.
     pub async fn close(mut self) -> Result<(), TransportError> {
+        self.socket
+            .close(None)
+            .await
+            .map_err(|error| TransportError::Transport(error.to_string()))
+    }
+
+    /// Terminates the peer session using the already-defined connection-close frame.
+    ///
+    /// A relay deliberately keeps clients parked when a daemon leaves (including
+    /// delivery of a pairing receipt), so closing only our WebSocket cannot notify
+    /// an established peer that its authorization has ended.
+    ///
+    /// # Errors
+    /// Returns a transport error if the termination frame or close cannot be sent.
+    pub async fn terminate(mut self) -> Result<(), TransportError> {
+        let frame = encode_frame(CONTROL_STREAM_ID, FrameType::GoAway, &[])?;
+        self.socket
+            .send(Message::Binary(frame.into()))
+            .await
+            .map_err(|error| TransportError::Transport(error.to_string()))?;
         self.socket
             .close(None)
             .await

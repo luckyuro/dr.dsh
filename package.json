@@ -1,10 +1,10 @@
 {
   "name": "dr.dsh",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "license": "MIT",
-  "description": "dr.dsh \u2014 local-first remote access and control for DeepSeek Harness",
+  "description": "dr.dsh — local-first remote access and control for DeepSeek Harness",
   "packageManager": "pnpm@12.3.4",
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
@@ -12,11 +12,15 @@
   "scripts": {
     "brand:generate": "node scripts/generate-brand-assets.mjs",
     "drdsh": "node scripts/drdsh.mjs",
-    "test:cli": "node --test scripts/drdsh.test.mjs",
+    "test:cli": "node --test scripts/drdsh.test.mjs scripts/package-plugin.test.mjs",
     "smoke:multicall": "node scripts/multicall-smoke.mjs",
     "smoke:release": "node scripts/release-installer-smoke.mjs",
     "smoke:transport": "node scripts/relay-transport-smoke.mjs",
+    "smoke:relay-backpressure": "node scripts/relay-backpressure-smoke.mjs",
     "smoke:dsh-upgrade": "node scripts/dsh-upgrade-smoke.mjs",
+    "smoke:notifications": "node scripts/plugin-notification-smoke.mjs",
+    "smoke:daemon-management": "node scripts/daemon-management-smoke.mjs",
+    "smoke:plugin-owner": "node scripts/plugin-owner-smoke.mjs",
     "smoke:services": "node scripts/service-smoke.mjs",
     "smoke:systemd": "node scripts/systemd-smoke.mjs",
     "build:rs": "cargo build --workspace",

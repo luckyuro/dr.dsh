@@ -18,7 +18,7 @@ drdsh relay status
 [`../../relay/README.zh.md`](../../relay/README.zh.md)，旧安装迁移见 [`cli.md`](cli.md)。
 
 域名部署如 `https://relay.example.com`，按 [Relay 域名配置](../../relay/README.zh.md#使用域名)
-完成 DNS、HTTPS 代理与健康检查；下文提供完整的 [nginx](#nginx) / [Caddy](#caddy) 配置。
+完成 DNS 与健康检查。v0.2.0 也支持 [CLI 原生 TLS](tls.md)，无需另设代理；下文提供的 [nginx](#nginx) / [Caddy](#caddy) 配置继续适用。
 Relay 的 `--bind` 保持本机 IP 和端口，域名由反向代理接收。
 浏览器访问 HTTPS 域名；daemon 的 `--relay` 填写实际的 WS/WSS 端点，
 如 `ws://127.0.0.1:8787` 或 `wss://relay.example.com`。Relay 服务端不接受 `--relay` 参数。
@@ -31,9 +31,9 @@ Relay 的 `--bind` 保持本机 IP 和端口，域名由反向代理接收。
 | :--- | :--- |
 | 密文转发器：payload 在端点之间端到端加密，中继只解析 18 字节帧头 | 不是数据库：没有落盘的用户数据，也没有可查询的会话存储 |
 | 只按 room id、stream id、frame type、payload 长度路由 | 不记录 payload：配置里没有"记录 payload"开关，也没有"关闭加密"开关 |
-| daemon 与客户端之间的被动中继，一个进程持有内存中的 room 表 | 不是 TLS 终点：证书与 TLS 终止都在你自己的反向代理上 |
+| daemon 与客户端之间的被动中继，一个进程持有内存中的 room 表 | relay crate 不处理 TLS：证书与 TLS 终止在 CLI 宿主或反向代理上 |
 | 静态应用壳（PWA）的提供者：同一份字节、无用户数据、可为不同用户缓存 | 不是内容服务：它不为任何用户生成不同内容，也读不到会话内容 |
-| 一个不依赖 `dr-dsh-crypto`、不依赖 `dr-dsh-proto::control`、也不依赖任何 DSH 包的二进制 | 不是 DSH 的组件：它无法"顺便"看一眼 harness 流量 |
+| 一个不依赖 `dr-dsh-crypto`、不使用 `dr-dsh-proto::control`、也不依赖任何 DSH 包的 relay crate | 不是 DSH 的组件：它无法"顺便"看一眼 harness 流量 |
 
 中继能看到什么、看不到什么，以及这个声明如何被依赖图而不是被承诺保证，规范版本在 [`../security.md`](../security.md) § 2.1 与 [`../decisions/0002-zero-knowledge-relay.md`](../decisions/0002-zero-knowledge-relay.md)：
 
@@ -54,9 +54,9 @@ Relay 的 `--bind` 保持本机 IP 和端口，域名由反向代理接收。
 | `DSH_RELAY_KEEPALIVE_SECS` | `30` | 对一个安静的对端发 WebSocket ping 的间隔，用来复位反向代理的空闲计时器（见下文「保活」） | `0` 关闭；非数字即拒绝启动 |
 | `DSH_RELAY_CLIENT_DIR` | 无（只提供说明页） | 构建好的客户端模块目录 | 目录不存在时只影响资源，不影响隧道 |
 
-设计上有意如此：这里没有任何能削弱安全属性的字段——没有"记录 payload"开关、没有"关闭加密"开关，也没有 TLS 私钥字段，因为 TLS 属于你的反向代理。默认绑回环也是同一个原则的延伸：把一个只装密文的中继暴露到网络上，仍然应当是一个显式动作。
+设计上有意如此：这里没有任何能削弱安全属性的字段——没有"记录 payload"开关、没有"关闭加密"开关，relay crate 也没有 TLS 私钥字段；CLI 宿主通过 `DSH_RELAY_TLS_CERT` / `DSH_RELAY_TLS_KEY` 处理 TLS，见 [TLS 配置](tls.md)。默认绑回环也是同一个原则的延伸：把一个只装密文的中继暴露到网络上，仍然应当是一个显式动作。
 
-可用的命令行姿势只有一种：直接运行 `drdsh-relay`（没有子命令）。启动时会打印版本号与 wire 协议版本。
+发布包使用 `drdsh relay run` 或 `drdsh-relay run`；原始开发二进制直接运行 `drdsh-relay`，只提供 HTTP，TLS 应交给 CLI 或反向代理。
 
 ### 想在局域网内低延迟？把中继放进局域网
 
@@ -80,7 +80,7 @@ Daemon 按 `--relay` 指定的 `ws://` 或 `wss://` 连接；与中继同机时�
 DSH_RELAY_CLIENT_DIR=/usr/share/dr.dsh/client drdsh-relay    # 绑默认的 127.0.0.1:8787
 ```
 
-两条必须知道的事：中继**自己不加密也不认证**——内容由隧道端到端保护，但"谁在连这个中继、有哪些房间 id"
+两条必须知道的事：relay crate **不处理端到端加密或设备认证**——内容由隧道端到端保护，但"谁在连这个中继、有哪些房间 id"
 对能访问它的人是可见的；以及如果中继直接绑了局域网地址（而不是回环 + 代理），它照常在启动时打印那条
 非回环警告（见下文「部署检测」），提醒你同一网络里的其他设备——包括访客网络里的——都能访问它。
 
@@ -123,7 +123,7 @@ curl http://127.0.0.1:8787/healthz
 | 阶段 | 基础镜像 | 做什么 |
 | :--- | :--- | :--- |
 | `client` | `node:24-bookworm-slim` | 按 `package.json` 里 pin 的 pnpm 装依赖、构建 PWA 产物（中继要提供它，所以**必须在镜像里**） |
-| `relay` | `rust:1.97-bookworm` | `cargo build --release --locked -p dr-dsh-relay`，只编译中继与其协议依赖——daemon 与所有面向 DSH 的依赖**不在这个镜像里**，这是把"零知识"写成构建步骤 |
+| `relay` | `rust:1.97-bookworm` | `cargo build --release --locked -p dr-dsh-cli --no-default-features --features relay`，编译 TLS 宿主与 relay crate；daemon 和 DSH 依赖不进入镜像 |
 | `runtime` | `debian:bookworm-slim` | 拷入二进制与客户端产物，非 root 用户 `drdsh`，带 `curl` 只为健康检查 |
 
 三个容易踩的点，都是这份 Dockerfile 本身踩过的：
@@ -245,7 +245,7 @@ WantedBy=multi-user.target
 
 按 [`../protocol.md`](../protocol.md) § 5.1 与 [`../decisions/0005-pwa-and-service-worker.md`](../decisions/0005-pwa-and-service-worker.md)，反向代理至少要正确处理这些长连接：
 
-- `GET /ws/daemon` 与 `GET /ws/client`：隧道本身，一条 carrier 连接承载该 room 的全部客户端。
+- `GET /ws/daemon` 与 `GET /ws/client`：隧道本身，当前一条 carrier 连接承载该 room 的一个活跃客户端。
 - DSH 自己的 WebSocket 多路复用 `/api/remote.mux`：它是 DSH 界面的流量，经 Service Worker 改写进隧道后由 daemon 代理；升级请求天然作为被改写的同源请求通过，因此代理层**不能对任何路径拒绝升级**。
 
 **保活默认开着**：中继与 daemon 各自每 30 秒发一个 WebSocket ping（见下文「保活」一节），所以 60 秒这种默认空闲超时通常不会再掐断一条安静隧道。但**放宽超时仍然是正解**——保活只覆盖它自己那条 carrier，一条短于保活间隔的超时、或链路上你不知道的某一跳（CDN、云负载均衡）照样会掐；daemon 会认出"按固定节拍被掐断"的形状并警告，但那只是告诉你原因，不是修好它。代理侧该怎么配：整站允许升级，并把空闲超时放宽。下面两个示例都按整站代理编写，这样将来 DSH 新增流式端点时不需要再改代理配置。
@@ -340,9 +340,9 @@ Caddy 这一侧还有两个与超时有关的事实值得记住：`stream_timeou
 
 ### 证书与 TLS
 
-- **中继自己不终止 TLS。** 它的配置里没有 TLS 私钥字段（`crates/dr-dsh-relay/src/config.rs` 明确说明这是有意为之），`cargo tree -p dr-dsh-relay` 里也没有任何 TLS 实现，所以它既不读证书文件也不做 ACME。
-- **证书在反向代理上。** Caddy 自动 HTTPS 就够了；nginx 用 certbot 或你现有的签发流程。传输层要求是 WSS（TLS 1.2+，[`../protocol.md`](../protocol.md) § 1）。
-- **不需要客户端证书。** 设备身份是在端到端握手层用密钥证明的（配对时的 SPAKE2 与登记后的设备密钥挑战—应答，[`../protocol.md`](../protocol.md) § 6），不是靠 TLS 客户端证书。Daemon 使用 rustls 与系统信任的根证书连接 WSS，校验证书和主机名；TLS 依赖只在 daemon 侧启用，relay crate 仍不终止 TLS。
+- **relay crate 不终止 TLS。** 它的配置里没有 TLS 私钥字段，也不依赖 TLS 实现；`drdsh relay` 的 CLI 宿主可直接提供 TLS，见 [ADR-0018](../decisions/0018-tls-transport.md)。
+- **证书交给 CLI 宿主或反向代理。** 原生入口使用 `--tls-cert` / `--tls-key`；代理可选 Caddy 自动 HTTPS 或 nginx 加现有签发流程。原生入口不做 ACME，续期后需重启。详见 [TLS 配置](tls.md)。
+- **不需要客户端证书。** 设备身份由端到端握手层的密钥证明（配对时的 SPAKE2 与登记后的挑战—应答，[`../protocol.md`](../protocol.md) § 6）。Daemon 使用 rustls 与系统 CA，可通过 `--ca-cert` 增加私有 CA；默认验证证书链、有效期和主机名。显式跳过与恢复使用 `--insecure` / `--no-insecure`，见 [TLS 配置](tls.md#显式跳过证书验证)。
 - **仍然必须用 TLS。** 中继只装密文，但 room id、帧长与时序是明文的路由元数据；TLS 保护的是这些元数据以及"你连的确实是那台中继"这件事。
 - **需要的可以让中继只监听回环**，反向代理与它同机；容器部署则绑 `0.0.0.0` 但只把端口发布到 `127.0.0.1`。
 - 证书过期在这套结构里的表现是"客户端连不上、代理返回 502 或证书错误"，而中继日志一切正常——这是排查时最容易走错方向的一类故障。
@@ -399,14 +399,19 @@ journalctl -u drdsh-relay -f                  # 或: docker compose logs -f rela
 | 项目 | 值 | 来源 |
 | :--- | :--- | :--- |
 | 每个 room 的 daemon | 恰好 1 个；第二个会被明确拒绝 | `crates/dr-dsh-relay/src/rooms.rs` 的 `park` |
-| 每个 room 的设备（客户端）数 | `MAX_DEVICES_PER_ROOM` = 16 | [`../protocol.md`](../protocol.md) § 9 |
+| 每个 room 的活跃客户端 | 当前 1 个；第二连接明确拒绝，保护原会话 | [ADR-0024](../decisions/0024-embedded-harness-session-isolation.md)；`MAX_DEVICES_PER_ROOM = 16` 仍为协议容量常量 |
 | 单帧 payload 上限 | `MAX_PAYLOAD_LEN` = 65536（64 KiB） | 同上；中继侧的 `MAX_FORWARDED_PAYLOAD` 与它相等，并有单元测试钉住 |
 | 同时停靠的 room 数 | `DSH_RELAY_MAX_ROOMS`，默认 1024 | `crates/dr-dsh-relay/src/config.rs` |
-| 单连接的并发 stream 数 | `MAX_CONCURRENT_STREAMS` = 64 | [`../protocol.md`](../protocol.md) § 4 |
-| 单 stream 流控窗口 | 初始 `INITIAL_WINDOW` = 262144（256 KiB），最大 `MAX_WINDOW` = 16777216（16 MiB） | 同上 |
+| 每连接应用发送队列 | 64 帧；满时等待下游，不丢帧续传 | `crates/dr-dsh-relay/src/rooms.rs`；[ADR-0021](../decisions/0021-bounded-relay-backpressure.md) |
+| 单次排队或写入无进展上限 | 30 秒，超时结束连接 | 同上 |
+| 协议库的并发 stream 模型 | `MAX_CONCURRENT_STREAMS` = 64；未接入当前 carrier 转发路径 | [`../protocol.md`](../protocol.md) § 4 |
+| 协议库的流控窗口模型 | 初始 256 KiB，最大 16 MiB；未接入当前 carrier 转发路径 | 同上 |
 | 配对码有效期 | 300 秒（`PAIRING_CODE_TTL_SECS`），单次使用 | [`../protocol.md`](../protocol.md) § 9 |
 
-粗算内存的方法：把 `DSH_RELAY_MAX_ROOMS`（room 数）× 每 room 的连接数（1 个 daemon + 最多 16 个客户端）× 每连接的缓冲上限（由流控窗口决定，单流初始 256 KiB、最多 16 MiB、最多 64 条并发流）当成上界，再按你机器的实际内存把这个乘积压到可接受范围。中继对帧长有硬上限，正是为了让"一个恶意客户端让中继无限缓冲"这件事不可能发生。
+应用发送队列的 payload 预算约为每连接 `64 × 64 KiB = 4 MiB`，再乘以活跃 room 与连接数。
+这不是进程总内存上限：还需计入当前等待转发的帧、WebSocket/TCP 缓冲与运行时开销。
+不要用尚未接入实际传输的协议窗口常量估算中继内存。满队列会停止继续读取当前发送者，
+其他房间不需等待该发送者持有房间锁；持续不消费的目标最终使连接明确关闭。
 
 每个 daemon 只占一个 room，这是设计的一部分而不是限制：room 是路由单位，同一个用户的多台设备通过同一个 room 与同一个 daemon 通信，而不是各自开一条隧道。
 

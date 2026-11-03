@@ -70,7 +70,7 @@ pub struct EnrolledDevice {
 ///
 /// Ordering is by device id so that two runs writing the same set produce the same file —
 /// a registry that reshuffles itself on every write makes a diff of two machines useless.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct DeviceRegistry {
     devices: BTreeMap<DeviceId, EnrolledDevice>,
 }
@@ -214,12 +214,30 @@ impl DeviceRegistry {
                 reason: error.to_string(),
             })?;
 
-        let temporary = path.with_extension("json.tmp");
-        std::fs::write(&temporary, encoded).map_err(|source| RegistryError::Write {
-            path: temporary.clone(),
-            source,
-        })?;
-        std::fs::rename(&temporary, path).map_err(|source| RegistryError::Write {
+        // A unique create-new file avoids following a stale or attacker-supplied
+        // temporary symlink. Writers still need the daemon's transaction lock to
+        // serialize read/modify/write; atomic rename alone cannot prevent lost updates.
+        let temporary = path.with_extension(format!(
+            "json.{}.{}.tmp",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let result = (|| {
+            use std::io::Write as _;
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary)?;
+            file.write_all(encoded.as_bytes())?;
+            file.sync_all()?;
+            std::fs::rename(&temporary, path)
+        })();
+        let _ = std::fs::remove_file(&temporary);
+        result.map_err(|source| RegistryError::Write {
             path: path.to_path_buf(),
             source,
         })

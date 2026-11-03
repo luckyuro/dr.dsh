@@ -30,7 +30,7 @@ drdsh relay status
 离线使用时，下载并校验 `drdsh-relay-x86_64-unknown-linux-musl.tar.gz`，解压后运行包内
 `sh install.sh --start`。首次发布的 macOS 包只有 daemon，relay 可从源码构建。
 混合包、平台矩阵和固定版本见[发布说明](../docs/operations/releases.md)。
-可追加 `--version v0.1.1` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
+可追加 `--version v0.2.0` 固定二进制版本，或用 `--prefix /path/to/install` 修改安装目录。
 
 ### 从源码安装
 
@@ -49,7 +49,12 @@ target/debug/drdsh relay install --source "$PWD" --skip-build --build-profile de
 ## 对外提供访问
 
 中继默认只监听 `127.0.0.1:8787`。其他设备需要一个可访问、证书受信任的 **HTTPS 入口**，
-由同机反向代理转发到这个端口。配置例子见[自托管指南](../docs/operations/self-hosting.md)。
+v0.2.0 支持 `drdsh relay run --tls-cert /path/fullchain.pem --tls-key /path/privkey.pem`
+直接提供 HTTPS/WSS，也支持同机反向代理。安装命令接受相同证书参数，另有 `--tls-server-name`
+设置本地健康探针的证书名、`--ca-cert` 增加私有 CA；这些功能已包含在 v0.2.0 Release。
+`install --insecure` 保存跳过本地 HTTPS 健康检查的证书验证，`--no-insecure` 恢复校验；
+`status` 也接受这两个参数，仅覆盖当次检查。
+详见 [TLS 配置](../docs/operations/tls.md) 和 [自托管指南](../docs/operations/self-hosting.md)。
 
 把浏览器的 HTTPS 地址交给使用者。Daemon 的 `--relay` 填写实际的 WS 或 WSS 地址，
 例如 `ws://127.0.0.1:8787` 或 `wss://relay.example.com`。
@@ -156,12 +161,14 @@ Docker 实例使用 Compose 管理：
 | 日志 | `docker compose logs -f relay` |
 | 停止并移除容器 | `docker compose down` |
 
-镜像从源码构建，包含 PWA；宿主机无需 Rust、Node.js 或 DSH。HTTPS 仍由你的反向代理提供。
+镜像从源码构建，包含 PWA；宿主机无需 Rust、Node.js 或 DSH。挂载证书并设置
+`DSH_RELAY_TLS_CERT` / `DSH_RELAY_TLS_KEY` 即可使用原生 HTTPS/WSS，健康检查也支持 TLS；仍可使用反向代理。
 
 ## 实现与边界
 
 实现位于 [`crates/dr-dsh-relay`](../crates/dr-dsh-relay)，客户端位于 [`apps/pwa`](../apps/pwa)。
-中继没有会话解密能力，不持有密钥，也没有会话数据库。它同时分发客户端代码，因此其基础设施仍需可信。
+relay crate 没有会话解密能力，不持有会话密钥，也没有会话数据库；启用 TLS 时由 CLI 宿主持有
+TLS 私钥。它同时分发客户端代码，因此其基础设施仍需可信。
 详见[安全模型](../docs/security.md)与[零知识中继决策](../docs/decisions/0002-zero-knowledge-relay.md)。
 
 已有独立 `relay.json` 安装可用同一 `--prefix` 运行新安装器，沿用服务身份和配置并替换 JS 管理文件。

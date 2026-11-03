@@ -44,7 +44,7 @@ Install dr.dsh from GitHub Releases (no Node, pnpm or Rust needed).
   curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh
   curl -fsSL https://raw.githubusercontent.com/luckyuro/dr.dsh/master/install.sh | sh -s -- --component relay --start
 
-  sh install.sh [--component mixed|relay|daemon] [--version v0.1.1]
+  sh install.sh [--component mixed|relay|daemon] [--version v0.2.0]
       [--prefix <path>] [--start] [--enable]
 
 HELP
@@ -52,7 +52,10 @@ HELP
     cat <<'HELP'
 Relay server options:
   --bind <ip:port>          Local listening address (default 127.0.0.1:8787).
-For https://relay.example.com, configure DNS and an HTTPS reverse proxy to relay.
+  --tls-cert <pem>         Serve HTTPS/WSS with this certificate chain.
+  --tls-key <pem>          Matching private key (required with --tls-cert).
+  --tls-server-name <name> Certificate name for local HTTPS status checks.
+For https://relay.example.com, configure DNS and TLS certificates or an HTTPS reverse proxy.
 Domain setup: https://github.com/luckyuro/dr.dsh/blob/master/relay/README.md#custom-domain
 
 HELP
@@ -63,13 +66,20 @@ HELP
 Daemon options:
   --relay <ws(s)-origin>    Relay to connect to; uses the supplied ws:// or wss:// scheme.
                            Examples: ws://127.0.0.1:8787 or wss://relay.example.com.
-  --dsh <executable>       DeepSeek Harness program (locate it with command -v dsh).
+  --dsh <executable>       Use an existing DeepSeek Harness instead of installing one.
   --workdir <directory>    Optional DSH startup working directory.
   --dsh-home <path>        DSH configuration and data directory (DSH_HOME or ~/.dsh).
   --port <port>            DSH port (default 3080).
+  --dsh-tls                Require an HTTPS DSH endpoint; check its health over HTTPS.
   --state-dir <path>       Daemon state and pairing data directory.
-  --with-plugin            Install the optional DSH plugin.
-First install: find dsh on PATH and use the current directory if omitted.
+  --with-plugin            Add the plugin to an older installation that omitted it.
+  --plugin-owner <owner>    daemon (default), or external for a DSH-owned plugin.
+  --plugin-reports / --no-plugin-reports
+                           Enable/disable reports independently of plugin ownership.
+  --local-admin / --no-local-admin
+                           Enable/disable private local daemon management (default off).
+First install: install private DSH 0.2.2-alpha.2 and the plugin automatically.
+Node >=24.9 and npm must be on PATH. Uses the current directory if omitted.
 Reinstallation retains saved values for omitted options.
 
 DSH installed with npm:
@@ -94,6 +104,10 @@ HELP
   esac
   cat <<'HELP'
 Environment defaults (command-line options take precedence):
+  --ca-cert <pem>                         additional CA for installed HTTPS/WSS clients
+  --insecure / --no-insecure              save skipped/default TLS certificate verification
+                                         for installed clients/health checks, not downloads
+  CURL_CA_BUNDLE=<pem>                    CA bundle for Release downloads
   DRDSH_COMPONENT=auto|mixed|relay|daemon
   DRDSH_VERSION=latest|<release-tag>
   DRDSH_PREFIX=<path>                      default: ~/.local
@@ -121,7 +135,7 @@ if [ "$drdsh_target" = aarch64-apple-darwin ] && [ "$drdsh_component" != daemon 
   echo 'This release provides macOS arm64 daemon only. Use --component daemon, or build relay/mixed from source.' >&2
   exit 1
 fi
-case "$drdsh_version" in *[!a-zA-Z0-9._-]*|'') echo 'Invalid release version; use a release tag such as v0.1.1.' >&2; exit 1 ;; esac
+case "$drdsh_version" in *[!a-zA-Z0-9._-]*|'') echo 'Invalid release version; use a release tag such as v0.2.0.' >&2; exit 1 ;; esac
 if [ -z "$drdsh_prefix" ]; then
   [ -n "${HOME:-}" ] || { echo 'HOME is missing; choose --prefix or DRDSH_PREFIX for the installation directory.' >&2; exit 1; }
   drdsh_prefix=$HOME/.local
@@ -148,7 +162,7 @@ trap 'rm -rf "$drdsh_tmp"' EXIT
 trap 'exit 1' HUP INT TERM
 for drdsh_file in "$drdsh_asset" SHA256SUMS; do
   curl --fail --silent --show-error --location --retry 3 --connect-timeout 15 --max-time 300 \
-    --proto "$drdsh_proto" --proto-redir "$drdsh_proto" \
+    --proto "$drdsh_proto" --proto-redir "$drdsh_proto" --tlsv1.2 \
     --output "$drdsh_tmp/$drdsh_file" "$drdsh_url/$drdsh_file"
 done
 drdsh_digest=$(awk -v name="$drdsh_asset" '$2 == name && NF == 2 { print $1 }' "$drdsh_tmp/SHA256SUMS")

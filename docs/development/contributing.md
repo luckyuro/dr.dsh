@@ -8,7 +8,7 @@
 
 | 工具 | 版本要求 | 依据与说明 |
 | :--- | :--- | :--- |
-| Node | `^22.19.0 \|\| >=24.0.0` | `package.json` 的 `engines`。TypeScript 用 node 自带的 test runner + type-stripping 直接运行 `.ts`，没有转译步骤 |
+| Node | `^22.19.0 \|\| >=24.0.0` | `package.json` 的 `engines`。TypeScript 源码测试用 node 自带的 test runner + type-stripping 直接运行 `.ts`；插件发行包另编译为 ESM JavaScript |
 | pnpm | 12（`packageManager: pnpm@12.3.4`） | 用 `corepack enable` 或你惯用的方式让它与 `packageManager` 字段一致；workspace 定义在 `pnpm-workspace.yaml` |
 | Rust | stable（`rust-toolchain.toml` 固定 `channel = "stable"`，组件 `rustfmt` + `clippy`） | workspace 的 MSRV 是 `rust-version = "1.88"`，edition 2024，resolver 3。`stable` 是刻意的：daemon 要交付给最终用户，不能要求 nightly |
 | Docker | 可选 | 日常开发不需要。M4 才交付 Docker 一键部署（[`../product/mvp.md`](../product/mvp.md) § 五）；想在本地复现自托管部署时看 [`../operations/self-hosting.md`](../operations/self-hosting.md) |
@@ -27,7 +27,12 @@ cargo build -p dr-dsh-daemon -p dr-dsh-relay      # 需要可执行文件时显�
 cargo run -p dr-dsh-daemon -- doctor          # 今天就能跑的真实自检
 ```
 
-TypeScript 侧不需要构建步骤：`node --test` 直接跑 `src/*.test.ts`，`tsc -b` 只做类型检查与声明产物。
+TypeScript 源码测试不需要构建步骤：`node --test` 直接跑 `src/*.test.ts`，`tsc -b` 只做类型检查与声明产物。
+插件发行是独立边界：Node 拒绝对 `node_modules` 内的 `.ts` 执行 type-stripping，因此
+`scripts/package-plugin.mjs` 与 `scripts/package-release.sh` 共用 `scripts/package-plugin-source.mjs`
+生成 ESM `.js`、改写相对 import 扩展名并设置 `exports`。构建机需要 `pnpm install` 中的
+TypeScript；安装后的插件不需要编译器。`pnpm run test:cli` 还会从两种真实归档解出插件，
+在临时 `node_modules` 下验证 Node 可以通过包名导入。
 
 ## 验证命令
 
@@ -40,7 +45,7 @@ TypeScript 侧不需要构建步骤：`node --test` 直接跑 `src/*.test.ts`，
 | `pnpm run test:rs` | `cargo test --workspace` | Rust 单元测试 + `crates/dr-dsh-proto/tests/conformance.rs` 的共享向量 |
 | `pnpm run typecheck:ts` | `pnpm -r --if-present run typecheck` | 每个 TS 包跑 `tsc -b`；`apps/pwa` 跑两个项目（页面 + Service Worker） |
 | `pnpm run test:ts` | `pnpm -r --if-present run test` | 每个 TS 包的 `node --test` |
-| `pnpm run test:cli` | `node --test scripts/drdsh.test.mjs` | 独立组件命令与配置边界、路径转义、服务定义 |
+| `pnpm run test:cli` | `node --test scripts/drdsh.test.mjs scripts/package-plugin.test.mjs` | 独立组件命令与配置边界、路径转义、服务定义，以及插件归档在 `node_modules` 下的加载 |
 | `pnpm run lint:imports` | `node scripts/check-dsh-isolation.mjs` | 硬规则 2：除 `dsh-surface.ts` 外任何文件 import `@deepseek-ai/*` 都失败（type-only 与动态 import 同样被拒） |
 | `pnpm run docs:check` | `node scripts/check-doc-links.mjs` | 硬规则 5：所有 Markdown 的相对链接必须指向存在的文件；外部 URL 只记录、不抓取 |
 
@@ -58,9 +63,67 @@ pnpm run fmt:rs          # cargo fmt --all
 ```
 
 Daemon 的 WS/WSS 连接还需真实进程验证：先 `cargo build -p dr-dsh-cli`，再执行
-`pnpm run smoke:transport`。脚本需要 Node 和 OpenSSL，自带中继、TLS 代理和临时 CA，
-覆盖 WS/WSS 加密控制往返、WSS 配对、拒绝不受信任证书与主机名不匹配；不会修改系统信任库。
+`pnpm run smoke:transport`。脚本需要 Node、OpenSSL 和构建好的 PWA，自带原生 TLS 中继、TLS 代理、DSH 替身和临时 CA，
+覆盖 HTTPS/WSS、配对、DSH HTTPS 鉴权与升级、插件 HTTPS、证书拒绝及禁止降级；不会修改系统信任库。
 安装器参数归属使用 `pnpm run smoke:release` 验证，包括 relay 帮助不显示 daemon 的 `--relay`。
+
+`pnpm run smoke:notifications` 使用真实插件、daemon、relay 与 PWA 控制客户端验证报告鉴权、
+加密通知、拒绝路径、重连与 DSH 重启；DSH 使用替身，不需要模型凭据。
+`pnpm run smoke:relay-backpressure` 用真实中继和有界 TCP 限速代理检查大载荷完整转发、
+其他房间独立通信，以及持续无进展后的关闭回收，防止只靠小消息测试漏掉满队列丢帧。
+
+`scripts/room-key-smoke.mjs` 与 `scripts/audit-smoke.mjs` 的进程清理在进程组已退出时退回
+单进程终止，不递归重试。房间密钥比较只输出结果，不能打印密钥片段。room-key 脚本将
+状态目录规范化为绝对路径，以匹配运行端的状态目录报告。两者需要可运行的 DSH；可通过
+`DSHD_DSH=/absolute/path/to/dsh` 显式指定，测试 profile 应使用独立 `DSH_HOME`。
+
+修改同页 Harness、WebSocket 桥或 Service Worker 路由时，还须构建 PWA 与原生程序，然后运行
+`node scripts/browser-embedded-smoke.mjs --dsh /absolute/path/to/dsh`。它在临时目录启动真实 DSH、
+relay、daemon 和第二房间替身，用 Chromium 检查同页自动打开、真实 mux 往返、160 次 HTTP
+请求期间 socket 持续可用、同源多房间、Worker 更换与强制冷启动、文档重载、35 秒保持同一
+socket 及同房间第二连接拒绝；控制浮钮须覆盖拖拽吸附、键盘移动、移动屏幕与对话框开关，
+并验证这些操作不重新加载 Harness。目录选择须在真实 DSH 中打开主机目录浏览器，选择临时
+目录创建 workspace，再确认 workspace 的实际路径与选择一致。
+`PLAYWRIGHT_MODULE` 和 `CHROMIUM_BIN` 可指定已有的浏览器依赖；不需要模型凭据，结束后清理
+临时进程与目录。截图和不含凭据的检查结果保存在 `output/playwright/`。
+
+独立插件隧道使用 `node scripts/plugin-connect-smoke.mjs --dsh /absolute/path/to/dsh` 验证。
+追加 `--check-browser` 后，脚本在隔离 profile 中通过 DSH 支持的启动 patch 显式选择 browse，
+用 Chromium 确认预览提示（触发设置保存及 profile 重组），并在浏览器刷新前后选择临时主机
+目录，核对 workspace 的 canonical path。此项防止仅在首次启动有效的运行时 picker 修改
+与设置重组发生冲突；同样使用 `PLAYWRIGHT_MODULE`、`CHROMIUM_BIN`，无需账号或模型凭据。
+
+修改客户端模块后必须提升 `OFFLINE_CACHE`，让每个发布版本使用独立缓存。安装阶段会一次性
+预缓存全部客户端模块和静态文件；任一项失败都不接管旧 Worker，命中缓存也不逐文件后台
+更新。发布前保存旧 PWA 构建目录，再运行
+`node scripts/browser-cache-upgrade-smoke.mjs --previous /absolute/path/to/old-dist`。
+它用真实 Chromium 检查缺文件时升级失败、旧外壳离线可用、
+配对保留、新版本完整文件摘要与命中后不再后台覆盖。已打开文档仍可持有旧模块，验收新版本
+须在 Worker 激活后完整重载；缓存整套准备好不等于所有活跃文档都原子更新。
+以 v10 构建作为旧版本时，可加 `--reproduce-legacy` 复现旧缓存逐文件后台更新的风险。
+
+`pnpm run smoke:daemon-management` 验证私有本机接口、同状态目录单实例、在线配对和撤销、
+活跃代理关闭与旧 CLI 兼容；`pnpm run smoke:plugin-owner` 用临时 prefix 和真实用户服务检查
+外部插件归属、独立报告开关和另一侧服务隔离。两者使用 DSH 替身，无需模型凭据；后者还需
+已构建 PWA 与可用的 macOS launchd / Linux systemd 用户会话。
+
+修改插件管理页面、原生 bootstrap 或后台作业时，还须运行：
+
+```sh
+cargo build -p dr-dsh-cli
+node scripts/plugin-management-smoke.mjs
+# 验证另一份本机原生构建时：
+node scripts/plugin-management-smoke.mjs --drdsh /absolute/path/drdsh
+# 额外检查真实 Chromium 管理页的手机布局、授权、复制与取消配对码：
+node scripts/plugin-management-smoke.mjs --check-browser
+```
+
+这个实测使用生产 HTTP handler、manager 和真实 OS 用户服务，在临时 prefix 中检查授权与请求边界、
+安装/更新/卸载/重装、运行中幂等重试、失败结果保存，以及宿主被强制终止后作业继续完成。
+它自带 DSH 替身，不要求 PWA 或模型凭据；需要可用的 launchd 或 systemd 用户会话。
+2026-10-29 已在本机 launchd 和 blade systemd 分别通过 7/7；同日完整 `verify`、运行时/通知/归属回归
+及真实 DSH `0.2.1-rc.2` 的 Chromium 页面验收范围见[管理页验收记录](../operations/daemon-management.md#验证)。
+真实 profile 的首次接管、浏览器恢复与远端隧道仍须单独实测，不能由 DSH 替身结果推断。
 
 说明两点：
 
@@ -177,7 +240,7 @@ git diff crates/dr-dsh-relay/Cargo.toml
 
 两点提醒：
 
-- `Config` 的注释说"未知的事件名应当是启动错误，而不是静默 no-op"，但当前 `apply()` 只校验 loopback 与 surface guard，名字拼错不会报错——这一校验尚未实现，何时补上由 M1/M2 的插件工作决定。在那之前，拼错的表现就是"事件永远不出现"。
+- 报告启用时，`apply()` 会校验事件配置白名单、回环地址和 daemon 传入的临时凭据；未知事件是启动错误。普通本地启动 DSH 没有报告凭据时，插件保持停用。
 - 内容最小化是类型的性质，不是纪律：`Notification` 里没有承载正文、路径、代码或模型输出的字段，`sessionRef` 是不透明句柄。不要为了"顺便显示一下"而加字段——通知载荷是最可能经由推送通道离开隧道的东西。
 
 ## 如何新增一个生命周期操作

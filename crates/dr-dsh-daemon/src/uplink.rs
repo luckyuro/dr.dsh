@@ -230,6 +230,10 @@ pub struct CarrierConfig {
     /// The uplink is the only place that knows a session *started* and *ended*, and the device that
     /// proved itself on it, so it is the only place that can record those two events.
     pub audit_dir: std::path::PathBuf,
+    /// Optional local reports, delivered only after an enrolled device proves its identity.
+    pub reports: Option<crate::reports::ReportSink>,
+    /// Live local authorization changes; omitted by standalone carrier tests.
+    pub policy_updates: Option<tokio::sync::watch::Receiver<crate::registry::Snapshot>>,
 }
 
 impl CarrierConfig {
@@ -250,7 +254,23 @@ impl CarrierConfig {
             policy,
             keepalive,
             audit_dir,
+            reports: None,
+            policy_updates: None,
         }
+    }
+
+    /// Enables live reports without changing the shared wire format.
+    #[must_use]
+    pub fn with_reports(mut self, reports: Option<crate::reports::ReportSink>) -> Self {
+        self.reports = reports;
+        self
+    }
+
+    /// Follows local registry transactions without restarting DSH or changing the wire.
+    #[must_use]
+    pub fn with_registry(mut self, registry: &crate::registry::LiveRegistry) -> Self {
+        self.policy_updates = Some(registry.subscribe());
+        self
     }
 }
 
@@ -258,16 +278,15 @@ impl CarrierConfig {
 ///
 /// # One session per carrier, and why
 ///
-/// The relay fans a daemon's frames out to every client in the room, so one carrier
-/// connection shared by two clients would offer both the same key stream: the second
+/// One carrier connection shared by two clients would offer both the same key stream: the second
 /// client's salt would be opened under the first client's session, its counter would
 /// not match, and the connection would fail with an out-of-order error that names
 /// neither the client nor the cause.
 ///
-/// Until per-client streams exist (M2, where the proxy layer owns stream lifecycle),
-/// the daemon therefore serves one client per carrier connection. A peer that cannot
-/// open the salt frame is rejected by dropping the carrier, which also returns every
-/// other client to the relay to be re-parked on the fresh connection.
+/// The relay therefore admits one active client per room and rejects another client's
+/// handshake before forwarding its frames. Replacing the daemon also closes the old
+/// client session. The daemon still rejects a peer that cannot open the salt frame by
+/// dropping the carrier; the next session must start on a fresh connection.
 ///
 /// # Establishment is once per connection
 ///
@@ -329,9 +348,11 @@ where
         relay_url,
         room,
         root,
-        policy,
+        mut policy,
         keepalive,
         audit_dir,
+        reports,
+        mut policy_updates,
     } = config;
     let backoff = Backoff::default();
     let mut attempt: u32 = 0;
@@ -342,6 +363,9 @@ where
     let mut idle_drops = crate::deployment::IdleDropWatch::new();
 
     loop {
+        if let Some(updates) = &mut policy_updates {
+            policy = updates.borrow_and_update().policy.clone();
+        }
         // Whether the connection ended because its session ended, rather than because
         // the carrier failed. A released carrier is not a failure to back off from.
         let mut session_ended = false;
@@ -403,6 +427,9 @@ where
                 // One channel per connection, because a message queued for a carrier that
                 // has since died must not be written onto the next one.
                 let (outbox, mut outbound) = mpsc::channel::<Outbound>(64);
+                // This guard is dropped on cancellation, release and write failure,
+                // before any replacement connection can receive reports.
+                let mut report_connection = None;
                 loop {
                     if !transport.is_established() {
                         // Establishment happens exactly once per connection, and a
@@ -417,6 +444,14 @@ where
                         // cannot tell a wrong key from a slow daemon.
                         let established = tokio::select! {
                             result = transport.establish_with(ticker.as_mut()) => result,
+                            snapshot = next_policy(&mut policy_updates) => {
+                                policy = snapshot.policy;
+                                // A partially consumed handshake cannot be resumed under
+                                // a new policy; reconnect it before accepting application data.
+                                session_ended = true;
+                                let _ = tokio::time::timeout(Duration::from_secs(5), transport.terminate()).await;
+                                break;
+                            }
                             () = &mut shutdown => {
                                 let _ = transport.close().await;
                                 on_state(RelayState::Stopped);
@@ -455,6 +490,10 @@ where
                         // Recorded after the guard above, so this is a session that really exists —
                         // not an attempt, and not a peer the daemon refused.
                         bound_device = transport.bound_device().map(str::to_owned);
+                        if bound_device.is_some() {
+                            report_connection =
+                                reports.as_ref().map(|sink| sink.connect(outbox.clone()));
+                        }
                         crate::audit::record(
                             &audit_dir,
                             crate::audit::Event::TunnelEstablished,
@@ -465,6 +504,26 @@ where
                     }
 
                     tokio::select! {
+                        snapshot = next_policy(&mut policy_updates) => {
+                            let still_allowed = snapshot.permits(bound_device.as_deref());
+                            policy = snapshot.policy;
+                            if !still_allowed {
+                                // Closing the receiver also cancels every proxied WS and
+                                // pending response tied to this connection's outbox.
+                                outbound.close();
+                                drop(report_connection.take());
+                                let _ = tokio::time::timeout(Duration::from_secs(5), transport.terminate()).await;
+                                crate::audit::record(
+                                    &audit_dir,
+                                    crate::audit::Event::TunnelReleased,
+                                    bound_device.as_deref(),
+                                    crate::audit::Outcome::Ok,
+                                    Some("local device authorization changed"),
+                                );
+                                session_ended = true;
+                                break;
+                            }
+                        }
                         inbound = transport.next_inbound_or_keepalive(ticker.as_mut()) => {
                             match inbound {
                                 Ok(frame) => {
@@ -534,6 +593,7 @@ where
                         }
                     }
                 }
+                drop(report_connection);
             }
             Err(error @ crate::transport::TransportError::Refused { .. }) => {
                 // Retrying cannot change this answer: it is a policy decision, not a
@@ -583,6 +643,20 @@ where
                 return Ok(());
             }
         }
+    }
+}
+
+async fn next_policy(
+    updates: &mut Option<tokio::sync::watch::Receiver<crate::registry::Snapshot>>,
+) -> crate::registry::Snapshot {
+    match updates {
+        Some(updates) => {
+            if updates.changed().await.is_ok() {
+                return updates.borrow_and_update().clone();
+            }
+            std::future::pending().await
+        }
+        None => std::future::pending().await,
     }
 }
 

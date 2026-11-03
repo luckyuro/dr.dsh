@@ -36,9 +36,12 @@ test('only the client\'s own paths are left alone', () => {
   // interface keeps its hashed bundles there, and passing them through gave a blank page whose
   // only clue was a 404 in the console. Found in a real browser.
   for (const path of [
+    TUNNEL_PREFIX,
+    `${TUNNEL_PREFIX}/control`,
     `${TUNNEL_PREFIX}/control/status`,
     `${TUNNEL_PREFIX}/control/pair`,
     // The worker's own namespace: it rewrites *to* this, and never intercepts it.
+    `${TUNNEL_PREFIX}/dsh`,
     `${TUNNEL_PREFIX}/dsh/api/x`,
     '/client/session.js',
     '/client/service-worker.js',
@@ -52,16 +55,26 @@ test('a relative URL from the interface is translated back to the DSH path it me
   // `/__dr/assets/index.js`. DSH has no such path; what it wrote was `/assets/index.js`.
   assert.equal(toDshPath('/__dr/assets/index-DXr0P5Et.js'), '/assets/index-DXr0P5Et.js');
   assert.equal(toDshPath('/__dr/plugins/??a,b'), '/plugins/??a,b');
+  assert.equal(toDshPath('/__dr/favicon.svg'), '/favicon.svg');
   // The interface path itself still means DSH's root.
   assert.equal(toDshPath('/__dr/interface'), '/');
   // And an ordinary DSH path is untouched.
   assert.equal(toDshPath('/api/session/list'), '/api/session/list');
 });
 
-test('the interface path is the one tunnel-prefixed request that is intercepted', () => {
+test('relative WebSocket targets preserve their query when translated', () => {
+  assert.equal(toDshPath('/__dr/api/remote.mux'), '/api/remote.mux');
+  assert.equal(toDshPath('/__dr/api/remote.mux?client=web'), '/api/remote.mux?client=web');
+  assert.equal(toDshPath('/api/remote.mux?client=web'), '/api/remote.mux?client=web');
+});
+
+test('the interface and its relative resources are intercepted', () => {
   // A service worker does not intercept a navigation to its own page, and the shell is served at
   // `/`. Without a path of its own the interface could not be asked for at all.
   assert.equal(isInterceptablePath('/__dr/interface'), true);
+  for (const path of ['/__dr/assets/index.js', '/__dr/plugins/??a,b', '/__dr/favicon.svg']) {
+    assert.equal(isInterceptablePath(path), true, path);
+  }
   // And it means DSH's root, not a file called `interface`.
   const rewritten = toTunnelRequest(
     new Request('http://relay.example/__dr/interface'),

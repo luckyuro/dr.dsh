@@ -22,6 +22,7 @@
 //!    no configuration path to a non-loopback bind.
 
 pub mod client;
+mod directory_picker;
 pub mod ready;
 pub mod supervisor;
 

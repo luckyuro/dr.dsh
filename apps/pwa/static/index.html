@@ -17,6 +17,41 @@
   @media (prefers-color-scheme: dark) { :root { --fg: #e5e7eb; --muted: #9ca3af; --accent: #60a5fa; } }
   body { font: 16px/1.6 system-ui, sans-serif; color: var(--fg); margin: 0; padding: 3rem 1.5rem; }
   main { max-width: 34rem; margin: 0 auto; }
+  [hidden] { display: none !important; }
+  body.embedded { padding: 0; overflow: hidden; }
+  #harness-view { position: fixed; inset: 0; }
+  #harness-frame { display: block; width: 100%; height: 100%; border: 0; }
+  #return-to-connection { position: fixed; z-index: 20; box-sizing: border-box; width: 44px; height: 44px;
+    left: clamp(max(12px, env(safe-area-inset-left, 0px)), var(--control-left, calc(100vw - 56px)), calc(100vw - 44px - max(12px, env(safe-area-inset-right, 0px))));
+    top: clamp(max(12px, env(safe-area-inset-top, 0px)), var(--control-top, 45vh), calc(100dvh - 44px - max(12px, env(safe-area-inset-bottom, 0px))));
+    margin: 0; padding: 0; border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent); border-radius: 50%;
+    box-shadow: 0 2px 12px #0003; background: light-dark(#fff, #252a34); color: var(--accent);
+    font-size: .9rem; line-height: 1; touch-action: none; user-select: none; cursor: grab; }
+  #return-to-connection[data-dragging] { cursor: grabbing; }
+  #return-to-connection:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+  #connection-dialog { box-sizing: border-box; width: min(38rem, calc(100vw - 24px));
+    max-width: none; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); margin: auto; padding: 0;
+    border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent); border-radius: 1rem;
+    background: light-dark(#fff, #171a21); color: var(--fg); box-shadow: 0 16px 64px #0005; overflow: auto; }
+  #connection-dialog::backdrop { background: #0005; }
+  .dialog-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 1rem;
+    padding: .85rem 1.25rem; background: inherit; border-bottom: 1px solid color-mix(in srgb, var(--fg) 15%, transparent); }
+  .dialog-heading h2 { font-size: 1rem; margin: 0; flex: 1; }
+  #close-controls { margin: 0; padding: .2rem .6rem; font-size: 1.5rem; line-height: 1.2; background: transparent; color: inherit; }
+  #dialog-session-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding: .75rem 1.25rem 0; }
+  #dialog-session-actions button { margin: 0; padding: .4rem .8rem; font-size: .9rem; }
+  #disconnect { background: transparent; color: var(--fg); border: 1px solid currentColor; }
+  #connection-dialog #connection-manager { box-sizing: border-box; max-width: none; width: 100%; padding: 1.25rem; }
+  #connection-dialog .page-header h1 img { width: 8rem; }
+  #connection-dialog #language { margin-bottom: 0; font-size: .85rem; padding: .35rem .65rem; }
+  @media (max-width: 420px) {
+    #connection-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: .75rem; }
+    #connection-dialog #connection-manager { padding: 1rem; }
+    .dialog-heading { padding: .7rem 1rem; }
+    #dialog-session-actions { padding-left: 1rem; padding-right: 1rem; }
+  }
   .page-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
   #language { margin: 0 0 .5rem auto; background: transparent; color: var(--accent);
               border: 1px solid currentColor; }
@@ -49,6 +84,15 @@
             border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); }
   #forget[hidden] { display: none; }
   #device { font-size: .9rem; }
+  #notifications { margin-top: 1.5rem; }
+  #notifications h2 { font-size: 1rem; margin-bottom: .25rem; }
+  #notification-badge { margin-left: .5rem; color: var(--accent); font-size: .85rem; }
+  #notification-alert { border-left: .25rem solid #b45309; padding: .5rem .75rem; font-weight: 600; }
+  #notification-list { padding-left: 1.3rem; max-height: 16rem; overflow: auto; }
+  #notification-list li { margin: .5rem 0; }
+  #notification-list li[data-severity="alert"] { font-weight: 600; }
+  #notification-list small { display: block; color: var(--muted); font-weight: normal; }
+  #notifications button { margin-top: .25rem; }
   .hint { font-size: .9rem; margin: .5rem 0; }
   details { margin-top: 1.5rem; font-size: .9rem; }
   summary { cursor: pointer; font-weight: 600; }
@@ -59,7 +103,7 @@
 </style>
 </head>
 <body>
-<main>
+<main id="connection-manager">
   <header class="page-header">
   <h1>
     <picture>
@@ -72,16 +116,17 @@
   <p data-i18n="page.intro">This page connects your browser to the DeepSeek Harness running on your own computer.
      Traffic is end-to-end encrypted: this relay forwards it without being able to read it.</p>
 
+  <form id="connection-form">
   <label for="key" data-i18n="page.credential">Pairing code or room key</label>
-  <input id="key" autocomplete="off" spellcheck="false" placeholder="XXXX-XXXX-XX"
+  <input id="key" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="go" placeholder="XXXX-XXXX-XX"
          aria-describedby="pairing-hint connection-hint">
   <p id="pairing-hint" class="hint" data-i18n="page.pairingHint">On the computer running DSH, run <code>drdsh daemon pair</code>
      (or <code>drdsh-daemon pair</code>) and keep the command running. Codes expire after five minutes
      and can be used for one attempt, even if it fails.</p>
-  <p id="connection-hint" class="hint">Enter the pairing code and press Connect. After pairing succeeds,
-     press Connect again to open the tunnel.</p>
-  <button id="connect" type="button" data-i18n="page.connect">Connect</button>
+  <p id="connection-hint" class="hint">Enter the pairing code and press Connect or Enter. Pairing saves this computer and opens Harness automatically when DSH is running.</p>
+  <button id="connect" type="submit" data-i18n="page.connect">Connect</button>
   <button id="forget" type="button" data-i18n="page.forgetAll" hidden>Forget all computers</button>
+  </form>
   <div id="state" data-phase="idle" role="status" aria-live="polite"></div>
   <p id="device" hidden></p>
 
@@ -96,9 +141,19 @@
     <p id="headline"></p>
     <p id="detail"></p>
     <div id="actions"></div>
-    <button id="open" type="button" data-i18n="page.open" hidden>Open the DeepSeek Harness interface</button>
-    <p class="hint" data-i18n="page.keepOpen">The DSH interface opens in a new tab. Keep this dr.dsh tab open to maintain the
-       tunnel, and keep your DSH computer awake and online.</p>
+    <button id="open" type="button" data-i18n="page.open" hidden>Return to Harness</button>
+    <p class="hint" data-i18n="page.keepOpen">Harness opens here after connecting. Return to connection management at any time, and keep your DSH computer awake and online.</p>
+  </section>
+
+  <section id="notifications" hidden aria-labelledby="notification-heading">
+    <h2><span id="notification-heading" data-i18n="notification.heading">Live notifications</span>
+      <span id="notification-badge" role="status" aria-live="polite" hidden></span></h2>
+    <p class="hint" data-i18n="notification.hint">Events from the optional DSH plugin appear here while connected.
+      The latest 50 are kept for this connection only; missed events are not replayed.</p>
+    <div id="notification-alert" role="alert" aria-atomic="true" hidden></div>
+    <p id="notification-empty" class="hint" data-i18n="notification.empty">No events received on this connection.</p>
+    <ol id="notification-list"></ol>
+    <button id="notification-read" type="button" data-i18n="notification.read" disabled>Mark all as read</button>
   </section>
 
   <details>
@@ -130,6 +185,23 @@
      this browser for this relay address. Clearing site data or forgetting a computer requires pairing
      again to reconnect.</p>
 </main>
+<section id="harness-view" hidden>
+  <iframe id="harness-frame" title="DeepSeek Harness" allow="clipboard-read; clipboard-write" referrerpolicy="same-origin"></iframe>
+</section>
+<button id="return-to-connection" type="button" hidden aria-label="Connection controls" aria-haspopup="dialog"
+        aria-controls="connection-dialog" aria-expanded="false" aria-describedby="control-instructions"><span aria-hidden="true">dr</span></button>
+<span id="control-instructions" class="visually-hidden" data-i18n="page.controlInstructions">Drag to either edge, or use the arrow keys to move. Press Enter to open connection controls.</span>
+<dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
+  <header class="dialog-heading">
+    <h2 id="connection-dialog-title" data-i18n="page.returnToConnection">Connection management</h2>
+    <button id="close-controls" type="button" aria-label="Close connection controls"><span aria-hidden="true">×</span></button>
+  </header>
+  <div id="dialog-session-actions">
+    <button id="reload-harness" type="button" data-i18n="page.reloadHarness" disabled>Reload Harness</button>
+    <button id="disconnect" type="button" data-i18n="page.disconnect" disabled>Disconnect</button>
+  </div>
+  <div id="connection-dialog-content"></div>
+</dialog>
 <script type="module" src="/client/shell.js"></script>
 </body>
 </html>

@@ -34,7 +34,101 @@ pub fn state_dir() -> std::io::Result<PathBuf> {
         std::env::var_os("HOME"),
     );
     std::fs::create_dir_all(&directory)?;
-    Ok(directory)
+    std::fs::canonicalize(directory)
+}
+
+/// Canonicalizes a state directory without changing an existing parent's permissions.
+///
+/// # Errors
+/// Returns an error when the directory cannot be created or resolved.
+pub fn canonical_directory(directory: &Path) -> std::io::Result<PathBuf> {
+    std::fs::create_dir_all(directory)?;
+    std::fs::canonicalize(directory)
+}
+
+/// Creates or validates a daemon-owned private runtime directory.
+///
+/// Existing broad directories are never chmodded: a mistaken state setting must
+/// not change permissions on a workspace, home directory, or `/tmp`.
+#[cfg(unix)]
+pub(crate) fn private_directory(directory: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::{DirBuilderExt as _, MetadataExt as _};
+    match std::fs::DirBuilder::new().mode(0o700).create(directory) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
+    let metadata = std::fs::symlink_metadata(directory)?;
+    if !metadata.is_dir()
+        || metadata.uid() != rustix::process::geteuid().as_raw()
+        || metadata.mode() & 0o777 != 0o700
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "daemon runtime directory must be a real directory owned by this user with mode 0700; inspect its ownership and permissions",
+        ));
+    }
+    Ok(())
+}
+
+/// An OS lock, released even if the process crashes. Its inode is never unlinked.
+#[cfg(unix)]
+pub(crate) struct FileLock {
+    _file: std::os::fd::OwnedFd,
+}
+
+#[cfg(unix)]
+impl FileLock {
+    pub(crate) fn try_acquire(directory: &Path, name: &str) -> std::io::Result<Option<Self>> {
+        use rustix::fs::{FlockOperation, Mode, OFlags, flock, openat};
+        let directory = canonical_directory(directory)?;
+        let private = directory.join(".runtime");
+        private_directory(&private)?;
+        let parent = rustix::fs::open(
+            &private,
+            OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::empty(),
+        )?;
+        let file = openat(
+            &parent,
+            name,
+            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::CLOEXEC,
+            Mode::RUSR | Mode::WUSR,
+        )?;
+        let stat = rustix::fs::fstat(&file)?;
+        if stat.st_uid != rustix::process::geteuid().as_raw()
+            || stat.st_mode & 0o777 != 0o600
+            || rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                != rustix::fs::FileType::RegularFile
+            || stat.st_nlink != 1
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "daemon lock must be an owned, private regular file with one link; inspect the runtime directory",
+            ));
+        }
+        match flock(&file, FlockOperation::NonBlockingLockExclusive) {
+            Ok(()) => Ok(Some(Self { _file: file })),
+            Err(rustix::io::Errno::WOULDBLOCK) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) fn acquire(directory: &Path, name: &str) -> std::io::Result<Self> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(lock) = Self::try_acquire(directory, name)? {
+                return Ok(lock);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    "another local registry operation is still running; retry shortly",
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
 }
 
 /// The pure part of [`state_dir`]: environment values in, a path out.
@@ -78,6 +172,31 @@ pub fn registry_path_in(directory: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_runtime_lock_is_exclusive_and_releases_on_drop() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let directory = tempfile::tempdir()?;
+        let first = FileLock::try_acquire(directory.path(), "runtime.lock")?;
+        assert!(first.is_some());
+        assert!(FileLock::try_acquire(directory.path(), "runtime.lock")?.is_none());
+        drop(first);
+        assert!(FileLock::try_acquire(directory.path(), "runtime.lock")?.is_some());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_symlinks_are_rejected_without_changing_their_target()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let target = tempfile::tempdir()?;
+        std::os::unix::fs::symlink(target.path(), directory.path().join(".runtime"))?;
+        assert!(FileLock::try_acquire(directory.path(), "runtime.lock").is_err());
+        assert!(!target.path().join("runtime.lock").exists());
+        Ok(())
+    }
 
     #[test]
     fn the_registry_lives_in_the_state_directory() {

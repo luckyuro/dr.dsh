@@ -97,6 +97,19 @@ pub enum SuperviseError {
     /// The child's stdout could not be read.
     #[error("cannot read DSH output: {0}")]
     Output(std::io::Error),
+    /// The effective profile could not be inspected without mounting its plugins.
+    #[error(
+        "cannot inspect the DSH directory picker: {reason}; run `dsh web --dump-config` locally to check the profile, then restart the daemon"
+    )]
+    Configuration {
+        /// A fixed diagnostic, never the profile output which can contain credentials.
+        reason: &'static str,
+    },
+    /// The process-local directory-picker overlay could not be created.
+    #[error(
+        "cannot prepare the DSH directory picker overlay: {0}; check that the system temporary directory is writable, then restart the daemon"
+    )]
+    Overlay(std::io::Error),
 }
 
 /// A running DSH, with the facts the daemon needs about it.
@@ -107,6 +120,8 @@ pub struct Supervisor {
     ready: ReadyLine,
     /// PID captured at start, because `Child::id` becomes `None` after a wait.
     pid: Option<u32>,
+    /// DSH may reload its patch files during the child lifetime.
+    directory_picker_overlay: Option<tempfile::NamedTempFile>,
 }
 
 impl Supervisor {
@@ -117,14 +132,49 @@ impl Supervisor {
     /// did not ask for. It does not suppress the readiness line — that is
     /// `printUrl`, which is a separate setting (see the module docs of
     /// [`super::ready`]).
+    /// The effective profile is inspected first so DSH's default automatic
+    /// directory picker can use its browser interface for remote users. An
+    /// explicitly configured picker is left to the operator.
     ///
     /// # Errors
     ///
-    /// Returns a [`SuperviseError`] naming which stage failed: spawn, early exit,
-    /// timeout, or an unusable readiness line.
+    /// Returns a [`SuperviseError`] naming which stage failed: configuration
+    /// inspection, overlay preparation, spawn, early exit, timeout, or an
+    /// unusable readiness line.
     pub async fn start(config: SupervisorConfig) -> Result<Self, SuperviseError> {
-        let mut child = Command::new(&config.executable)
-            .arg("web")
+        Self::start_with_reports(config, None).await
+    }
+
+    /// Starts a managed child with optional process-local report credentials.
+    ///
+    /// # Errors
+    /// Returns the same startup failures as [`Self::start`].
+    pub async fn start_with_reports(
+        config: SupervisorConfig,
+        reports: Option<&crate::reports::Credentials>,
+    ) -> Result<Self, SuperviseError> {
+        let directory_picker_overlay = super::directory_picker::prepare(&config).await?;
+        let mut command = Command::new(&config.executable);
+        // An unconfigured child must not inherit a previous daemon's capability
+        // from a parent shell; only this listener can grant report access.
+        command
+            .env_remove(crate::reports::ENV_URL)
+            .env_remove(crate::reports::ENV_TOKEN)
+            // Only a hint against stopping the service that owns a management caller.
+            // It is deliberately not an authentication capability.
+            .env(
+                "DRDSH_MANAGED_INSTANCE",
+                format!("drdsh:{}", std::process::id()),
+            );
+        if let Some(reports) = reports {
+            reports.apply(&mut command);
+        }
+        command.arg("web");
+        if let Some(overlay) = &directory_picker_overlay {
+            // Harness options must precede the web application's options.
+            command.arg("--patch").arg(overlay.path());
+        }
+        let mut child = command
             .arg("--no-open")
             .arg("--port")
             .arg(config.port.to_string())
@@ -173,6 +223,7 @@ impl Supervisor {
             child,
             ready,
             pid,
+            directory_picker_overlay,
         })
     }
 
@@ -203,7 +254,11 @@ impl Supervisor {
     ///
     /// Returns the OS error when the status cannot be queried.
     pub fn is_running(&mut self) -> Result<bool, std::io::Error> {
-        Ok(self.child.try_wait()?.is_none())
+        let running = self.child.try_wait()?.is_none();
+        if !running {
+            self.directory_picker_overlay.take();
+        }
+        Ok(running)
     }
 
     /// Waits for the child to exit on its own.
@@ -211,7 +266,9 @@ impl Supervisor {
     /// Used by the daemon's main loop so an unexpected DSH exit is reported
     /// immediately instead of being noticed by a health check later.
     pub async fn wait_for_exit(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        self.child.wait().await
+        let status = self.child.wait().await?;
+        self.directory_picker_overlay.take();
+        Ok(status)
     }
 
     /// Stops DSH: SIGTERM, then a bounded wait, then kill.
@@ -224,6 +281,7 @@ impl Supervisor {
     /// Returns the OS error when the signal cannot be delivered.
     pub async fn stop(&mut self) -> Result<(), std::io::Error> {
         if self.child.try_wait()?.is_some() {
+            self.directory_picker_overlay.take();
             return Ok(());
         }
         // `start_kill` sends SIGKILL, so the graceful signal is sent through the
@@ -238,18 +296,21 @@ impl Supervisor {
                 // so the syscall is issued by the `nix`-free path below instead.
                 signal_term(pid);
             }
-            if tokio::time::timeout(STOP_GRACE, self.child.wait())
-                .await
-                .is_err()
-            {
-                tracing::warn!(target: "dsh", "DSH ignored SIGTERM; killing it");
-                self.child.kill().await?;
+            match tokio::time::timeout(STOP_GRACE, self.child.wait()).await {
+                Ok(status) => {
+                    status?;
+                }
+                Err(_) => {
+                    tracing::warn!(target: "dsh", "DSH ignored SIGTERM; killing it");
+                    self.child.kill().await?;
+                }
             }
         }
         #[cfg(not(unix))]
         {
             self.child.kill().await?;
         }
+        self.directory_picker_overlay.take();
         Ok(())
     }
 }
@@ -329,13 +390,24 @@ async fn wait_for_ready(
 /// do — an adapter written only for tests is an adapter that can disagree with production.
 pub struct SupervisorSpawner {
     config: SupervisorConfig,
+    reports: Option<crate::reports::Credentials>,
 }
 
 impl SupervisorSpawner {
     /// Spawns DSH with a fixed configuration.
     #[must_use]
     pub fn new(config: SupervisorConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            reports: None,
+        }
+    }
+
+    /// Preserves this daemon's local report capability across child restarts.
+    #[must_use]
+    pub fn with_reports(mut self, reports: Option<crate::reports::Credentials>) -> Self {
+        self.reports = reports;
+        self
     }
 }
 
@@ -344,7 +416,7 @@ impl crate::lifecycle::Spawner for SupervisorSpawner {
     type Handle = Supervisor;
 
     async fn spawn(&self) -> Result<Self::Handle, String> {
-        Supervisor::start(self.config.clone())
+        Supervisor::start_with_reports(self.config.clone(), self.reports.as_ref())
             .await
             .map_err(|error| error.to_string())
     }
@@ -373,6 +445,131 @@ impl crate::lifecycle::Running for Supervisor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    type TestResult = Result<(), Box<dyn std::error::Error>>;
+
+    #[cfg(unix)]
+    fn picker_fixture(
+        configuration: &str,
+        behavior: &str,
+    ) -> Result<(tempfile::TempDir, SupervisorConfig), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let directory = tempfile::tempdir()?;
+        let executable = directory.path().join("dsh.mjs");
+        let configuration = serde_json::to_string(configuration)?;
+        let behavior = serde_json::to_string(behavior)?;
+        std::fs::write(
+            &executable,
+            format!(
+                r#"#!/usr/bin/env node
+import {{ readFileSync, writeFileSync }} from 'node:fs';
+const args = process.argv.slice(2);
+if (args.includes('--dump-config')) {{
+  if (JSON.stringify(args) !== JSON.stringify(['web', '--dump-config'])) process.exit(31);
+  process.stdout.write({configuration});
+  process.exit(0);
+}}
+writeFileSync(new URL('argv.json', import.meta.url), JSON.stringify(args));
+const patch = args.indexOf('--patch');
+if (patch >= 0) {{
+  if (patch !== 1 || args[3] !== '--no-open') process.exit(32);
+  if (!readFileSync(args[2], 'utf8').includes('dsh-client-ui-directory-picker-browse')) process.exit(33);
+}}
+const port = args[args.indexOf('--port') + 1];
+console.log(`dsh web: http://127.0.0.1:${{port}}/?token=fixture-token`);
+if ({behavior} === 'exit') setTimeout(() => process.exit(0), 100);
+else setInterval(() => {{}}, 1000);
+"#
+            ),
+        )?;
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700))?;
+        Ok((
+            directory,
+            SupervisorConfig {
+                executable,
+                port: 3080,
+            },
+        ))
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn default_picker_overlay_precedes_web_options_and_lives_until_stop() -> TestResult {
+        let (directory, config) = picker_fixture(
+            "- id: directory-picker\n  name: '@deepseek-ai/dsh-host-directory-picker-auto'\n",
+            "stay",
+        )?;
+        let mut supervisor = Supervisor::start(config).await?;
+        let overlay = supervisor
+            .directory_picker_overlay
+            .as_ref()
+            .ok_or("the default picker was not adapted")?
+            .path()
+            .to_path_buf();
+        assert!(overlay.is_file());
+        let args: Vec<String> =
+            serde_json::from_slice(&std::fs::read(directory.path().join("argv.json"))?)?;
+        assert_eq!(
+            args,
+            [
+                "web",
+                "--patch",
+                overlay.to_str().ok_or("the temporary path is not UTF-8")?,
+                "--no-open",
+                "--port",
+                "3080",
+            ]
+        );
+        supervisor.stop().await?;
+        assert!(!overlay.exists(), "stop must remove the private overlay");
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn explicit_picker_configuration_and_user_patch_are_preserved() -> TestResult {
+        let (directory, config) = picker_fixture(
+            "- id: directory-picker\n  name: '@deepseek-ai/dsh-host-directory-picker-browse'\n",
+            "stay",
+        )?;
+        let user_patch = directory.path().join("cordis.patch.yml");
+        std::fs::write(&user_patch, "user-owned patch\n")?;
+        let mut supervisor = Supervisor::start(config).await?;
+        assert!(supervisor.directory_picker_overlay.is_none());
+        let args: Vec<String> =
+            serde_json::from_slice(&std::fs::read(directory.path().join("argv.json"))?)?;
+        assert_eq!(args, ["web", "--no-open", "--port", "3080"]);
+        assert_eq!(std::fs::read_to_string(user_patch)?, "user-owned patch\n");
+        supervisor.stop().await?;
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn child_exit_and_supervisor_drop_remove_the_overlay() -> TestResult {
+        for behavior in ["exit", "stay"] {
+            let (_directory, config) = picker_fixture(
+                "- id: directory-picker\n  name: '@deepseek-ai/dsh-host-directory-picker-auto'\n",
+                behavior,
+            )?;
+            let mut supervisor = Supervisor::start(config).await?;
+            let overlay = supervisor
+                .directory_picker_overlay
+                .as_ref()
+                .ok_or("the default picker was not adapted")?
+                .path()
+                .to_path_buf();
+            assert!(overlay.exists());
+            if behavior == "exit" {
+                supervisor.wait_for_exit().await?;
+                assert!(!overlay.exists());
+            }
+            drop(supervisor);
+            assert!(!overlay.exists());
+        }
+        Ok(())
+    }
 
     #[test]
     fn the_default_command_line_is_loopback_and_explicit() {

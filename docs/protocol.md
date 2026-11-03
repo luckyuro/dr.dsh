@@ -77,7 +77,9 @@
 
 ## 4. 流与复用
 
-一条 carrier 连接承载一个 daemon 与它的全部已配对客户端。流是最小的复用单位。
+当前一条 carrier 连接承载一个 daemon 与一个活跃客户端的加密会话。多个已配对设备可以轮流
+连接；中继在握手阶段拒绝同房间的第二个活跃客户端。流用于复用同一会话的请求，不用于把
+不同设备的独立密钥会话混在一起。此运行约束见 [ADR-0024](decisions/0024-embedded-harness-session-isolation.md)。
 
 | 常量 | 值 | 说明 |
 | :--- | :--- | :--- |
@@ -87,7 +89,7 @@
 | `INITIAL_WINDOW` | 262144 | 每条流的初始发送窗口（字节） |
 | `MAX_WINDOW` | 16777216 | 允许通告的最大窗口 |
 | `MAX_CONCURRENT_STREAMS` | 64 | 单连接并发流上限 |
-| `MAX_DEVICES_PER_ROOM` | 16 | 单房间设备上限 |
+| `MAX_DEVICES_PER_ROOM` | 16 | 协议容量上限；当前中继运行约束为 1 个活跃客户端 |
 | `MAX_PAYLOAD_LEN` | 65536 | 单帧 payload 上限 |
 
 **流状态机**：`Opening → Open → HalfClosedLocal / HalfClosedRemote → Closed`。
@@ -261,18 +263,18 @@ d2c         = HKDF-SHA256(ikm = shared || resume_secret, salt = session_salt,
 
 ### 6.3.1 设备认证在 carrier 握手里（M1 已实现）
 
-§ 6.3 描述的消息，实际是在**盐交换之后、会话被声明可用之前**完成的第四步握手。顺序是：
+§ 6.3 描述的消息，实际是在**盐交换之后、会话被声明可用之前**完成的设备认证步骤。顺序是：
 
 ```
 client → daemon   salt（临时密钥密封，§ 6.2.1）
 daemon → client   SESSION_ACK（'k'）
-client → daemon   SESSION_ACK 的确认（'k'）
 daemon → client   resume_challenge { nonce }
 client → daemon   resume_response  { device_id, signature }
 daemon → client   resume_accept | resume_reject { reason }
 ```
 
-全部在**控制流（stream 0）**上，会话内密封。三条规则：
+全部在**控制流（stream 0）**上，会话内密封。客户端不再回复 SESSION_ACK 确认；daemon 的
+下一次读取已经等待设备证明，额外确认会被当作错误证明。三条规则：
 
 - **nonce 每次连接新生成，且在会话内传输。** 中继既读不到它、也换不掉它；新鲜性让「签名」成为**这一次连接**的证明，因此一段被录下的响应在下一个 nonce 面前毫无用处。
 - **签名覆盖 `nonce || room`**，不是只覆盖 nonce：一个房间上录到的响应不能挪到另一个房间重放。
@@ -280,10 +282,17 @@ daemon → client   resume_accept | resume_reject { reason }
 
 **策略是二选一，不混合。** `DevicePolicy::RoomKeyOnly`（登记表为空，房间密钥即凭证——未配对部署的回退路径）或 `DevicePolicy::Enrolled`（只要登记了哪怕一个设备，**每个**客户端都必须证明自己）。混用会让配对变成装饰。
 
-**已修复的两个真实缺陷（M1 会话绑定）**：
+PWA 持有已保存设备身份时，从收到 SESSION_ACK 起最多等待 **10 秒**，只有明确收到
+`resume_accept` 才交出连接。此期限覆盖挑战传输、异步签名与接受回执；超时即关闭 carrier，
+不能以沉默回退为 `RoomKeyOnly`。没有设备身份的旧房间密钥连接仍保留 **250ms** 静默兼容窗口，
+因为 `RoomKeyOnly` daemon 不发送设备消息；这不是设备认证成功的证明，窗口结束后迟到的挑战或
+拒绝仍会终止连接。配对专用连接显式关闭此设备步骤，控制流原样交给 SPAKE2。
 
-1. **未配对的客户端拿到一个假隧道。** 客户端的设备认证步骤最初只在「持有身份」时才等待 daemon 开口，于是未配对的客户端直接跳过这一步，`Tunnel.open` 成功返回，而 daemon 其实已经拒绝了它——调用方拿到一个自称已建立、却永远不会被放行的隧道（实测表现为挂起）。现在这一步对**每个**连接都执行，由 daemon 是否开口来结算，静默期结束即视为「daemon 不要求设备」。
+**已修复的真实缺陷（会话绑定）**：
+
+1. **未配对的客户端拿到一个假隧道。** 客户端的设备认证步骤最初只在「持有身份」时才等待 daemon 开口，于是未配对的客户端直接跳过这一步，`Tunnel.open` 成功返回，而 daemon 其实已经拒绝了它——调用方拿到一个自称已建立、却永远不会被放行的隧道（实测表现为挂起）。正常连接现在都执行设备步骤；只有无身份的旧房间密钥路径保留上述静默兼容窗口，迟到拒绝也不交给普通请求匹配器吞掉。
 2. **拒绝之后客户端仍然 resolve。** daemon 的拒绝最初既没有关闭 carrier 也没有让客户端失败，两端各自等一个不会来的帧。现在 daemon 的拒绝会**具名发送并关闭 carrier**，客户端的 socket 关闭也会结算设备认证步骤，未绑定一律抛错。
+3. **已配对客户端在 250ms 后提前成功。** 旧计时器也作用于已保存身份，延迟的挑战或接受回执会被误判为无设备策略。客户端现在等待明确接受，完整交换超时则失败；超过旧窗口的挑战、接受、拒绝和签名超时均有回归覆盖。
 
 ### 6.4 拒绝原因
 
@@ -391,6 +400,18 @@ DSH 插件向 daemon 的 `POST /report` 发送：
 
 允许的 `event` 值见 `dr-dsh-proto::control::NotificationEvent`。**载荷中没有承载会话正文、代码或路径的字段**（ADR-0006）。
 
+当前本地接收器只接受插件产生的四种组合：`turn_complete/notice`、`approval_requested/alert`、
+`goal_complete/alert`、`subagent_complete/info`。未知字段、额外正文、错误严重度和超长数据均拒绝。
+请求体上限 2048 字节；`atMs` 为非负 JavaScript 安全整数；`sessionRef` 可省略或为 null，
+有值时限 1–128 个 ASCII 字母、数字、下划线、短横线。不得使用标题或路径。
+
+接收器默认关闭，仅在 `--plugin-reports` / `DSHD_PLUGIN_REPORTS=1` 时绑定 `127.0.0.1` 随机端口。
+daemon 向受管 DSH 注入 `DRDSH_REPORT_URL` 与 `DRDSH_REPORT_TOKEN`，插件必须发送
+`Authorization: Bearer <token>`；拒绝浏览器 `Origin`，不提供 CORS。令牌不落盘且不进入隧道。
+有效报告入队返回 202，无已鉴权连接返回 503，队列满返回 429；不持久化、重试或补发。
+远端使用已有 `notification` envelope，`id: 0`，body 字段转换为规范的 `at_ms` / `session_ref`。
+仅完成配对设备身份鉴权的加密连接接收通知。此实现没有改动 wire 版本或共享向量。
+
 ---
 
 ## 8. 兼容性
@@ -419,5 +440,5 @@ DSH 插件向 daemon 的 `POST /report` 发送：
 | `PAIRING_CODE_TTL_SECS` | 300 | 同上 |
 | `PAIRING_CODE_ENTROPY_BITS` | 40 | 同上 |
 | 中继默认监听 | `127.0.0.1:8787` | `crates/dr-dsh-relay/src/config.rs` |
-| daemon 本地面 | `127.0.0.1:8790` | `plugins/dr.dsh/cordis.patch.yml` |
+| daemon 插件报告接收器 | `127.0.0.1:<随机空闲端口>`，默认关闭 | `crates/dr-dsh-daemon/src/reports.rs` |
 | DSH 默认端口 | `127.0.0.1:3080` | DSH 自身默认值 |

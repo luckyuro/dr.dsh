@@ -71,6 +71,8 @@ export interface PanelView {
   readonly actions: readonly PanelAction[];
   /** Whether a "connect" affordance should be offered. */
   readonly needsConnection: boolean;
+  /** A running or attached DSH can serve the embedded interface. */
+  readonly interfaceAvailable: boolean;
 }
 
 /** One button. */
@@ -91,6 +93,10 @@ export interface PanelHost {
   render(view: PanelView): void;
   /** Schedules a periodic refresh; returns a function that stops it. */
   schedule(task: () => void, everyMs: number): () => void;
+  /** Suspends live updates when status is unavailable; only a disconnection proves the session ended. */
+  connectionLost?(reason: 'timeout' | 'disconnected'): void;
+  /** Restores live updates after a successful status probe. */
+  connectionRestored?(): void;
 }
 
 /** How often the panel re-reads the daemon's state while it is open. */
@@ -113,6 +119,7 @@ export function panelView(state: PanelState): PanelView {
       tone: 'error',
       actions: disabledActions(t('panel.noConnection')),
       needsConnection: true,
+      interfaceAvailable: false,
     };
   }
 
@@ -125,12 +132,13 @@ export function panelView(state: PanelState): PanelView {
       tone: 'error',
       actions: disabledActions(t('panel.noConnection')),
       needsConnection: true,
+      interfaceAvailable: false,
     };
   }
 
   if (state.lastFailure !== null) {
-    // The socket is open but nothing is answering on it, which means the daemon is gone: the
-    // relay would have closed the connection if it were the one that failed.
+    // An unanswered control request does not prove the computer stopped: a busy carrier can
+    // still deliver data while a status reply exceeds its bounded waiting period.
     return {
       headline: t('panel.silent'),
       detail:
@@ -140,6 +148,7 @@ export function panelView(state: PanelState): PanelView {
       tone: 'error',
       actions: disabledActions(t('panel.noAnswer')),
       needsConnection: false,
+      interfaceAvailable: false,
     };
   }
 
@@ -150,6 +159,7 @@ export function panelView(state: PanelState): PanelView {
       tone: 'busy',
       actions: disabledActions(t('panel.waiting')),
       needsConnection: false,
+      interfaceAvailable: false,
     };
   }
 
@@ -167,6 +177,7 @@ export function panelView(state: PanelState): PanelView {
     tone: status.state === 'failed' ? 'error' : relayTrouble ? 'warn' : actionTone(status.state),
     actions: actionsFor(status, state.busy),
     needsConnection: false,
+    interfaceAvailable: status.state === 'running' || status.state === 'attached',
   };
 }
 
@@ -231,6 +242,9 @@ export class ControlPanel {
   private readonly host: PanelHost;
   private state: PanelState;
   private stopPolling: (() => void) | null = null;
+  private refreshGeneration = 0;
+  private refreshSequence = 0;
+  private lastSettledRefresh = 0;
 
   public constructor(host: PanelHost, initial: Partial<PanelState> = {}) {
     this.host = host;
@@ -251,6 +265,7 @@ export class ControlPanel {
 
   /** Records that the tunnel is open, and starts polling the daemon. */
   public connected(): void {
+    this.refreshGeneration += 1;
     this.state = {
       ...this.state,
       connected: true,
@@ -273,8 +288,7 @@ export class ControlPanel {
    * this one is about a session that was working and then lost its link.
    */
   public socketDropped(reason: string): void {
-    this.stopPolling?.();
-    this.stopPolling = null;
+    this.stop();
     this.state = {
       ...this.state,
       socketClosed: true,
@@ -287,8 +301,7 @@ export class ControlPanel {
 
   /** Records that the tunnel failed. */
   public disconnected(reason: DisplayText): void {
-    this.stopPolling?.();
-    this.stopPolling = null;
+    this.stop();
     this.state = {
       ...this.state,
       connected: false,
@@ -305,11 +318,29 @@ export class ControlPanel {
   public async refresh(): Promise<void> {
     const control = this.host.control();
     if (control === null) return;
+    const generation = this.refreshGeneration;
+    const sequence = ++this.refreshSequence;
     try {
       const status = await control.status();
+      if (generation !== this.refreshGeneration || sequence < this.lastSettledRefresh) return;
+      this.lastSettledRefresh = sequence;
       this.state = { ...this.state, status, lastFailure: null };
+      this.host.connectionRestored?.();
       this.draw();
     } catch (error) {
+      // Retiring a disconnected session rejects its other pending polls too. Those later failures
+      // must not replace the original diagnosis with a generic "request abandoned" error.
+      if (generation !== this.refreshGeneration || sequence < this.lastSettledRefresh) return;
+      // Polls overlap because their timeout exceeds the polling interval. Only a
+      // settled newer probe supersedes this result; a pending one proves nothing.
+      this.lastSettledRefresh = sequence;
+      // A restarted daemon can leave the carrier open, but a large DSH bundle can also delay
+      // status replies. Suspend notifications on timeout without aborting the ongoing proxy work;
+      // continued probes distinguish recovery from a session that needs the user to reconnect.
+      if (error instanceof ControlError && (error.reason === 'timeout' || error.reason === 'disconnected')) {
+        if (error.reason === 'disconnected') this.stop();
+        this.host.connectionLost?.(error.reason);
+      }
       this.fail(error);
     }
   }
@@ -351,6 +382,7 @@ export class ControlPanel {
 
   /** Stops polling, for a page that is going away. */
   public stop(): void {
+    this.refreshGeneration += 1;
     this.stopPolling?.();
     this.stopPolling = null;
   }

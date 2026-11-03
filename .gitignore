@@ -4,6 +4,10 @@ dist/
 dist-worker/
 *.tsbuildinfo
 
+# Local browser verification artifacts
+.playwright-cli/
+output/playwright/
+
 # Dependencies
 node_modules/
 

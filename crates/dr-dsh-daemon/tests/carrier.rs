@@ -317,6 +317,92 @@ async fn a_daemon_that_re_registers_serves_the_same_room() -> Result<(), Box<dyn
 }
 
 #[tokio::test]
+async fn another_client_cannot_corrupt_an_active_encrypted_session()
+-> Result<(), Box<dyn std::error::Error>> {
+    let (addr, _) = relay_with_tap().await?;
+    let relay = format!("ws://{addr}");
+    let key = room_key(52);
+    let room = room_for(&key);
+    let state: Arc<Mutex<Option<RelayState>>> = Arc::new(Mutex::new(None));
+    let daemon_state = Arc::clone(&state);
+    let daemon = tokio::spawn({
+        let relay = relay.clone();
+        let room = room.clone();
+        async move {
+            let mut shutdown = Box::pin(std::future::pending::<()>());
+            uplink::run(
+                uplink::CarrierConfig::new(
+                    relay,
+                    room,
+                    key,
+                    dr_dsh_daemon::transport::DevicePolicy::RoomKeyOnly,
+                    NO_KEEPALIVE,
+                    no_audit_dir(),
+                ),
+                move |next| *lock(&daemon_state) = Some(next),
+                &mut shutdown,
+                |stream_id, payload, out: uplink::Outbox| {
+                    tokio::spawn(async move {
+                        let _ = out.send(uplink::Outbound { stream_id, payload }).await;
+                    });
+                },
+            )
+            .await
+        }
+    });
+    wait_for_parked(&state).await?;
+    let mut first =
+        tokio::time::timeout(JOIN_TIMEOUT, Transport::join(&relay, &room, &key)).await??;
+    first.send(1, b"before the second browser").await?;
+    assert_eq!(
+        tokio::time::timeout(PATIENCE, first.next_inbound())
+            .await??
+            .payload,
+        b"before the second browser"
+    );
+
+    let rejected =
+        tokio::time::timeout(Duration::from_secs(2), Transport::join(&relay, &room, &key)).await?;
+    assert!(matches!(
+        rejected,
+        Err(dr_dsh_daemon::transport::TransportError::Refused { reason })
+            if reason.contains("room is already in use")
+    ));
+    for payload in [b"one".as_slice(), b"two".as_slice(), b"three".as_slice()] {
+        first.send(1, payload).await?;
+        assert_eq!(
+            tokio::time::timeout(PATIENCE, first.next_inbound())
+                .await??
+                .payload,
+            payload
+        );
+    }
+
+    first.close().await?;
+    let mut next = None;
+    for _ in 0..40 {
+        match tokio::time::timeout(JOIN_TIMEOUT, Transport::join(&relay, &room, &key)).await {
+            Ok(Ok(client)) => {
+                next = Some(client);
+                break;
+            }
+            _ => tokio::time::sleep(Duration::from_millis(50)).await,
+        }
+    }
+    let mut next = next.ok_or("the next browser could not join after the first left")?;
+    next.send(1, b"a fresh encrypted session").await?;
+    assert_eq!(
+        tokio::time::timeout(PATIENCE, next.next_inbound())
+            .await??
+            .payload,
+        b"a fresh encrypted session"
+    );
+    next.close().await?;
+    daemon.abort();
+    Ok(())
+}
+
+#[tokio::test]
 async fn the_uplink_reports_every_transition() -> Result<(), Box<dyn std::error::Error>> {
     // Failure transparency is a product requirement, and it is only true if the
     // daemon actually reports the states a client needs to distinguish.

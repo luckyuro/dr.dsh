@@ -29,7 +29,7 @@ const unchanged = (scope, before) => assert.deepEqual(snapshot(scope), before);
 
 async function command(file, args, code = 0, env = {}) {
   const result = await new Promise((accept, reject) => {
-    const child = spawn(file, args, { cwd: scratch, env: { ...process.env, PATH: serverPath, ...env } });
+    const child = spawn(file, args, { cwd: scratch, env: { ...process.env, PATH: serverPath, DRDSH_TLS_INSECURE: '0', ...env } });
     let stdout = '', stderr = '';
     const timeout = setTimeout(() => { child.kill('SIGTERM'); reject(new Error(`Timed out: ${args.slice(0, 2).join(' ')}`)); }, 90_000);
     child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
@@ -100,6 +100,7 @@ try {
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 const args = process.argv.slice(2);
+if (args.includes('--dump-config')) { console.log('[]'); process.exit(0); }
 if (args[0] === '--version') console.log('0.1.5-rc.2');
 else if (args[0] === 'plugin') {
   if (args[1] !== '--profile' || args[2] !== 'web') throw new Error('wrong profile');
@@ -109,6 +110,13 @@ else if (args[0] === 'plugin') {
   else if (args[3] === 'remove') rmSync(p, { force: true });
   else throw new Error('wrong plugin action');
 } else {
+  writeFileSync(join(process.env.DSH_HOME, 'report-config.json'), JSON.stringify({
+    configured: Boolean(process.env.DRDSH_REPORT_URL && process.env.DRDSH_REPORT_TOKEN),
+  }));
+  if (process.env.DSHD_DSH_TLS === '1') {
+    process.env.FAKE_DSH_TLS_CERT = ${JSON.stringify(join(scratch, 'relay cert.pem'))};
+    process.env.FAKE_DSH_TLS_KEY = ${JSON.stringify(join(scratch, 'relay key.pem'))};
+  }
   process.argv[2] = args[args.indexOf('--port') + 1];
   await import(${JSON.stringify(new URL('../crates/dr-dsh-daemon/tests/fixtures/fake-dsh.mjs', import.meta.url).href)});
 }
@@ -125,6 +133,7 @@ else if (args[0] === 'plugin') {
   await command(join(prefix, 'bin/drdsh'), ['daemon', 'status']);
   await command(join(prefix, 'bin/drdsh'), ['relay', 'status']);
   assert.ok(existsSync(join(scratch, 'dsh home/plugin-fixture.json')));
+  assert.equal(JSON.parse(readFileSync(join(scratch, 'dsh home/report-config.json'), 'utf8')).configured, true);
   check('native daemon service launches DSH fixture, installs plugin and shares canonical command');
   const state = config('daemon').state;
   writeFileSync(join(state, 'retention-fixture'), 'pairing-state-preserved');
@@ -145,7 +154,99 @@ else if (args[0] === 'plugin') {
   before = snapshot('relay'); await run('daemon', ['uninstall', 'plugin']); unchanged('relay', before);
   assert.equal(existsSync(join(scratch, 'dsh home/plugin-fixture.json')), false);
   assert.equal(config('daemon').components.includes('plugin'), false);
+  assert.equal(JSON.parse(readFileSync(join(scratch, 'dsh home/report-config.json'), 'utf8')).configured, false);
   check('plugin removal restores daemon without touching relay');
+  before = snapshot('relay');
+  await run('daemon', ['stop']);
+  await run('daemon', ['install', 'plugin']);
+  await run('daemon', ['uninstall', 'plugin']);
+  await run('daemon', ['start']);
+  unchanged('relay', before);
+  assert.equal(JSON.parse(readFileSync(join(scratch, 'dsh home/report-config.json'), 'utf8')).configured, false);
+  check('stopped plugin removal leaves reporting disabled on the next managed start');
+  const tlsCert = join(scratch, 'relay cert.pem'), tlsKey = join(scratch, 'relay key.pem');
+  const tlsCa = join(scratch, 'ca.pem'), tlsCaKey = join(scratch, 'ca.key');
+  const tlsConfig = join(scratch, 'tls.cnf');
+  writeFileSync(tlsConfig, '[req]\ndistinguished_name=dn\nx509_extensions=cert\nprompt=no\n[dn]\nCN=localhost\n[cert]\nsubjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:TRUE\nkeyUsage=critical,digitalSignature,keyEncipherment,keyCertSign\n');
+  execFileSync('openssl', ['req', '-new', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', tlsConfig,
+    '-keyout', tlsCaKey, '-out', tlsCa], { stdio: 'pipe' });
+  const tlsCsr = join(scratch, 'relay.csr'), tlsExt = join(scratch, 'relay.ext');
+  execFileSync('openssl', ['req', '-new', '-newkey', 'rsa:2048', '-nodes', '-subj', '/CN=localhost', '-keyout', tlsKey, '-out', tlsCsr], { stdio: 'pipe' });
+  writeFileSync(tlsExt, 'subjectAltName=DNS:localhost,IP:127.0.0.1\nbasicConstraints=critical,CA:FALSE\nkeyUsage=critical,digitalSignature,keyEncipherment\nextendedKeyUsage=serverAuth\n');
+  execFileSync('openssl', ['x509', '-req', '-in', tlsCsr, '-CA', tlsCa, '-CAkey', tlsCaKey, '-CAcreateserial', '-days', '1', '-extfile', tlsExt, '-out', tlsCert], { stdio: 'pipe' });
+  before = snapshot('relay');
+  assert.match((await install('relay', ['--tls-cert', tlsCert], 1)).stderr, /both --tls-cert and --tls-key/u);
+  unchanged('relay', before);
+  check('incomplete TLS settings fail before changing the running relay');
+  before = snapshot('daemon');
+  await install('relay', ['--tls-cert', tlsCert, '--tls-key', tlsKey, '--tls-server-name', 'localhost', '--ca-cert', tlsCa]);
+  unchanged('daemon', before);
+  await run('relay', ['status']);
+  assert.equal(config('relay').tlsCert, tlsCert);
+  assert.equal(config('relay').tlsKey, tlsKey);
+  await install('relay'); unchanged('daemon', before);
+  await run('relay', ['status']);
+  check('TLS service install/update retain certificate paths and HTTPS health without changing daemon');
+  before = snapshot('relay');
+  await install('daemon', ['--relay', `wss://localhost:${relayPort}`, '--ca-cert', tlsCa, '--dsh-tls']);
+  unchanged('relay', before);
+  await until(() => {
+    const response = execFileSync('curl', ['--fail', '--silent', '--noproxy', '*', '--cacert', tlsCa,
+      `https://localhost:${relayPort}/healthz`], { encoding: 'utf8' });
+    return JSON.parse(response).rooms === 1;
+  });
+  assert.equal(config('daemon').caCert, tlsCa);
+  await run('daemon', ['status']);
+  check('installed daemon uses saved CA for WSS relay and managed HTTPS DSH with HTTPS health');
+
+  before = snapshot('daemon');
+  await install('relay', ['--tls-server-name', 'wrong.example']);
+  unchanged('daemon', before);
+  assert.equal(config('relay').tlsInsecure, undefined);
+  assert.match((await run('relay', ['status'], 1)).stdout, /HTTPS health check failed/);
+  const strictRelay = snapshot('relay');
+  await run('relay', ['status', '--insecure']);
+  unchanged('relay', strictRelay);
+  await run('relay', ['status'], 1);
+  await install('relay', ['--insecure']);
+  assert.equal(config('relay').tlsInsecure, true);
+  await run('relay', ['status']);
+  await run('relay', ['status', '--no-insecure'], 1);
+  assert.equal(config('relay').tlsInsecure, true);
+  await install('relay');
+  assert.equal(config('relay').tlsInsecure, true);
+  await run('relay', ['status']);
+  await install('relay', ['--no-insecure']);
+  assert.equal(config('relay').tlsInsecure, false);
+  await run('relay', ['status'], 1);
+  await install('relay', ['--tls-server-name', 'localhost']);
+  await run('relay', ['status']);
+  unchanged('daemon', before);
+  check('relay status opt-out is temporary; installation persists/restores it across updates without touching daemon');
+
+  const wrongCa = join(scratch, 'other ca.pem');
+  execFileSync('openssl', ['req', '-new', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1', '-config', tlsConfig,
+    '-keyout', join(scratch, 'other ca.key'), '-out', wrongCa], { stdio: 'pipe' });
+  before = snapshot('relay');
+  await install('daemon', ['--insecure', '--ca-cert', wrongCa]);
+  assert.equal(config('daemon').tlsInsecure, true);
+  await until(() => {
+    const response = execFileSync('curl', ['--fail', '--silent', '--noproxy', '*', '--cacert', tlsCa,
+      `https://localhost:${relayPort}/healthz`], { encoding: 'utf8' });
+    return JSON.parse(response).rooms === 1;
+  });
+  await run('daemon', ['status']);
+  await run('daemon', ['status', '--no-insecure'], 1);
+  await install('daemon');
+  assert.equal(config('daemon').tlsInsecure, true);
+  await run('daemon', ['status']);
+  const strictForeground = await run('daemon', ['pair', '--wait', '2', '--no-insecure'], 1);
+  assert.match(strictForeground.stderr, /UnknownIssuer|BadSignature|invalid peer certificate/i);
+  await install('daemon', ['--no-insecure', '--ca-cert', tlsCa]);
+  assert.equal(config('daemon').tlsInsecure, false);
+  await run('daemon', ['status']);
+  unchanged('relay', before);
+  check('daemon services persist TLS opt-out for relay/DSH/health; CLI override and reinstall restore verification');
   before = snapshot('daemon'); await run('relay', ['uninstall']); unchanged('daemon', before);
   assert.ok(existsSync(configPath('relay')));
   await command(join(prefix, 'bin/drdsh'), ['daemon', 'status']);

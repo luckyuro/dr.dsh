@@ -150,7 +150,9 @@ export function tunneledWebSocket(
 
     /** Sends one message, assuming the socket is open. */
     private sendNow(data: string): void {
-      void tunnel.send(this.streamId, encodeWsData(this.id, { kind: 'text', text: data }));
+      void tunnel.send(this.streamId, encodeWsData(this.id, { kind: 'text', text: data })).catch(error => {
+        this.finish(1006, error instanceof Error ? error.message : 'the tunnel could not send the WebSocket message; reconnect to continue');
+      });
     }
 
     public send(data: string | ArrayBufferLike | ArrayBufferView): void {
@@ -174,7 +176,8 @@ export function tunneledWebSocket(
     public close(_code?: number, _reason?: string): void {
       if (this.readyState === CLOSED) return;
       this.readyState = CLOSING;
-      void tunnel.send(this.streamId, encodeWsData(this.id, { kind: 'close' }));
+      // Closing the tunnel can cancel this queued frame; the socket is already terminal locally.
+      void tunnel.send(this.streamId, encodeWsData(this.id, { kind: 'close' })).catch(() => {});
       this.finish(1000, '');
     }
 

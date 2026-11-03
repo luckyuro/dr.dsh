@@ -61,6 +61,8 @@ export interface Report {
 export interface ReporterConfig {
   /** Loopback URL of the daemon's report endpoint. */
   readonly daemonUrl: string;
+  /** Ephemeral credential inherited from the supervising daemon; never logged. */
+  readonly daemonToken: string;
   /** Which reports to emit; anything not listed is dropped before sending. */
   readonly report: readonly string[];
 }
@@ -74,6 +76,8 @@ export interface ReporterConfig {
  * surfaced through `stats()` instead of thrown.
  */
 export class Reporter {
+  private readonly inFlight = new Set<AbortController>();
+  private stopped = false;
   private delivered = 0;
   private dropped = 0;
   private lastError: string | null = null;
@@ -96,11 +100,16 @@ export class Reporter {
    * @returns a disposer that unsubscribes from every subscription.
    */
   public start(ctx: DshContextLike): () => void {
-    return observeHarness(ctx, notification => {
+    const unsubscribe = observeHarness(ctx, notification => {
       const severity = notification.event === 'turn_complete' ? 'notice'
         : notification.event === 'subagent_complete' ? 'info' : 'alert';
       this.report({ ...notification, severity, atMs: Date.now() });
     });
+    return () => {
+      this.stopped = true;
+      unsubscribe();
+      for (const request of this.inFlight) request.abort();
+    };
   }
 
   /** In-process counters for diagnostics; no daemon diagnostics endpoint yet. */
@@ -109,7 +118,7 @@ export class Reporter {
   }
 
   private report(report: Report): void {
-    if (!this.config.report.includes(report.event)) {
+    if (this.stopped || !this.config.report.includes(report.event) || this.inFlight.size >= 8) {
       this.dropped += 1;
       return;
     }
@@ -117,23 +126,45 @@ export class Reporter {
   }
 
   private async post(report: Report): Promise<void> {
+    const controller = new AbortController();
+    this.inFlight.add(controller);
+    const timer = setTimeout(() => controller.abort(), 5_000);
+    // Unknown upstream handles must not turn a notification into content egress.
+    const sessionRef = typeof report.sessionRef === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(report.sessionRef)
+      ? report.sessionRef : null;
     try {
       const response = await fetch(new URL('/report', this.config.daemonUrl), {
         method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(report),
+        // Reports must stay on the configured loopback origin, including HTTPS.
+        redirect: 'error',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.config.daemonToken}` },
+        body: JSON.stringify({ event: report.event, severity: report.severity, atMs: report.atMs, sessionRef }),
+        signal: controller.signal,
       });
+      // The response text is deliberately ignored; release undici's connection
+      // without retaining arbitrary diagnostics or extending the request lifetime.
+      await response.body?.cancel();
       if (!response.ok) {
-        this.lastError = `daemon answered ${response.status}`;
+        this.lastError = response.status === 503
+          ? 'daemon has no authenticated client connection; pair and connect the remote page to receive new reports'
+          : response.status === 429
+            ? 'daemon report queue is full; this report was dropped, check the remote connection'
+            : response.status === 401
+              ? 'daemon rejected report credentials; restart DSH through its supervising daemon'
+              : `daemon rejected report metadata (HTTP ${response.status}); check the plugin and daemon versions`;
         this.dropped += 1;
         return;
       }
       this.delivered += 1;
-    } catch (error) {
+      this.lastError = null;
+    } catch {
       // A stopped daemon is expected, not exceptional: the user is probably at
       // the machine. Record it and move on.
-      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lastError = 'local daemon report delivery failed or timed out; check that the supervising daemon is running';
       this.dropped += 1;
+    } finally {
+      clearTimeout(timer);
+      this.inFlight.delete(controller);
     }
   }
 }

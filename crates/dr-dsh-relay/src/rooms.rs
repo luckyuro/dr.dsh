@@ -1,7 +1,8 @@
 //! Room registry and frame routing.
 //!
-//! A **room** is the relay's unit of routing: at most one daemon, up to
-//! [`dr_dsh_proto::MAX_DEVICES_PER_ROOM`] clients. Everything the relay knows about a
+//! A **room** is the relay's unit of routing: at most one daemon and one active
+//! client. A carrier has one encrypted session; enrolled devices can take turns
+//! connecting without sharing that session. Everything the relay knows about a
 //! room, it learns from the ids the two sides present — it never learns a user
 //! name, a device name, or what the session is about.
 //!
@@ -24,8 +25,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use dr_dsh_proto::{FrameType, MAX_DEVICES_PER_ROOM};
-use tokio::sync::mpsc;
+use dr_dsh_proto::FrameType;
+use tokio::sync::{mpsc, watch};
 
 /// Why the relay releases a daemon it is no longer routing to.
 ///
@@ -39,7 +40,7 @@ pub use dr_dsh_proto::SESSION_OVER;
 pub enum Role {
     /// The local daemon: one per room, and the side that owns the session.
     Daemon,
-    /// A remote client: many per room, each independently authenticated.
+    /// The room's active remote client, independently authenticated by its daemon.
     Client,
 }
 
@@ -51,8 +52,42 @@ pub enum Role {
 pub enum Outbound {
     /// A carrier frame, byte for byte as the sender wrote it.
     Frame(Vec<u8>),
-    /// Close this connection with the given reason.
-    Close(&'static str),
+}
+
+/// A validated routing snapshot, delivered after releasing the hub lock.
+pub struct Route {
+    targets: Vec<(u64, mpsc::Sender<Outbound>)>,
+    frame: Vec<u8>,
+}
+
+impl Route {
+    /// Waits for bounded queue capacity without dropping or reordering a frame.
+    ///
+    /// # Errors
+    /// Returns a fixed reason when a peer disappeared before accepting the frame.
+    pub async fn deliver(&self) -> Result<usize, &'static str> {
+        if self.targets.is_empty() {
+            return Err("no peer is parked to receive this frame");
+        }
+        let count = self.targets.len();
+        for (_, target) in &self.targets {
+            target
+                .send(Outbound::Frame(self.frame.clone()))
+                .await
+                .map_err(|_| "the destination disconnected while forwarding")?;
+        }
+        Ok(count)
+    }
+}
+
+/// Queued frames and an independent cancellation signal for a parked socket.
+pub struct Parked {
+    /// Identity checked whenever this socket routes a frame.
+    pub id: u64,
+    /// Fixed-size forwarding queue.
+    pub outbound: mpsc::Receiver<Outbound>,
+    /// A named close, or channel closure when this registration is replaced.
+    pub closing: watch::Receiver<Option<&'static str>>,
 }
 
 /// A connection parked in a room.
@@ -60,6 +95,7 @@ pub enum Outbound {
 struct Connection {
     id: u64,
     outbound: mpsc::Sender<Outbound>,
+    closing: watch::Sender<Option<&'static str>>,
 }
 
 /// One parked room.
@@ -72,9 +108,8 @@ struct Room {
 impl Room {
     /// The peer a frame from `role` should go to.
     ///
-    /// A frame from the daemon fans out to every client in the room; a frame from
-    /// a client goes to the daemon. The relay makes no other routing decision,
-    /// because it has nothing else to decide with.
+    /// A frame goes only to the room's one opposite peer. Accepting two clients
+    /// would mix their independent salt exchanges into one encrypted session.
     fn targets(&self, from: Role) -> Vec<&Connection> {
         match from {
             Role::Daemon => self.clients.iter().collect(),
@@ -99,12 +134,11 @@ pub enum ParkError {
         /// The configured limit.
         max: usize,
     },
-    /// The room holds the maximum number of clients.
-    #[error("room already holds {max} clients")]
-    TooManyClients {
-        /// The configured limit.
-        max: u32,
-    },
+    /// Another client owns the active carrier session.
+    #[error(
+        "room is already in use; close the other dr.dsh tab or device connection, then reconnect"
+    )]
+    RoomInUse,
     /// No daemon is parked on this room, so there is nothing to route to.
     #[error("no daemon is parked on this room")]
     NoDaemon,
@@ -113,7 +147,7 @@ pub enum ParkError {
     Gone,
 }
 
-/// The routing table: rooms, their connections, and per-frame fan-out.
+/// The routing table: rooms, their connections, and opaque frame forwarding.
 #[derive(Debug)]
 pub struct Hub {
     rooms: HashMap<String, Room>,
@@ -141,11 +175,7 @@ impl Hub {
     /// # Errors
     ///
     /// Returns a [`ParkError`] naming the limit that was hit.
-    pub fn park(
-        &mut self,
-        room_id: &str,
-        role: Role,
-    ) -> Result<(u64, mpsc::Receiver<Outbound>), ParkError> {
+    pub fn park(&mut self, room_id: &str, role: Role) -> Result<Parked, ParkError> {
         if !self.rooms.contains_key(room_id) {
             if self.rooms.len() >= self.max_rooms {
                 return Err(ParkError::AtCapacity {
@@ -162,6 +192,7 @@ impl Hub {
         }
         let id = self.next_id;
         let (outbound, inbound) = mpsc::channel(FRAME_QUEUE);
+        let (closing, closed) = watch::channel(None);
         let room = self.rooms.get_mut(room_id).ok_or(ParkError::Gone)?;
         match role {
             Role::Daemon => {
@@ -180,22 +211,39 @@ impl Hub {
                     );
                     drop(previous);
                 }
-                room.daemon = Some(Connection { id, outbound });
+                // A replacement daemon starts with fresh session keys and counters.
+                // Existing clients cannot resume their old session on it. Removing
+                // them here also preserves a departing pairing daemon's queued
+                // receipt until a replacement actually arrives.
+                for previous in room.clients.drain(..) {
+                    previous.closing.send_replace(Some(SESSION_OVER));
+                }
+                room.daemon = Some(Connection {
+                    id,
+                    outbound,
+                    closing,
+                });
             }
             Role::Client => {
                 if room.daemon.is_none() {
                     return Err(ParkError::NoDaemon);
                 }
-                if room.clients.len() as u32 >= MAX_DEVICES_PER_ROOM {
-                    return Err(ParkError::TooManyClients {
-                        max: MAX_DEVICES_PER_ROOM,
-                    });
+                if !room.clients.is_empty() {
+                    return Err(ParkError::RoomInUse);
                 }
-                room.clients.push(Connection { id, outbound });
+                room.clients.push(Connection {
+                    id,
+                    outbound,
+                    closing,
+                });
             }
         }
         self.next_id += 1;
-        Ok((id, inbound))
+        Ok(Parked {
+            id,
+            outbound: inbound,
+            closing: closed,
+        })
     }
 
     /// Removes a connection and reports what its departure means for the room.
@@ -212,11 +260,18 @@ impl Hub {
                 if room.daemon.as_ref().is_some_and(|conn| conn.id == id) {
                     room.daemon = None;
                     // The room itself stays for now: a daemon that reconnects while
-                    // clients are still parked resumes serving them.
+                    // clients are still parked resumes serving them. In particular,
+                    // short-lived pairing daemons leave after queueing a receipt;
+                    // cancelling the clients here could discard that final reply.
                     daemon_left = Departure::DaemonStopped;
                 }
             }
             Role::Client => {
+                // A daemon replacement may already have removed this client.
+                // Its late socket cleanup must not release the new carrier.
+                if !room.clients.iter().any(|conn| conn.id == id) {
+                    return Departure::Nothing;
+                }
                 room.clients.retain(|conn| conn.id != id);
                 // A carrier carries one client session: both ends derive their keys from
                 // a salt that the client offers when it joins. Leaving the daemon parked
@@ -254,17 +309,13 @@ impl Hub {
         let Some(room) = self.rooms.get_mut(room_id) else {
             return Err(ParkError::Gone);
         };
-        // Told first, then unregistered, so the daemon learns *why* its carrier went away.
-        // A bare close is indistinguishable from a broken carrier, and the daemon would
-        // answer it with a backoff meant for a relay that is not responding — which is
-        // exactly the window in which the next client is refused.
+        // Cancellation has its own channel: a full data queue must not swallow
+        // the release or delay it behind a peer that has stopped reading.
         if let Some(daemon) = room.daemon.as_ref() {
-            let _ = daemon.outbound.try_send(Outbound::Close(SESSION_OVER));
+            daemon.closing.send_replace(Some(SESSION_OVER));
         }
         // Unregistered as well as told, so no frame can be routed to a session whose
-        // client has gone — and dropped, so the daemon's own loop ends rather than waiting
-        // for a client the relay has already decided not to send. The writer drains the
-        // close it was just sent before the channel closes.
+        // client has gone. The independent close signal also interrupts an in-flight write.
         drop(room.daemon.take());
         if room.clients.is_empty() {
             self.rooms.remove(room_id);
@@ -280,7 +331,10 @@ impl Hub {
             .is_some_and(|room| room.daemon.is_some())
     }
 
-    /// Routes one frame onward, returning how many peers received it.
+    /// Validates a sender and snapshots the destinations for one frame.
+    ///
+    /// Call [`Route::deliver`] only after releasing the hub lock. Waiting for a
+    /// slow socket must backpressure its sender, never hold up unrelated rooms.
     ///
     /// # Errors
     ///
@@ -292,7 +346,7 @@ impl Hub {
         from: Role,
         id: u64,
         frame: Vec<u8>,
-    ) -> Result<usize, ParkError> {
+    ) -> Result<Route, ParkError> {
         let Some(room) = self.rooms.get_mut(room_id) else {
             return Err(ParkError::Gone);
         };
@@ -302,27 +356,40 @@ impl Hub {
         if room.find(from, id).is_none() {
             return Err(ParkError::Gone);
         }
-        let targets: Vec<u64> = room.targets(from).iter().map(|conn| conn.id).collect();
-        let peer_role = peer_role(from);
-        let mut delivered = 0;
-        for target in targets {
-            let Some(peer) = room.find(peer_role, target) else {
-                continue;
-            };
-            // A full queue means the peer is not keeping up. Dropping the frame is
-            // the right failure: the alternative is unbounded buffering, and the
-            // endpoints' own stream protocol detects the gap and resets the stream.
-            match peer.outbound.try_send(Outbound::Frame(frame.clone())) {
-                Ok(()) => delivered += 1,
-                Err(mpsc::error::TrySendError::Full(_)) => {
-                    let _ = peer
-                        .outbound
-                        .try_send(Outbound::Close("peer is not keeping up"));
-                }
-                Err(mpsc::error::TrySendError::Closed(_)) => {}
+        let targets = room
+            .targets(from)
+            .iter()
+            .map(|conn| (conn.id, conn.outbound.clone()))
+            .collect();
+        Ok(Route { targets, frame })
+    }
+
+    /// Cancels this route's registrations after a forwarding failure.
+    ///
+    /// # Errors
+    /// A stale sender cannot close a replacement session; replaced destinations
+    /// and clients that joined after the snapshot are also left alone.
+    pub fn close_route(
+        &mut self,
+        room_id: &str,
+        from: Role,
+        id: u64,
+        route: &Route,
+        reason: &'static str,
+    ) -> Result<(), ParkError> {
+        let room = self.rooms.get_mut(room_id).ok_or(ParkError::Gone)?;
+        let source = room.find(from, id).ok_or(ParkError::Gone)?;
+        source.closing.send_replace(Some(reason));
+        for connection in room.targets(from) {
+            if route
+                .targets
+                .iter()
+                .any(|(target_id, _)| *target_id == connection.id)
+            {
+                connection.closing.send_replace(Some(reason));
             }
         }
-        Ok(delivered)
+        Ok(())
     }
 
     /// Number of rooms currently held.
@@ -357,19 +424,10 @@ pub enum Departure {
     Nothing,
 }
 
-/// The opposite side of a room.
-const fn peer_role(role: Role) -> Role {
-    match role {
-        Role::Daemon => Role::Client,
-        Role::Client => Role::Daemon,
-    }
-}
-
-/// Frames buffered per connection before the peer is considered too slow.
+/// Frames buffered per connection before its sender must wait for capacity.
 ///
-/// Small on purpose. This is a *forwarding* buffer, not a transport: the endpoints
-/// own flow control (see `dr-dsh-proto`'s windows), and a relay that buffers
-/// generously would hide backpressure from the only components that can act on it.
+/// The encrypted session counter cannot tolerate gaps. Waiting here carries
+/// backpressure through the WebSocket/TCP connection without interpreting content.
 const FRAME_QUEUE: usize = 64;
 
 /// Validates one inbound carrier frame without interpreting its payload.
@@ -461,8 +519,16 @@ mod tests {
         // departure with a backoff — during which the next client is refused. The string is
         // defined once in `dr-dsh-proto`, so both ends match on the same value.
         let mut hub = Hub::new(4);
-        let (daemon, mut outbound) = hub.park("r1", Role::Daemon)?;
-        let (client, _client_inbound) = hub.park("r1", Role::Client)?;
+        let Parked {
+            id: daemon,
+            closing,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: client,
+            outbound: _client_inbound,
+            ..
+        } = hub.park("r1", Role::Client)?;
         assert_eq!(
             hub.unpark("r1", Role::Client, client),
             Departure::LastClient
@@ -470,16 +536,11 @@ mod tests {
 
         hub.release_daemon("r1")?;
 
-        // The named close is queued before the connection is dropped, so the daemon's task
-        // reads it instead of only observing a closed channel.
-        match outbound.try_recv() {
-            Ok(Outbound::Close(reason)) => assert_eq!(
-                reason,
-                dr_dsh_proto::SESSION_OVER,
-                "the daemon classifies the relay's own reason"
-            ),
-            other => return Err(format!("expected a named close, got {other:?}").into()),
-        }
+        assert_eq!(
+            *closing.borrow(),
+            Some(dr_dsh_proto::SESSION_OVER),
+            "the release reason is independent of the data queue"
+        );
         assert!(
             !hub.is_served("r1"),
             "a released daemon must stop being a routing target"
@@ -488,11 +549,19 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn a_re_registered_daemon_supersedes_the_one_it_replaces() -> TestResult {
+    #[tokio::test]
+    async fn a_re_registered_daemon_supersedes_the_one_it_replaces() -> TestResult {
         let mut hub = Hub::new(4);
-        let (first, mut first_outbound) = hub.park("r1", Role::Daemon)?;
-        let (second, _second_outbound) = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: first,
+            outbound: mut first_outbound,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: second,
+            outbound: _second_outbound,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
         assert_ne!(
             first, second,
             "each registration must be its own connection"
@@ -500,8 +569,15 @@ mod tests {
 
         // A client parking after the re-registration must be reachable by the daemon that
         // is registered now — the superseded connection is gone, not merely idle.
-        let (_client, _client_inbound) = hub.park("r1", Role::Client)?;
-        let routed = hub.route("r1", Role::Daemon, second, vec![1, 2, 3])?;
+        let Parked {
+            id: _client,
+            outbound: _client_inbound,
+            ..
+        } = hub.park("r1", Role::Client)?;
+        let routed = hub
+            .route("r1", Role::Daemon, second, vec![1, 2, 3])?
+            .deliver()
+            .await?;
         assert_eq!(routed, 1, "the registered daemon reaches the client");
 
         // The superseded connection's channel closes, which is how its task learns to
@@ -528,34 +604,48 @@ mod tests {
     }
 
     #[test]
-    fn the_client_limit_matches_the_protocol_constant() -> TestResult {
+    fn a_second_client_is_refused_before_it_can_share_the_session() -> TestResult {
         let mut hub = Hub::new(1);
         hub.park("r1", Role::Daemon)?;
-        for _ in 0..MAX_DEVICES_PER_ROOM {
-            hub.park("r1", Role::Client)?;
-        }
+        let first = hub.park("r1", Role::Client)?;
         assert!(matches!(
             hub.park("r1", Role::Client),
-            Err(ParkError::TooManyClients { .. })
+            Err(ParkError::RoomInUse)
         ));
+        assert_eq!(hub.client_count("r1"), 1);
+        assert_eq!(*first.closing.borrow(), None);
         Ok(())
     }
 
     #[tokio::test]
-    async fn a_daemon_frame_reaches_every_client() -> TestResult {
+    async fn a_daemon_frame_reaches_only_the_active_client() -> TestResult {
         let mut hub = Hub::new(4);
-        let (daemon_id, _daemon_rx) = hub.park("r1", Role::Daemon)?;
-        let (_, mut client_a) = hub.park("r1", Role::Client)?;
-        let (_, mut client_b) = hub.park("r1", Role::Client)?;
+        let Parked {
+            id: daemon_id,
+            outbound: _daemon_rx,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: _,
+            outbound: mut client_a,
+            ..
+        } = hub.park("r1", Role::Client)?;
+        assert!(matches!(
+            hub.park("r1", Role::Client),
+            Err(ParkError::RoomInUse)
+        ));
 
         let bytes = frame(b"ciphertext")?;
-        assert_eq!(hub.route("r1", Role::Daemon, daemon_id, bytes.clone())?, 2);
+        assert_eq!(
+            hub.route("r1", Role::Daemon, daemon_id, bytes.clone())?
+                .deliver()
+                .await?,
+            1
+        );
 
-        for client in [&mut client_a, &mut client_b] {
-            match client.try_recv() {
-                Ok(Outbound::Frame(received)) => assert_eq!(received, bytes),
-                other => return Err(format!("expected a forwarded frame, got {other:?}").into()),
-            }
+        match client_a.try_recv() {
+            Ok(Outbound::Frame(received)) => assert_eq!(received, bytes),
+            other => return Err(format!("expected a forwarded frame, got {other:?}").into()),
         }
         Ok(())
     }
@@ -563,11 +653,24 @@ mod tests {
     #[tokio::test]
     async fn a_client_frame_reaches_the_daemon() -> TestResult {
         let mut hub = Hub::new(4);
-        let (_daemon_id, mut daemon_rx) = hub.park("r1", Role::Daemon)?;
-        let (client_id, _client_rx) = hub.park("r1", Role::Client)?;
+        let Parked {
+            id: _daemon_id,
+            outbound: mut daemon_rx,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: client_id,
+            outbound: _client_rx,
+            ..
+        } = hub.park("r1", Role::Client)?;
 
         let bytes = frame(b"request")?;
-        assert_eq!(hub.route("r1", Role::Client, client_id, bytes.clone())?, 1);
+        assert_eq!(
+            hub.route("r1", Role::Client, client_id, bytes.clone())?
+                .deliver()
+                .await?,
+            1
+        );
         match daemon_rx.try_recv() {
             Ok(Outbound::Frame(received)) => assert_eq!(received, bytes),
             other => return Err(format!("expected a forwarded frame, got {other:?}").into()),
@@ -575,18 +678,167 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_full_queue_waits_then_delivers_every_frame_in_order() -> TestResult {
+        let mut hub = Hub::new(4);
+        let daemon = hub.park("slow", Role::Daemon)?;
+        let mut client = hub.park("slow", Role::Client)?;
+        for index in 0..FRAME_QUEUE {
+            hub.route("slow", Role::Daemon, daemon.id, vec![u8::try_from(index)?])?
+                .deliver()
+                .await?;
+        }
+        let route = hub.route("slow", Role::Daemon, daemon.id, vec![64])?;
+        let pending = route.deliver();
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        // A routing snapshot does not retain a hub borrow while it waits.
+        let other = hub.park("other", Role::Daemon)?;
+        let mut receiver = hub.park("other", Role::Client)?;
+        hub.route("other", Role::Daemon, other.id, vec![7])?
+            .deliver()
+            .await?;
+        assert!(receiver.outbound.try_recv().is_ok());
+        let Some(Outbound::Frame(first)) = client.outbound.recv().await else {
+            return Err("the full queue lost its first frame".into());
+        };
+        assert_eq!(first, vec![0]);
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), pending).await??,
+            1
+        );
+        for index in 1..=FRAME_QUEUE {
+            let Some(Outbound::Frame(bytes)) = client.outbound.recv().await else {
+                return Err("the queue lost a frame after resuming".into());
+            };
+            assert_eq!(bytes, vec![u8::try_from(index)?]);
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn release_interrupts_a_full_queue_and_an_outstanding_routing_snapshot() -> TestResult {
+        let mut hub = Hub::new(4);
+        let daemon = hub.park("r1", Role::Daemon)?;
+        let client = hub.park("r1", Role::Client)?;
+        for _ in 0..FRAME_QUEUE {
+            hub.route("r1", Role::Client, client.id, vec![1])?
+                .deliver()
+                .await?;
+        }
+        let route = hub.route("r1", Role::Client, client.id, vec![2])?;
+        let pending = route.deliver();
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        hub.release_daemon("r1")?;
+        assert_eq!(*daemon.closing.borrow(), Some(SESSION_OVER));
+        // The writer cancels on this signal and drops its receiver, even though
+        // the blocked route still holds a sender for the old registration.
+        drop(daemon.outbound);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+                .await?
+                .is_err()
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn a_failed_old_route_cannot_close_a_replacement_or_new_client() -> TestResult {
+        let mut hub = Hub::new(4);
+        let old = hub.park("r1", Role::Daemon)?;
+        let client = hub.park("r1", Role::Client)?;
+        for _ in 0..FRAME_QUEUE {
+            hub.route("r1", Role::Client, client.id, vec![1])?
+                .deliver()
+                .await?;
+        }
+        let route = hub.route("r1", Role::Client, client.id, vec![2])?;
+        let pending = route.deliver();
+        tokio::pin!(pending);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), &mut pending)
+                .await
+                .is_err()
+        );
+        let replacement = hub.park("r1", Role::Daemon)?;
+        let newcomer = hub.park("r1", Role::Client)?;
+        assert!(
+            old.closing.has_changed().is_err(),
+            "replacement must cancel the old writer immediately"
+        );
+        drop(old.outbound);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), pending)
+                .await?
+                .is_err()
+        );
+        assert!(matches!(
+            hub.close_route(
+                "r1",
+                Role::Client,
+                client.id,
+                &route,
+                "old destination disconnected",
+            ),
+            Err(ParkError::Gone)
+        ));
+        assert_eq!(*client.closing.borrow(), Some(SESSION_OVER));
+        assert_eq!(*replacement.closing.borrow(), None);
+        assert_eq!(*newcomer.closing.borrow(), None);
+        hub.unpark("r1", Role::Daemon, old.id);
+        assert_eq!(
+            hub.unpark("r1", Role::Client, client.id),
+            Departure::Nothing
+        );
+        assert!(hub.is_served("r1"));
+        assert_eq!(*replacement.closing.borrow(), None);
+        assert_eq!(*newcomer.closing.borrow(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn a_late_old_client_cannot_release_the_replacement_daemon() -> TestResult {
+        let mut hub = Hub::new(1);
+        hub.park("r1", Role::Daemon)?;
+        let old_client = hub.park("r1", Role::Client)?;
+        let replacement = hub.park("r1", Role::Daemon)?;
+        assert_eq!(*old_client.closing.borrow(), Some(SESSION_OVER));
+        assert_eq!(hub.client_count("r1"), 0);
+        assert_eq!(
+            hub.unpark("r1", Role::Client, old_client.id),
+            Departure::Nothing
+        );
+        assert!(hub.is_served("r1"));
+        assert_eq!(*replacement.closing.borrow(), None);
+        hub.park("r1", Role::Client)?;
+        Ok(())
+    }
+
     #[test]
     fn a_departing_daemon_is_reported_once() -> TestResult {
         let mut hub = Hub::new(4);
-        let (daemon_id, _rx) = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: daemon_id,
+            outbound: _rx,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
         hub.park("r1", Role::Client)?;
         assert_eq!(
             hub.unpark("r1", Role::Daemon, daemon_id),
             Departure::DaemonStopped
         );
         assert!(!hub.is_served("r1"), "the room must stop being advertised");
-        // The room survives while its client is still there, so a reconnecting
-        // daemon can resume serving it.
+        // Pending replies remain deliverable after the daemon leaves. A new
+        // daemon registration will close this client's obsolete session.
         assert_eq!(hub.client_count("r1"), 1);
         assert_eq!(
             hub.unpark("r1", Role::Daemon, daemon_id),
@@ -595,10 +847,37 @@ mod tests {
         Ok(())
     }
 
+    #[tokio::test]
+    async fn a_departing_daemon_keeps_its_queued_pairing_receipt_deliverable() -> TestResult {
+        let mut hub = Hub::new(1);
+        let daemon = hub.park("pairing", Role::Daemon)?;
+        let mut client = hub.park("pairing", Role::Client)?;
+        let receipt = frame(b"opaque-pairing-receipt")?;
+        hub.route("pairing", Role::Daemon, daemon.id, receipt.clone())?
+            .deliver()
+            .await?;
+        assert_eq!(
+            hub.unpark("pairing", Role::Daemon, daemon.id),
+            Departure::DaemonStopped
+        );
+        assert_eq!(*client.closing.borrow(), None);
+        let Some(Outbound::Frame(received)) = client.outbound.recv().await else {
+            return Err("the queued pairing receipt was discarded".into());
+        };
+        assert_eq!(received, receipt);
+        hub.unpark("pairing", Role::Client, client.id);
+        assert!(hub.is_empty());
+        Ok(())
+    }
+
     #[test]
     fn an_empty_room_is_forgotten() -> TestResult {
         let mut hub = Hub::new(1);
-        let (daemon_id, _rx) = hub.park("r1", Role::Daemon)?;
+        let Parked {
+            id: daemon_id,
+            outbound: _rx,
+            ..
+        } = hub.park("r1", Role::Daemon)?;
         hub.unpark("r1", Role::Daemon, daemon_id);
         assert!(
             hub.is_empty(),

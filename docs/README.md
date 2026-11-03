@@ -17,9 +17,14 @@
 | :--- | :--- |
 | [`../relay/README.zh.md`](../relay/README.zh.md) | Relay 独立安装、管理命令、配置、PWA 与 Docker |
 | [`../daemon/README.zh.md`](../daemon/README.zh.md) | Daemon 独立安装、管理命令、配对、远端中继与插件 |
+| [`operations/releases.md`](operations/releases.md) | v0.2.0 下载、平台选包、摘要校验与升级 |
+| [`operations/dsh-provisioning.md`](operations/dsh-provisioning.md) | 自动安装 DSH、固定依赖与外部安装的数据边界 |
+| [`operations/acceptance-2026-11-04.md`](operations/acceptance-2026-11-04.md) | v0.2.0 的实测结果、环境和未覆盖范围 |
 | [`operations/cli.md`](operations/cli.md) | 两侧命令与配置、旧版统一入口兼容与配对状态迁移 |
+| [`operations/daemon-management.md`](operations/daemon-management.md) | 单包 DSH 插件、本机页面授权、daemon 安装/接管、持久作业、JSON CLI 与在线配对/撤销 |
 | [`operations/install.md`](operations/install.md) | daemon 构建、旧 CPU、Linux/macOS 常驻、Windows 边界与附着模式 |
 | [`operations/self-hosting.md`](operations/self-hosting.md) | 自托管中继：Docker、systemd、反向代理与超时陷阱 |
+| [`operations/tls.md`](operations/tls.md) | 各网络路径的 TLS 配置、证书、私有 CA、HTTPS 健康检查 |
 | [`operations/troubleshooting.md`](operations/troubleshooting.md) | 症状 → 原因 → 确认 → 修复 |
 | [`integration/dsh-surface.md`](integration/dsh-surface.md) | 所依赖的确切 DSH 接口面，以及 `drdshd doctor` 能查出什么 |
 
@@ -31,15 +36,20 @@
 | [`audit-scope.md`](audit-scope.md) | 给第三方审计者的范围、材料、已知高风险候选与"会失败的检查"清单 |
 | [`protocol.md`](protocol.md) | 帧、握手、密钥派生 |
 | [`decisions/0002-zero-knowledge-relay.md`](decisions/0002-zero-knowledge-relay.md) | 零知识如何被依赖图强制 |
+| [`decisions/0020-plugin-realtime-notifications.md`](decisions/0020-plugin-realtime-notifications.md) | 插件报告的临时令牌、设备鉴权和实时投递边界 |
+| [`decisions/0021-bounded-relay-backpressure.md`](decisions/0021-bounded-relay-backpressure.md) | 大资源转发的有界背压、关闭与容量边界 |
+| [`decisions/0022-plugin-managed-daemon-foundation.md`](decisions/0022-plugin-managed-daemon-foundation.md) | 插件统一管理入口与独立 daemon 的职责、配置和权限边界 |
+| [`decisions/0023-plugin-local-management.md`](decisions/0023-plugin-local-management.md) | 本机页面授权、原生程序校验、跨宿主退出的 OS 作业与首次接管 |
 
 ## 我要改代码
 
 | 文档 | 内容 |
 | :--- | :--- |
 | [`development/contributing.md`](development/contributing.md) | 验证命令、仓库结构、评审强制的硬规则 |
+| [`development/plugin-model-test.md`](development/plugin-model-test.md) | 2026-10-29 真实模型与插件通知验收、认证阻塞、隔离事故及恢复残留 |
 | [`architecture.md`](architecture.md) | 组件边界与数据流（改之前先读这个） |
 | [`decisions/`](decisions/) | 每条 ADR 都记录了被否决的方案——先确认你的改动不是被否决过的那个 |
-| [`integration/dsh-surface.md`](integration/dsh-surface.md) | DSH 兼容矩阵、真实升级测试与改版本时的七项检查 |
+| [`integration/dsh-surface.md`](integration/dsh-surface.md) | 报告与管理面的 DSH 兼容边界、真实升级测试与改版本时的八项检查 |
 
 ## 全部文档
 
@@ -73,15 +83,19 @@ docs/
     0014-installation-and-services.md 统一安装与系统服务管理
     0015-independent-relay-and-daemon.md 两侧独立安装、配置与服务
     0016-native-relay-management.md Relay 无 Node 管理、离线包与 nginx 静态托管
+    0022-plugin-managed-daemon-foundation.md 本机管理基础、归属与在线设备权限
+    0023-plugin-local-management.md 插件页面授权、单包 native、OS 作业与接管
   integration/
     dsh-surface.md                依赖的 DSH 接口面、证据、失效表现、升级仪式
   operations/
     cli.md                        一键安装与统一命令
+    daemon-management.md          插件页面安装、授权、作业与本机管理协议
     install.md                    daemon 的三平台安装
     self-hosting.md               自托管部署
     troubleshooting.md            故障排查
   development/
     contributing.md               贡献指南
+    plugin-model-test.md          真实模型与通知测试记录、阻塞及恢复边界
 ```
 
 ## 文档的约定
@@ -93,3 +107,7 @@ docs/
 
 - [二进制发布与安装](operations/releases.md)：混合/独立包、平台矩阵、下载、更新与构建。
 - [ADR-0017](decisions/0017-multicall-release-packages.md)：统一原生 CLI 与分组件发布边界。
+- [ADR-0018](decisions/0018-tls-transport.md)：TLS 宿主、DSH HTTPS 与证书信任边界。
+- [ADR-0019](decisions/0019-explicit-tls-verification-opt-out.md)：显式跳过和恢复客户端 TLS 证书验证。
+
+- [v0.2.0 发布验收（2026-11-04）](operations/acceptance-2026-11-04.md)：功能范围、真实浏览器与平台验证。

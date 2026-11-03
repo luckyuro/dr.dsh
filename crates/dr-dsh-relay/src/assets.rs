@@ -241,12 +241,13 @@ mod tests {
             "the shell module loads the session, which is where the tunnel is made"
         );
         assert!(
-            script.contains("window.open('/__dr/interface'"),
-            "the shell must open the interface path, which the worker intercepts"
+            script.contains("`/__dr/interface?drdshView=")
+                && script.contains("harnessFrame.src = interfaceUrl"),
+            "the embedded interface uses its own worker route"
         );
         assert!(
             !script.contains("location.assign("),
-            "the interface must open in its own page: the tunnel lives in this one, and a \
+            "the interface must keep its parent page: the tunnel lives there, and a \
              navigation replaces it — the interface's HTML then arrives through a tunnel nobody \
              is serving, and every asset after it hangs"
         );

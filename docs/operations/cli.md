@@ -23,9 +23,18 @@ drdsh daemon restart
 ```
 
 两侧都支持 `start`、`stop`、`restart`、`status`、`logs [--follow]`、`enable`、`disable`、
-`install`、`update`、`uninstall`。Daemon 额外支持 `pair`、`doctor`、`devices`、`audit`、`crashes`。
+`install`、`update`、`uninstall`。Daemon 额外支持 `pair`、`doctor`、`devices`、`audit`、`crashes`，
+以及供程序调用的 [JSON 本机管理入口](daemon-management.md) `manage`。
 只更新 PWA 使用 `drdsh relay install client --source <bundle>`；可选插件使用
 `drdsh daemon install plugin --source <bundle>` / `uninstall plugin`，或首次安装时加 `--with-plugin`。
+
+旧配置按安装记录是否包含插件决定 `DSHD_PLUGIN_REPORTS`；新配置可用 `pluginReportsEnabled`
+独立控制。`pluginOwner=external` 时，daemon 不再注册、覆盖或移除外部插件。
+源码前台运行使用 `drdsh daemon run --plugin-reports`，只支持受管 DSH。插件不再依赖固定 `8790`
+端口：daemon 自动分配回环端口和临时令牌，经子进程环境传入，重启 DSH 时继续传递。
+已配对并连接的页面会收到内容最小化的实时通知；离线不补发。详见[插件说明](../../daemon/README.zh.md#可选插件)。
+运行中新增配对或撤销设备会更新鉴权策略，无需重启 DSH；撤销同时关闭该设备的现有访问。
+旧 CLI 在未开启本机管理接口时仍可工作，daemon 每 200 毫秒检查登记变化。
 
 重复安装保留未覆盖的配置，只重启对应的宿主。卸载保留自身配置和数据，不影响另一侧程序。
 Relay 不接受 daemon 的 `--relay`、`--dsh`、`--workdir`、`--state-dir` 等选项；Daemon 不接受中继监听用的 `--bind`。
@@ -54,9 +63,9 @@ PWA 的提示统一使用 `drdsh daemon ...` / `drdsh relay ...`。在运行 DSH
 命令运行。浏览器打开同一中继的 HTTPS 地址；回环 HTTP 只适用于中继本机测试。
 
 在 **Pairing code or room key** 输入配对码并点击 **Connect**。码有效期为五分钟，每个码只允许
-一次尝试，失败也需重新生成。显示 **Paired** 后再次点击 **Connect**，再点击
-**Open the DeepSeek Harness interface**。DSH 在新标签页打开；保留 dr.dsh 标签页维持隧道，
-DSH 电脑须保持开机、联网且不休眠。
+一次尝试，失败也需重新生成。配对成功后自动连接，DSH 运行时会在当前
+页面自动显示 Harness；顶部可返回连接管理、重新加载或断开。同一台电脑同时只接受一个
+浏览器连接，其他页面会收到占用提示，须先断开原页面。DSH 电脑须保持开机、联网且不休眠。
 
 已配对时，页面提示留空输入框、选择 **Your computers** 中的电脑并连接；输入另一台电脑的新码
 会新增配对。配对按浏览器与中继站点保存，清除站点数据后需要重新配对。**Forget** 只忘记一台
@@ -151,9 +160,13 @@ drdsh --help
 
 也可以直接运行 `~/.local/bin/drdsh`。安装器会打印实际路径，不改写 shell 启动文件。
 只有 `--start` 才会启动新服务，只有 `--enable` 才会开启登录自启动。
-默认中继只监听 `127.0.0.1:8787`；需要公开服务时配置反向代理，见
-[`self-hosting.md`](self-hosting.md)。Daemon 按 `--relay` 指定的协议连接：`ws://` 使用 WS，
-`wss://` 使用 TLS，并通过系统信任的根证书校验证书和主机名。安装器不配置服务器证书或反向代理。
+默认中继只监听 `127.0.0.1:8787`；需要公开服务时可使用 `--tls-cert` / `--tls-key` 原生 TLS，
+或配置反向代理，见 [`tls.md`](tls.md) 与 [`self-hosting.md`](self-hosting.md)。
+Daemon 按 `--relay` 指定的协议连接：`ws://` 使用 WS，`wss://` 使用 TLS，默认校验证书和主机名。
+`run`、两种配对命令、`install` 和 `status` 支持 `--insecure` 跳过证书验证、`--no-insecure`
+恢复验证。`install` 保存当前组件的选择，其他命令仅覆盖当次；relay 只在 `install/status` 接受此项。
+`--ca-cert` 增加私有 CA；`--tls-server-name` 设置 relay 本地健康探针的证书名；daemon 安装
+选项 `--dsh-tls` 要求已配置好的 HTTPS DSH 并使用 HTTPS 探测。安装器保存文件路径，不签发证书。
 
 ## 日常命令
 

@@ -51,6 +51,8 @@ export interface SessionOptions {
   readonly room?: string;
   /** The device identity this browser has, when it has one. */
   readonly device?: IdentityRecord | null;
+  /** A fresh pairing may briefly reconnect the daemon while it applies the new device policy. */
+  readonly waitForDaemon?: boolean;
 }
 
 /** What a page needs from the browser, so the logic around it is testable. */
@@ -68,7 +70,7 @@ export interface SessionHost {
    * @param serve - called with the page's end of the channel; returns a stop function.
    * @returns a function that stops serving.
    */
-  hand(serve: (port: MessagePort) => () => void): () => void;
+  hand(serve: (port: MessagePort) => () => void, signal: AbortSignal): Promise<() => void>;
   /** Reports a phase change. */
   report(phase: SessionPhase): void;
 }
@@ -83,6 +85,8 @@ export interface SessionHost {
 export class Session {
   private tunnel: Tunnel | null = null;
   private stopServing: (() => void) | null = null;
+  private stopClosed: (() => void) | null = null;
+  private handAbort: AbortController | null = null;
   private readonly host: SessionHost;
 
   public constructor(host: SessionHost) {
@@ -130,16 +134,25 @@ export class Session {
       const socket = await this.host.connect(room);
       const tunnel = await Tunnel.open(socket, root, identity);
       this.tunnel = tunnel;
+      this.stopClosed = tunnel.onClosed(() => this.stop());
       // The worker must control this page *before* it is handed a tunnel: otherwise the
       // first navigation to the DSH interface is not intercepted, and the browser shows
       // whatever the relay answers for that path instead of the interface.
       await this.host.prepareWorker();
+      if (this.tunnel !== tunnel) throw new Error('the connection ended before the interface was ready; reconnect this page');
       // The handoff starts serving from this moment: the worker's end goes to the worker,
       // and the page's end is answered here through the tunnel.
-      this.stopServing = this.host.hand(port => serveWorker(tunnel, port));
+      this.handAbort = new AbortController();
+      const stopServing = await this.host.hand(port => serveWorker(tunnel, port), this.handAbort.signal);
+      if (this.tunnel !== tunnel || !tunnel.isEstablished) {
+        stopServing();
+        throw new Error('the connection ended before the interface was ready; reconnect this page');
+      }
+      this.stopServing = stopServing;
       this.host.report({ phase: 'ready', room });
       return room;
     } catch (error) {
+      this.release();
       // Every failure path reports, including the ones before a socket exists: a page that shows
       // "Connecting…" while nothing is happening is the failure mode this reporting exists to
       // prevent.
@@ -151,11 +164,19 @@ export class Session {
 
   /** Closes the session. */
   public stop(): void {
+    this.release();
+    this.host.report({ phase: 'idle' });
+  }
+
+  private release(): void {
+    this.handAbort?.abort();
+    this.handAbort = null;
+    this.stopClosed?.();
+    this.stopClosed = null;
     this.stopServing?.();
     this.stopServing = null;
     this.tunnel?.close();
     this.tunnel = null;
-    this.host.report({ phase: 'idle' });
   }
 
   /** Whether a tunnel is open. */
@@ -176,6 +197,101 @@ export class Session {
   public get liveTunnel(): Tunnel | null {
     return this.tunnel;
   }
+}
+
+/** The browser bridge surface, kept small so controller replacement can be exercised. */
+export interface WorkerBridgeContainer {
+  readonly controller: { postMessage(message: unknown, transfer: Transferable[]): void } | null;
+  addEventListener(type: 'controllerchange' | 'message', listener: EventListener): void;
+  removeEventListener(type: 'controllerchange' | 'message', listener: EventListener): void;
+}
+
+/** Waits for route registration, and repeats the handoff when a new worker takes control. */
+export async function handWorkerView(
+  container: WorkerBridgeContainer,
+  viewId: string,
+  serve: (port: MessagePort) => () => void,
+  onReady: () => void = () => {},
+  onFailure: (error: Error) => void = () => {},
+  signal?: AbortSignal,
+): Promise<() => void> {
+  let stopped = false;
+  let initialReady = false;
+  let releaseCurrent = () => {};
+  let accept!: () => void;
+  let refuse!: (error: Error) => void;
+  const ready = new Promise<void>((resolve, reject) => { accept = resolve; refuse = reject; });
+  const fail = (error: Error) => {
+    releaseCurrent();
+    if (initialReady) onFailure(error);
+    else refuse(error);
+  };
+  const hand = () => {
+    if (stopped) return;
+    releaseCurrent();
+    const controller = container.controller;
+    if (!controller) { fail(new Error('the service worker stopped controlling this page; reload and reconnect')); return; }
+    const channel = new MessageChannel();
+    let active = true;
+    const timer = setTimeout(() => fail(new Error('the service worker did not confirm the interface route; reload and reconnect')), 10_000);
+    const acknowledgement = (event: MessageEvent) => {
+      if (!active) return;
+      const message = event.data as { kind?: string; viewId?: string; reason?: string } | null;
+      if (message?.kind === 'failed') { fail(new Error(message.reason ?? 'the interface route could not be connected')); return; }
+      if (message?.kind !== 'handed' || message.viewId !== viewId) return;
+      clearTimeout(timer);
+      channel.port1.removeEventListener('message', acknowledgement);
+      initialReady = true;
+      onReady();
+      accept();
+    };
+    channel.port1.addEventListener('message', acknowledgement);
+    let stopServing: (() => void) | undefined;
+    releaseCurrent = () => {
+      if (!active) return;
+      active = false;
+      clearTimeout(timer);
+      channel.port1.removeEventListener('message', acknowledgement);
+      // Closing a MessagePort does not reject fetches waiting in the old worker.
+      // Tell the controller that owns this handoff before releasing its channel.
+      try { controller.postMessage({ kind: 'unhand', viewId }, []); }
+      catch { /* A controller that has already exited cannot retain a live route. */ }
+      stopServing?.();
+      channel.port1.close();
+      channel.port2.close();
+    };
+    try {
+      stopServing = serve(channel.port1);
+      channel.port1.start();
+      controller.postMessage({ kind: 'hand', viewId }, [channel.port2]);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error('the interface route could not be connected'));
+    }
+  };
+  const stop = () => {
+    if (stopped) return;
+    stopped = true;
+    container.removeEventListener('controllerchange', hand);
+    container.removeEventListener('message', restore);
+    signal?.removeEventListener('abort', aborted);
+    releaseCurrent();
+  };
+  const aborted = () => {
+    stop();
+    if (!initialReady) refuse(new Error('the connection ended before the interface route was ready'));
+  };
+  const restore = (event: Event) => {
+    const message = event as MessageEvent;
+    if (message.source === container.controller && message.data?.kind === 'restore-views') hand();
+  };
+  container.addEventListener('controllerchange', hand);
+  container.addEventListener('message', restore);
+  signal?.addEventListener('abort', aborted, { once: true });
+  if (signal?.aborted) aborted();
+  else hand();
+  try { await ready; }
+  catch (error) { stop(); throw error; }
+  return stop;
 }
 
 /**
@@ -206,17 +322,60 @@ export function decodeRoomKey(encoded: string): Uint8Array<ArrayBuffer> {
   return bytes;
 }
 
-/**
- * Connects the page's tunnel and hands it to the service worker.
- *
- * This is the function the shell calls, and it is the only place that touches browser
- * globals directly: everything it decides is delegated to `Session`, which takes those
- * globals as parameters so they can be replaced in a test.
- *
- * @param options - what the user typed, and the device this browser has stored.
- * @param hooks - how to report progress; the shell renders these phases.
- * @returns the room the tunnel parked on.
- */
+/** Wait briefly for a newly paired daemon, without retrying an authentication or busy-room refusal. */
+export async function openRelaySocket(url: URL, room: string, waitForDaemon = false): Promise<TunnelSocket> {
+  const deadline = Date.now() + (waitForDaemon ? 5_000 : 0);
+  for (;;) {
+    const socket = new WebSocket(url);
+    socket.binaryType = 'arraybuffer';
+    const connected = await new Promise<TunnelSocket | null>((resolve, reject) => {
+      const cleanup = (): void => {
+        clearTimeout(timer);
+        socket.removeEventListener('message', onMessage);
+        socket.removeEventListener('error', onError);
+        socket.removeEventListener('close', onClose);
+      };
+      const fail = (error: Error): void => { cleanup(); socket.close(); reject(error); };
+      const onError = (): void => fail(new LocalizedError(() => t('error.relayUnreachable')));
+      const onClose = (): void => fail(new LocalizedError(() => t('error.relayHandshake')));
+      const timer = setTimeout(onClose, 10_000);
+      const onMessage = (event: MessageEvent): void => {
+        if (typeof event.data !== 'string') return;
+        let reply: { type?: string; reason?: string };
+        try { reply = JSON.parse(event.data) as typeof reply; }
+        catch { onClose(); return; }
+        if (reply?.type !== 'ready') {
+          // Retry only the relay's explicit empty-room response after a fresh pairing.
+          // A busy room, device refusal or failed encrypted handshake must remain visible.
+          if (reply?.type === 'reject' && reply.reason === 'no daemon is serving this room' && Date.now() < deadline) {
+            cleanup(); socket.close(); resolve(null); return;
+          }
+          fail(new LocalizedError(() => t('error.relayRefused', { reason: reply?.reason ?? t('error.noReason') })));
+          return;
+        }
+        cleanup();
+        resolve({
+          send: data => socket.send(data),
+          receive(handler) {
+            socket.addEventListener('message', event => {
+              if (typeof event.data !== 'string') handler(new Uint8Array(event.data as ArrayBuffer));
+            });
+          },
+          closed(handler) { socket.addEventListener('close', () => handler('the relay closed the connection')); },
+          close: () => socket.close(),
+        });
+      };
+      socket.addEventListener('error', onError, { once: true });
+      socket.addEventListener('close', onClose, { once: true });
+      socket.addEventListener('message', onMessage);
+      socket.addEventListener('open', () => socket.send(JSON.stringify({ role: 'client', room, proto: [0, 1] })), { once: true });
+    });
+    if (connected !== null) return connected;
+    await new Promise(resolve => setTimeout(resolve, 150));
+  }
+}
+
+/** Connect the page's encrypted tunnel and bind its isolated route to the browser's service worker. */
 export async function connect(
   options: SessionOptions,
   hooks: {
@@ -227,51 +386,17 @@ export async function connect(
      * Handed over rather than returned because the session keeps owning it: the caller must not
      * be able to close what the service worker is still serving through.
      */
-    readonly onTunnel?: (tunnel: Tunnel) => void;
+    readonly onTunnel?: (tunnel: Tunnel, viewId: string) => void;
+    /** Rebind the embedded document after a worker upgrade has accepted its parent. */
+    readonly onWorkerReady?: (viewId: string) => void;
   },
 ): Promise<string> {
+  const viewId = crypto.randomUUID();
   const session = new Session({
     async connect(room) {
       const url = new URL('/ws/client', location.href);
       url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
-      const socket = new WebSocket(url);
-      socket.binaryType = 'arraybuffer';
-      return await new Promise<TunnelSocket>((resolve, reject) => {
-        socket.addEventListener('error', () => reject(new LocalizedError(() => t('error.relayUnreachable'))), {
-          once: true,
-        });
-        socket.addEventListener(
-          'open',
-          () => {
-            socket.send(JSON.stringify({ role: 'client', room, proto: [0, 1] }));
-          },
-          { once: true },
-        );
-        // The relay's handshake reply is text and arrives before any carrier frame; the
-        // tunnel takes over from the first binary one.
-        const onMessage = (event: MessageEvent): void => {
-          if (typeof event.data !== 'string') return;
-          socket.removeEventListener('message', onMessage);
-          const reply = JSON.parse(event.data) as { type?: string; reason?: string };
-          if (reply.type !== 'ready') {
-            reject(new LocalizedError(() => t('error.relayRefused', { reason: reply.reason ?? t('error.noReason') })));
-            return;
-          }
-          resolve({
-            send: data => socket.send(data),
-            receive(handler) {
-              socket.addEventListener('message', event => {
-                if (typeof event.data !== 'string') handler(new Uint8Array(event.data as ArrayBuffer));
-              });
-            },
-            closed(handler) {
-              socket.addEventListener('close', () => handler('the relay closed the connection'));
-            },
-            close: () => socket.close(),
-          });
-        };
-        socket.addEventListener('message', onMessage);
-      });
+      return await openRelaySocket(url, room, options.waitForDaemon);
     },
     async prepareWorker() {
       if (!('serviceWorker' in navigator)) {
@@ -298,21 +423,16 @@ export async function connect(
       }
       void registration;
     },
-    hand(serve) {
-      // The transfer is what makes the worker able to intercept: it stores the port and
-      // answers every intercepted request through it. The page's end is served here.
-      const channel = new MessageChannel();
-      const registration = navigator.serviceWorker.controller;
-      if (registration === null) {
-        throw new LocalizedError(() => t('error.workerControl'));
-      }
-      registration.postMessage({ kind: 'hand' }, [channel.port2]);
-      return serve(channel.port1);
+    hand(serve, signal) {
+      return handWorkerView(navigator.serviceWorker, viewId, serve, () => hooks.onWorkerReady?.(viewId), error => {
+        session.stop();
+        hooks.report({ phase: 'failed', reason: error.message, cause: error });
+      }, signal);
     },
     report: hooks.report,
   });
   const room = await session.start(options);
   const tunnel = session.liveTunnel;
-  if (tunnel !== null) hooks.onTunnel?.(tunnel);
+  if (tunnel !== null) hooks.onTunnel?.(tunnel, viewId);
   return room;
 }

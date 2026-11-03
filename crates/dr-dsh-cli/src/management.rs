@@ -18,8 +18,22 @@ pub(crate) struct Args {
     flags: BTreeSet<String>,
 }
 
-const RELAY_VALUES: &[&str] = &["bind", "client-dir"];
-const DAEMON_VALUES: &[&str] = &["relay", "dsh", "dsh-home", "workdir", "port", "state-dir"];
+const RELAY_VALUES: &[&str] = &[
+    "bind",
+    "client-dir",
+    "tls-cert",
+    "tls-key",
+    "tls-server-name",
+];
+const DAEMON_VALUES: &[&str] = &[
+    "relay",
+    "dsh",
+    "dsh-home",
+    "workdir",
+    "port",
+    "state-dir",
+    "plugin-owner",
+];
 
 impl Args {
     pub fn parse(argv: Vec<String>) -> Result<Self> {
@@ -51,10 +65,24 @@ impl Args {
                 || (result.action == "install"
                     && (["source", "build-profile"].contains(&key)
                         || RELAY_VALUES.contains(&key)
-                        || DAEMON_VALUES.contains(&key)))
+                        || DAEMON_VALUES.contains(&key)
+                        || key == "ca-cert"))
                 || (result.action == "update" && key == "version");
             let flag = (result.action == "install"
-                && ["skip-build", "start", "enable", "with-plugin"].contains(&key))
+                && [
+                    "skip-build",
+                    "start",
+                    "enable",
+                    "with-plugin",
+                    "dsh-tls",
+                    "plugin-reports",
+                    "no-plugin-reports",
+                    "local-admin",
+                    "no-local-admin",
+                ]
+                .contains(&key))
+                || (["install", "status"].contains(&result.action.as_str())
+                    && ["insecure", "no-insecure"].contains(&key))
                 || (result.action == "logs" && key == "follow");
             ensure!(
                 value || flag,
@@ -80,6 +108,19 @@ impl Args {
                 result.values.insert(key.into(), value);
             }
         }
+        ensure!(
+            !(result.flag("insecure") && result.flag("no-insecure")),
+            "Choose either --insecure or --no-insecure; they cannot be used together."
+        );
+        for (enable, disable) in [
+            ("plugin-reports", "no-plugin-reports"),
+            ("local-admin", "no-local-admin"),
+        ] {
+            ensure!(
+                !(result.flag(enable) && result.flag(disable)),
+                "Choose either --{enable} or --{disable}; they cannot be used together."
+            );
+        }
         Ok(result)
     }
     pub fn value(&self, name: &str) -> Option<&str> {
@@ -87,6 +128,15 @@ impl Args {
     }
     pub fn flag(&self, name: &str) -> bool {
         self.flags.contains(name)
+    }
+    pub fn tls_insecure(&self) -> Option<bool> {
+        if self.flag("insecure") {
+            Some(true)
+        } else if self.flag("no-insecure") {
+            Some(false)
+        } else {
+            None
+        }
     }
     pub fn for_scope(&self, scope: &str) -> Self {
         let mut args = self.clone();
@@ -98,7 +148,16 @@ impl Args {
             args.values.remove(*key);
         }
         if scope == "relay" {
-            args.flags.remove("with-plugin");
+            for flag in [
+                "with-plugin",
+                "dsh-tls",
+                "plugin-reports",
+                "no-plugin-reports",
+                "local-admin",
+                "no-local-admin",
+            ] {
+                args.flags.remove(flag);
+            }
         }
         args
     }
@@ -117,6 +176,22 @@ impl Args {
             scope == "daemon" || !self.flag("with-plugin"),
             "The plugin belongs to daemon; use drdsh daemon install --with-plugin."
         );
+        ensure!(
+            scope == "daemon" || !self.flag("dsh-tls"),
+            "--dsh-tls configures daemon's DSH connection; use drdsh daemon install."
+        );
+        ensure!(
+            scope == "daemon"
+                || ![
+                    "plugin-reports",
+                    "no-plugin-reports",
+                    "local-admin",
+                    "no-local-admin"
+                ]
+                .iter()
+                .any(|flag| self.flag(flag)),
+            "Plugin reports and local administration configure daemon; use drdsh daemon install."
+        );
         if let Some(asset) = &self.asset {
             ensure!(
                 (scope == "relay" && asset == "client" && self.action == "install")
@@ -129,6 +204,15 @@ impl Args {
     }
 }
 
+/// Ownership of the DSH bundle is separate from the daemon's installed files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PluginOwner {
+    #[default]
+    Daemon,
+    External,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct Config {
@@ -138,9 +222,27 @@ pub(crate) struct Config {
     pub source: PathBuf,
     pub components: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_owner: Option<PluginOwner>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin_reports_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_admin_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bind: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub client_dir: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_cert: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_key: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_server_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ca_cert: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tls_insecure: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_tls: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -149,6 +251,10 @@ pub(crate) struct Config {
     pub port: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dsh: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_managed: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dsh_version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dsh_home: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,6 +267,7 @@ pub(crate) struct Config {
 
 impl Config {
     pub fn validate(&self, p: &Paths) -> Result<()> {
+        crate::provision::validate(self, p)?;
         ensure!(
             self.version == 1 && self.scope == p.scope && absolute(&self.prefix)? == p.prefix,
             "Configuration scope, version or prefix does not match {}; use the original installation prefix.",
@@ -169,6 +276,9 @@ impl Config {
         for path in [&self.prefix, &self.source]
             .into_iter()
             .chain(self.client_dir.iter())
+            .chain(self.tls_cert.iter())
+            .chain(self.tls_key.iter())
+            .chain(self.ca_cert.iter())
             .chain(self.dsh.iter())
             .chain(self.dsh_home.iter())
             .chain(self.workdir.iter())
@@ -197,6 +307,19 @@ impl Config {
             "Invalid --build-profile; choose release or debug."
         );
         if self.scope == "relay" {
+            ensure!(
+                self.tls_cert.is_some() == self.tls_key.is_some(),
+                "Relay TLS requires both --tls-cert and --tls-key; supply the matching PEM files."
+            );
+            if let Some(name) = &self.tls_server_name {
+                ensure!(
+                    self.tls_cert.is_some(),
+                    "--tls-server-name requires relay TLS certificates."
+                );
+                rustls::pki_types::ServerName::try_from(name.clone()).context(
+                    "Relay --tls-server-name must be a certificate DNS name or IP address.",
+                )?;
+            }
             let addr: SocketAddr = self
                 .bind
                 .as_deref()
@@ -206,17 +329,27 @@ impl Config {
             ensure!(addr.port() > 0, "Relay port must be 1 through 65535.");
             ensure!(
                 self.relay.is_none()
+                    && self.dsh_tls.is_none()
                     && self.port.is_none()
                     && self.dsh.is_none()
+                    && self.dsh_managed.is_none()
+                    && self.dsh_version.is_none()
                     && self.dsh_home.is_none()
                     && self.workdir.is_none()
                     && self.state.is_none()
+                    && self.plugin_owner.is_none()
+                    && self.plugin_reports_enabled.is_none()
+                    && self.local_admin_enabled.is_none()
                     && self.path.is_none(),
                 "Relay configuration contains daemon fields; repair relay.json."
             );
         } else {
             ensure!(
-                self.bind.is_none() && self.client_dir.is_none(),
+                self.bind.is_none()
+                    && self.client_dir.is_none()
+                    && self.tls_cert.is_none()
+                    && self.tls_key.is_none()
+                    && self.tls_server_name.is_none(),
                 "Daemon configuration contains relay fields; repair daemon.json."
             );
             let relay = self
@@ -276,9 +409,35 @@ impl Config {
     pub fn installed(&self) -> bool {
         self.components.contains(&self.scope)
     }
+    pub fn owns_plugin(&self) -> bool {
+        self.plugin_owner.unwrap_or_default() == PluginOwner::Daemon
+    }
+    pub fn plugin_reports_enabled(&self) -> bool {
+        // Older installations coupled report listening to the optional asset.
+        // A saved explicit setting always wins, including for DSH-owned bundles.
+        self.plugin_reports_enabled
+            .unwrap_or_else(|| self.components.iter().any(|c| c == "plugin"))
+    }
     pub fn environment(&self, p: &Paths) -> BTreeMap<String, String> {
         let mut env = BTreeMap::from([("RUST_LOG".into(), "info".into())]);
+        if let Some(ca) = &self.ca_cert {
+            env.insert(dr_dsh_tls::ENV_CA_CERT.into(), ca.to_string_lossy().into());
+        }
+        if let Some(insecure) = self.tls_insecure {
+            env.insert(
+                dr_dsh_tls::ENV_TLS_INSECURE.into(),
+                if insecure { "1" } else { "0" }.into(),
+            );
+        }
         if self.scope == "relay" {
+            for (key, value) in [
+                ("DSH_RELAY_TLS_CERT", &self.tls_cert),
+                ("DSH_RELAY_TLS_KEY", &self.tls_key),
+            ] {
+                if let Some(value) = value {
+                    env.insert(key.into(), value.to_string_lossy().into());
+                }
+            }
             env.insert(
                 "DSH_RELAY_BIND".into(),
                 self.bind.clone().unwrap_or_default(),
@@ -288,6 +447,27 @@ impl Config {
                 p.root.join("client").to_string_lossy().into(),
             );
         } else {
+            env.insert(
+                "DSHD_PLUGIN_REPORTS".into(),
+                if self.plugin_reports_enabled() {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            );
+            env.insert(
+                "DSHD_ADMIN".into(),
+                if self.local_admin_enabled == Some(true) {
+                    "1"
+                } else {
+                    "0"
+                }
+                .into(),
+            );
+            if self.dsh_tls == Some(true) {
+                env.insert("DSHD_DSH_TLS".into(), "1".into());
+            }
             for (key, value) in [
                 ("DSHD_STATE_DIR", &self.state),
                 ("DSHD_DSH", &self.dsh),
@@ -438,18 +618,39 @@ pub(crate) fn make_config(scope: &str, args: &Args) -> Result<(Paths, Option<Con
         scope: scope.into(),
         source: source.clone(),
         components: vec![],
+        plugin_owner: None,
+        plugin_reports_enabled: None,
+        local_admin_enabled: None,
         bind: None,
         client_dir: None,
+        tls_cert: None,
+        tls_key: None,
+        tls_server_name: None,
+        ca_cert: None,
+        tls_insecure: None,
+        dsh_tls: None,
         build_profile: None,
         relay: None,
         port: None,
         dsh: None,
+        dsh_managed: None,
+        dsh_version: None,
         dsh_home: None,
         workdir: None,
         state: None,
         path: None,
     });
     config.source = source;
+    if let Some(insecure) = args.tls_insecure() {
+        config.tls_insecure = Some(insecure);
+    }
+    if let Some(value) = args.value("ca-cert") {
+        let path = absolute(Path::new(value))?;
+        // Validate an explicitly supplied CA even if verification is disabled,
+        // so restoring verification does not reveal a broken saved trust file.
+        dr_dsh_tls::client_config_with_options(Some(&path), Some(false))?;
+        config.ca_cert = Some(path);
+    }
     config.build_profile = Some(
         args.value("build-profile")
             .unwrap_or(config.build_profile.as_deref().unwrap_or("release"))
@@ -464,7 +665,60 @@ pub(crate) fn make_config(scope: &str, args: &Args) -> Result<(Paths, Option<Con
         if let Some(value) = args.value("client-dir") {
             config.client_dir = Some(absolute(Path::new(value))?);
         }
+        for (flag, dest) in [
+            ("tls-cert", &mut config.tls_cert),
+            ("tls-key", &mut config.tls_key),
+        ] {
+            if let Some(value) = args.value(flag) {
+                *dest = Some(absolute(Path::new(value))?);
+            }
+        }
+        if let Some(value) = args.value("tls-server-name") {
+            config.tls_server_name = Some(value.to_owned());
+        }
+        if let (Some(cert), Some(key)) = (&config.tls_cert, &config.tls_key) {
+            dr_dsh_tls::server_config(cert, key)?;
+        }
     } else {
+        if let Some(owner) = args.value("plugin-owner") {
+            config.plugin_owner = Some(match owner {
+                "daemon" => PluginOwner::Daemon,
+                "external" => PluginOwner::External,
+                _ => bail!(
+                    "--plugin-owner must be daemon or external; external leaves the DSH bundle to its package manager."
+                ),
+            });
+            if !config.owns_plugin() && config.plugin_reports_enabled.is_none() {
+                config.plugin_reports_enabled = Some(config.plugin_reports_enabled());
+            }
+        }
+        ensure!(
+            config.owns_plugin()
+                || !(args.flag("with-plugin") || args.asset.as_deref() == Some("plugin")),
+            "The DSH bundle is externally owned; omit --with-plugin/install plugin and manage it through DSH."
+        );
+        for (enable, disable, destination) in [
+            (
+                "plugin-reports",
+                "no-plugin-reports",
+                &mut config.plugin_reports_enabled,
+            ),
+            (
+                "local-admin",
+                "no-local-admin",
+                &mut config.local_admin_enabled,
+            ),
+        ] {
+            if args.flag(enable) {
+                *destination = Some(true);
+            }
+            if args.flag(disable) {
+                *destination = Some(false);
+            }
+        }
+        if args.flag("dsh-tls") {
+            config.dsh_tls = Some(true);
+        }
         config.relay = Some(
             args.value("relay")
                 .unwrap_or(config.relay.as_deref().unwrap_or("ws://127.0.0.1:8787"))
@@ -477,15 +731,23 @@ pub(crate) fn make_config(scope: &str, args: &Args) -> Result<(Paths, Option<Con
                 .context("DSH --port must be 1 through 65535.")?
                 .unwrap_or(config.port.unwrap_or(3080)),
         );
-        config.dsh = Some(executable(
-            args.value("dsh").unwrap_or(
+        if let Some(dsh) = args.value("dsh") {
+            config.dsh = Some(executable(dsh)?);
+            config.dsh_managed = None;
+            config.dsh_version = None;
+        } else if config.dsh.is_none() {
+            config.dsh = Some(crate::provision::launcher(&p));
+            config.dsh_managed = Some(true);
+            config.dsh_version = Some(crate::provision::DSH_VERSION.into());
+        } else if config.dsh_managed != Some(true) {
+            config.dsh = Some(executable(
                 config
                     .dsh
                     .as_deref()
                     .and_then(Path::to_str)
                     .unwrap_or("dsh"),
-            ),
-        )?);
+            )?);
+        }
         for (key, dest, default) in [
             (
                 "dsh-home",
@@ -528,9 +790,9 @@ pub(crate) fn make_config(scope: &str, args: &Args) -> Result<(Paths, Option<Con
             ));
         }
         ensure!(
-            !previous.as_ref().is_some_and(
-                |c| c.components.iter().any(|s| s == "plugin") && c.dsh_home != config.dsh_home
-            ),
+            !previous.as_ref().is_some_and(|c| c.owns_plugin()
+                && c.components.iter().any(|s| s == "plugin")
+                && c.dsh_home != config.dsh_home),
             "Uninstall plugin before changing --dsh-home so its old registration can be removed."
         );
     }
@@ -576,7 +838,16 @@ pub(crate) fn run(scope: &str, args: Args) -> Result<i32> {
         install::install(scope, &args, &p)?;
         return Ok(0);
     }
-    let config = Config::read(&p)?;
+    let mut config = Config::read(&p)?;
+    if let Some(insecure) = args.tls_insecure() {
+        config.tls_insecure = Some(insecure);
+    }
+    ensure!(
+        args.action != "uninstall"
+            || args.asset.as_deref() != Some("plugin")
+            || config.owns_plugin(),
+        "The DSH bundle is externally owned; uninstall it through DSH. The daemon and its service have not been changed."
+    );
     service::available()?;
     if args.action == "uninstall" {
         install::uninstall(&args, &config, &p)?;
@@ -604,18 +875,32 @@ pub(crate) fn run(scope: &str, args: Args) -> Result<i32> {
 
 pub(crate) fn help(scope: &str) -> String {
     let specific = if scope == "relay" {
-        "  run [--bind <ip:port>] [--client-dir <path>]\n  install [client] [--bind <ip:port>] [--client-dir <path>]\n"
+        "  run [--bind <ip:port>] [--client-dir <path>] [--tls-cert <pem>] [--tls-key <pem>]\n  install [client] [--bind <ip:port>] [--client-dir <path>]\n      [--tls-cert <pem>] [--tls-key <pem>] [--tls-server-name <name>] [--ca-cert <pem>]\n  TLS serves HTTPS/WSS; --tls-server-name selects the certificate name for status probes.\n"
     } else {
-        r#"  run [--relay <ws(s)-origin>] [--port <port>] [--config <path>]
+        r#"  run [--relay <ws(s)-origin>] [--port <port>] [--config <path>] [--plugin-reports] [--local-admin]
   pair [--wait <seconds>] | doctor | devices [--revoke <id>]
   audit|crashes [--clear] | room-key
   install [plugin] [--with-plugin] [--dsh <executable>]
       [--relay <ws(s)-origin>] [--port <port>] [--dsh-home <path>]
-      [--state-dir <path>] [--workdir <path>]
+      [--state-dir <path>] [--workdir <path>] [--ca-cert <pem>] [--dsh-tls]
+      [--plugin-owner daemon|external] [--plugin-reports | --no-plugin-reports]
+      [--local-admin | --no-local-admin]
+  run --attach <port> [--attach-tls] [--attach-token <token>] [--ca-cert <pem>]
   uninstall plugin
+  manage [--prefix <path>]    one bounded JSON request on stdin; one JSON response
+
+  --plugin-owner external leaves the DSH bundle to DSH's package manager.
+  --plugin-reports is independent of bundle ownership; old settings remain compatible.
+  --local-admin enables authenticated local IPC when daemon next starts (default off).
+  First installation installs private DSH 0.2.2-alpha.2 and the daemon-owned plugin.
+  Automatic DSH installation needs Node >=24.9 and npm; --dsh uses an existing DSH.
+  Reinstallation preserves an existing DSH path and plugin ownership/selection.
 
   --relay uses the supplied ws:// or wss:// origin (for example wss://relay.example.com).
-  --dsh selects one executable; --workdir selects the startup project directory.
+  --ca-cert adds a private CA for HTTPS/WSS (also available on pair and pair-as-device).
+  run/pair/pair-as-device accept --insecure or --no-insecure for TLS verification.
+  --dsh-tls requires an HTTPS DSH readiness URL and uses HTTPS for service health.
+  --dsh selects an existing executable; --workdir selects the startup project directory.
   npm: npm install -g @deepseek-ai/dsh, then --dsh "$(npm prefix -g)/bin/dsh".
   Git clone: run pnpm install and pnpm run build in the DSH checkout, then create
   an executable launcher with an absolute Node path and pass its path to --dsh:
@@ -633,6 +918,6 @@ pub(crate) fn help(scope: &str) -> String {
 "#
     };
     format!(
-        "drdsh {scope}\n\n{specific}  install --source <bundle-or-checkout> [--start] [--enable]\n      [--skip-build] [--build-profile release|debug]\n  update [--version <release-tag>]\n  start|stop|restart|status|enable|disable|uninstall\n  logs [--follow]\n\n  --prefix <path>   installation prefix (default ~/.local; saved by installed commands)\n\nNo service starts or gains login autostart unless requested. Updates preserve settings,\nkeys and the other component's process. PWA belongs to relay; plugin belongs to daemon.\nRelease installation and management do not need Node, pnpm or Rust. DSH itself needs Node.\n"
+        "drdsh {scope}\n\n{specific}  install --source <bundle-or-checkout> [--start] [--enable]\n      [--skip-build] [--build-profile release|debug] [--insecure | --no-insecure]\n  update [--version <release-tag>]\n  start|stop|restart|status|enable|disable|uninstall\n  status [--insecure | --no-insecure]\n  logs [--follow]\n\n  --insecure      skip HTTPS/WSS certificate trust, expiry and hostname checks\n  --no-insecure   restore certificate verification (the default)\n  install saves this choice for this component; status overrides it for one probe.\n  DRDSH_TLS_INSECURE=1 (skip) or 0 (verify) applies when no saved/CLI choice exists.\n  TLS encryption remains enabled; browsers, Node plugins and Release downloads are unaffected.\n  --prefix <path>   installation prefix (default ~/.local; saved by installed commands)\n\nNo service starts or gains login autostart unless requested. Updates preserve settings,\nkeys and the other component's process. PWA belongs to relay; daemon owns its plugin by default.\nRelease installation and management do not need Node, pnpm or Rust. DSH itself needs Node.\n"
     )
 }

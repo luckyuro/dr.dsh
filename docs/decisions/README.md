@@ -23,6 +23,13 @@
 | [0015](0015-independent-relay-and-daemon.md) | 组件独立管理 | Relay 与 Daemon 各自安装、配置、更新和卸载，保留共享源码和旧入口兼容 |
 | [0016](0016-native-relay-management.md) | Relay 原生管理与静态分发 | 服务器无需 Node 的本地离线包、独立 Rust 管理命令与 nginx 静态 PWA |
 | [0017](0017-multicall-release-packages.md) | 统一原生 CLI 与分组件 Release | 已接受 |
+| [0020](0020-plugin-realtime-notifications.md) | 插件实时通知 | 临时回环令牌、已鉴权隧道与有界页面通知；离线不保存、不推送 |
+| [0021](0021-bounded-relay-backpressure.md) | 中继有界背压 | 满队列等待下游，不丢密文帧；关闭信号独立于数据队列 |
+| [0022](0022-plugin-managed-daemon-foundation.md) | 插件管理 daemon 的基础 | 明确插件归属、结构化本机管理、独立实例锁与在线设备变更；保留原 CLI |
+| [0023](0023-plugin-local-management.md) | 插件页面与独立作业 | 单包 native、本机 capability、隧道路径隔离、OS 持久作业及首次安全接管；接续 0022 |
+| [0024](0024-embedded-harness-session-isolation.md) | 同页 Harness 与连接隔离 | iframe 保留隧道、按视图隔离 HTTP/WS、同房间单活连接与有序加密发送 |
+| [0025](0025-host-directory-browser.md) | 主机目录浏览 | 默认受管 DSH 以临时 overlay 使用内置 browse 组合，保留显式 profile 配置 |
+| [0026](0026-plugin-owned-tunnel.md) | 插件独立连接 | 插件持有原生隧道的生命周期；常驻 daemon 仅在需要监督 DSH 时启用 |
 
 ## 什么时候需要写一条新 ADR
 

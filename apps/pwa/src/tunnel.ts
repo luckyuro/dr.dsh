@@ -46,14 +46,13 @@ export const CONTROL_STREAM = 0;
 export const SESSION_ACK = 'k';
 
 /**
- * How long to wait after the acknowledgement for the daemon to say something about devices.
- *
- * The challenge and the acknowledgement are written back to back on one socket, so this only
- * has to cover one round trip plus scheduling. It is not a timeout for a remote operation: a
- * daemon that requires a device has already spoken by the time it elapses, and one that does
- * not is silent by design.
+ * Compatibility window for a room-key client whose daemon may not require an enrolled device.
+ * A client with a saved identity must never use silence as evidence that it was accepted.
  */
 const DEVICE_GRACE_MS = 250;
+
+/** Bounds the whole device exchange, including challenge delivery and asynchronous signing. */
+const DEVICE_AUTH_TIMEOUT_MS = 10_000;
 
 /** HKDF labels, matching `crates/dr-dsh-crypto`. */
 export const LABELS = {
@@ -130,6 +129,7 @@ export class Tunnel {
   private acknowledged = false;
   /** Whether the real session (derived from the exchanged salt) is installed. */
   private sessionReady = false;
+  private lastInboundAt = 0;
   /** The device this client claims to be, when it has one. */
   private identity: DeviceIdentity | null = null;
   /**
@@ -145,11 +145,8 @@ export class Tunnel {
   /**
    * Whether the daemon has accepted this client, or requires nothing of it.
    *
-   * Starts `false` and is settled by the device step, which every connection runs: the daemon
-   * either says something — an acceptance, a challenge, a refusal — or stays silent, and
-   * silence means it requires no device. Settling on *silence* rather than on "this client has
-   * no identity" is what keeps an unpaired client from being handed a tunnel the daemon has
-   * already refused; that bug shipped, and the test for it is in `device.test.ts`.
+   * Saved identities require an explicit acceptance. Only a client without an identity may
+   * use the legacy room-key policy's silence; a later challenge or refusal still ends it.
    */
   private deviceBound: boolean;
   /**
@@ -157,15 +154,15 @@ export class Tunnel {
    *
    * Distinct from {@link deviceBound}: the daemon may refuse a client that never had an
    * identity, and that refusal has to reach the caller. The step is open after the
-   * acknowledgement until either the daemon says something or the grace period passes.
+   * acknowledgement until acceptance, failure, or the room-key compatibility window passes.
    */
   private deviceStepOpen = false;
   /** Resolves or rejects the device-authentication step. */
   private deviceWaiter: Promise<void> = Promise.resolve();
   private acceptDevice: () => void = () => {};
   private refuseDevice: (error: Error) => void = () => {};
-  /** The timer that closes the device step when the daemon stays silent. */
-  private deviceGrace: ReturnType<typeof setTimeout> | null = null;
+  /** Fails a saved identity on timeout, or settles legacy room-key silence. */
+  private deviceTimer: ReturnType<typeof setTimeout> | null = null;
   /**
    * Frames that arrived before the session was installed.
    *
@@ -209,8 +206,7 @@ export class Tunnel {
     this.root = root;
     this.identity = identity;
     this.deviceStepEnabled = deviceStepEnabled;
-    // Every connection runs the device step. A daemon that requires nothing is silent, and the
-    // step's grace period is what turns that silence into an answer.
+    // Saved identities must be accepted by the daemon before this connection becomes usable.
     this.deviceBound = false;
     // A promise created with the tunnel rather than awaited after the handshake: a socket
     // that dies mid-handshake must reject it even though nobody has awaited it yet.
@@ -318,7 +314,12 @@ export class Tunnel {
 
   /** Whether the daemon has acknowledged the session. */
   public get isEstablished(): boolean {
-    return this.acknowledged;
+    return this.acknowledged && this.closedError === null;
+  }
+
+  /** Monotonic time of the latest authenticated, in-order frame, across all streams. */
+  public get lastAuthenticatedInboundAt(): number {
+    return this.lastInboundAt;
   }
 
   /**
@@ -329,31 +330,14 @@ export class Tunnel {
    * @throws TunnelError before the session is established, or when sealing fails.
    */
   public async send(streamId: number, plaintext: Uint8Array<ArrayBuffer>): Promise<void> {
-    if (this.sealKey === null) {
-      throw new TunnelError('the session is not established yet');
-    }
-    const counter = this.sealCounter;
-    this.sealCounter += 1;
-    const sealed = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: nonceBytes(counter), additionalData: additionalData(streamId, counter) },
-        this.sealKey,
-        plaintext,
-      ),
-    );
-    const body = new Uint8Array(8 + sealed.length);
-    new DataView(body.buffer).setBigUint64(0, BigInt(counter), false);
-    body.set(sealed, 8);
-    this.socket.send(carrier(streamId, body));
+    await this.sendSealed(streamId, plaintext);
   }
 
-  /** Closes the underlying socket. */
+  /** Ends this session immediately and closes the underlying socket. */
   public close(): void {
-    if (this.deviceGrace !== null) {
-      clearTimeout(this.deviceGrace);
-      this.deviceGrace = null;
-    }
-    this.socket.close();
+    // WebSocket's close event is asynchronous. Pending crypto and queued writes
+    // must see the terminal state before that event arrives.
+    this.fail(new TunnelError('the connection was closed locally; reconnect to continue'));
   }
 
   /** Performs the salt exchange and waits for the daemon's acknowledgement. */
@@ -393,18 +377,12 @@ export class Tunnel {
 
     await this.acknowledgedWaiter;
 
-    // A daemon that requires a device speaks immediately after its acknowledgement: with a
-    // challenge when this client has an identity to answer with, and with a refusal when it
-    // does not. A daemon that requires nothing stays silent.
-    //
-    // The wait is therefore driven by what actually arrived, not by whether this client holds
-    // an identity. Waiting whenever an identity exists hangs a client whose daemon never asks;
-    // waiting only when an identity exists hangs the opposite case — an *unpaired* client is
-    // refused, never told, and left staring at a tunnel it will never be allowed to use. The
-    // first of those was found by reading the code, the second by running it.
+    // Neither a delayed challenge nor a slow signature/acceptance can turn a saved identity
+    // into a room-key session. Its bounded waiter is settled only by acceptance or failure.
     if (!this.deviceBound) {
       await this.deviceWaiter;
     }
+    if (this.closedError !== null) throw this.closedError;
     // A device step that ended without the daemon accepting this client is a refusal, whether
     // it arrived as a message or as a closed socket. Returning here would hand the caller a
     // tunnel that reports itself established and then serves nothing — the failure mode this
@@ -414,27 +392,42 @@ export class Tunnel {
     }
   }
 
-  /** Seals with the current session and writes the frame. */
+  // WebCrypto completion order is not a wire-order guarantee. HTTP, control and
+  // interface sockets share one counter, so their writes must share one queue.
+  private sealing: Promise<void> = Promise.resolve();
+
+  /** Seals with the current session and writes the frame in counter order. */
   private async sendSealed(streamId: number, plaintext: Uint8Array<ArrayBuffer>): Promise<void> {
+    if (this.closedError !== null) throw this.closedError;
     const key = this.sealKey;
     if (key === null) throw new TunnelError('the session is not established yet');
     const counter = this.sealCounter;
     this.sealCounter += 1;
-    const sealed = new Uint8Array(
-      await crypto.subtle.encrypt(
-        { name: 'AES-GCM', iv: nonceBytes(counter), additionalData: additionalData(streamId, counter) },
-        key,
-        plaintext,
-      ),
-    );
-    const body = new Uint8Array(8 + sealed.length);
-    new DataView(body.buffer).setBigUint64(0, BigInt(counter), false);
-    body.set(sealed, 8);
-    this.socket.send(carrier(streamId, body));
+    const write = this.sealing.then(async () => {
+      if (this.closedError !== null) throw this.closedError;
+      const sealed = new Uint8Array(
+        await crypto.subtle.encrypt(
+          { name: 'AES-GCM', iv: nonceBytes(counter), additionalData: additionalData(streamId, counter) },
+          key,
+          plaintext,
+        ),
+      );
+      if (this.closedError !== null) throw this.closedError;
+      const body = new Uint8Array(8 + sealed.length);
+      new DataView(body.buffer).setBigUint64(0, BigInt(counter), false);
+      body.set(sealed, 8);
+      this.socket.send(carrier(streamId, body));
+    });
+    this.sealing = write.catch(error => {
+      // A skipped counter cannot be repaired on the same encrypted session.
+      this.fail(error instanceof Error ? error : new TunnelError('the browser could not send an encrypted frame'));
+    });
+    await write;
   }
 
   /** Opens one inbound frame and either resolves the handshake or dispatches it. */
   private absorb(frame: Uint8Array<ArrayBuffer>): void {
+    if (this.closedError !== null) return;
     if (!this.sessionReady) {
       this.deferred.push(frame);
       return;
@@ -459,15 +452,12 @@ export class Tunnel {
     // discarded link then rejects with nobody attached, which surfaces as an unhandled rejection
     // rather than as anything a caller can see.
     this.chain = this.chain
-      .then(
-        () => this.openFrame(frame),
-        // A previous failure must not stall the frames behind it; it is reported below.
-        () => this.openFrame(frame),
-      )
+      .then(() => this.openFrame(frame))
       .catch(error => this.fail(error as Error));
   }
 
   private async openFrame(frame: Uint8Array<ArrayBuffer>): Promise<void> {
+    if (this.closedError !== null) return;
     const { streamId, body } = parseCarrier(frame);
     const key = this.openKey;
     if (key === null) throw new TunnelError('a frame arrived before the session existed');
@@ -490,7 +480,9 @@ export class Tunnel {
     } catch {
       throw new TunnelError('a frame failed authentication');
     }
+    if (this.closedError !== null) return;
     this.openCounter += 1;
+    this.lastInboundAt = performance.now();
 
     if (!this.acknowledged && streamId === CONTROL_STREAM && isAck(plaintext)) {
       this.acknowledged = true;
@@ -502,36 +494,34 @@ export class Tunnel {
         this.deviceBound = true;
         return;
       }
-      // The device step opens here and is settled by whatever comes next. The grace period is
-      // short because these messages arrive back to back on one socket: a daemon that meant to
-      // say something has already said it by the time a round trip has passed, and one that
-      // stays silent has nothing to say.
       this.deviceStepOpen = true;
-      this.deviceGrace = setTimeout(() => {
-        // Silence: this daemon requires no device, so the client is bound as far as it can tell
-        // — and it will find out otherwise on the first request it sends.
-        this.settleDevice(true);
-      }, DEVICE_GRACE_MS);
+      this.deviceTimer = this.identity === null
+        ? setTimeout(() => this.settleDevice(true), DEVICE_GRACE_MS)
+        : setTimeout(() => this.fail(new TunnelError(
+          'the daemon did not accept this paired device within 10000ms; reconnect and check the daemon connection',
+        )), DEVICE_AUTH_TIMEOUT_MS);
       return;
     }
-    // The device step owns the control stream until it is done: a challenge, an acceptance and
-    // a refusal are all messages no subscriber asked for, and handing them to one would look
-    // to that subscriber like a malformed proxy reply.
-    if (streamId === CONTROL_STREAM && this.deviceStepOpen) {
-      void this.handleDeviceMessage(plaintext).catch(error => {
-        this.deviceBound = false;
-        this.refuseDevice(error as Error);
-        this.fail(error as Error);
-      });
-      return;
+    if (streamId === CONTROL_STREAM && this.deviceStepEnabled) {
+      let message: unknown;
+      try { message = JSON.parse(new TextDecoder().decode(plaintext)); }
+      catch {
+        if (this.deviceStepOpen) throw new TunnelError('the daemon sent invalid JSON during device authentication');
+      }
+      const type = (message as { type?: unknown } | null)?.type;
+      // Authentication verdicts must not disappear into a request/reply subscriber after the
+      // room-key compatibility window. Pairing disables this branch so PAKE bytes pass intact.
+      if (this.deviceStepOpen || type === RESUME.challenge || type === RESUME.accept || type === RESUME.refuse) {
+        await this.handleDeviceMessage(message);
+        return;
+      }
     }
     this.dispatch({ streamId, payload: plaintext });
   }
 
   /** Answers a challenge, or records the daemon's verdict. */
-  private async handleDeviceMessage(plaintext: Uint8Array<ArrayBuffer>): Promise<void> {
-    const message: unknown = JSON.parse(new TextDecoder().decode(plaintext));
-    const type = (message as { type?: unknown }).type;
+  private async handleDeviceMessage(message: unknown): Promise<void> {
+    const type = (message as { type?: unknown } | null)?.type;
     if (type === RESUME.accept) {
       this.settleDevice(true);
       return;
@@ -556,9 +546,6 @@ export class Tunnel {
     }
 
     const identity = this.identity;
-    if (identity === null) {
-      throw new TunnelError('the daemon asked for a device this client does not have');
-    }
     const nonce = (message as { nonce?: unknown }).nonce;
     if (typeof nonce !== 'string') {
       throw new TunnelError('the challenge carried no nonce');
@@ -585,9 +572,10 @@ export class Tunnel {
 
   /** Ends the device step, once, with the daemon's verdict. */
   private settleDevice(bound: boolean): void {
-    if (this.deviceGrace !== null) {
-      clearTimeout(this.deviceGrace);
-      this.deviceGrace = null;
+    if (this.closedError !== null) return;
+    if (this.deviceTimer !== null) {
+      clearTimeout(this.deviceTimer);
+      this.deviceTimer = null;
     }
     this.deviceStepOpen = false;
     this.deviceBound = bound;
@@ -662,20 +650,27 @@ export class Tunnel {
 
   /** Marks the tunnel dead and ends the handshake if it was still running. */
   private fail(error: Error): void {
-    // Told once: a tunnel that fails twice is one failure, and a panel that redrew on every
-    // notification would report a count rather than a state.
-    const wasAlive = this.acknowledged && this.closedError === null;
-    if (wasAlive) {
-      for (const handler of [...this.closedHandlers]) handler(error.message);
-    }
+    if (this.closedError !== null) return;
+    // Record the cause before closing or notifying: either callback may synchronously
+    // re-enter here, and a later socket close must not replace the protocol failure.
+    const wasAlive = this.acknowledged;
     this.closedError = error;
     this.failHandshake(error);
     // A socket that dies during the device step is a refusal this client never got to read.
     // Without this the step stays open forever and the handshake waits for a message that
     // cannot arrive, because the connection that would carry it is already gone.
-    if (this.deviceStepOpen) {
-      this.deviceStepOpen = false;
-      this.refuseDevice(error);
+    this.deviceStepOpen = false;
+    this.deviceBound = false;
+    this.refuseDevice(error);
+    this.deferred.length = 0;
+    this.pending.length = 0;
+    if (this.deviceTimer !== null) {
+      clearTimeout(this.deviceTimer);
+      this.deviceTimer = null;
+    }
+    this.socket.close();
+    if (wasAlive) {
+      for (const handler of [...this.closedHandlers]) handler(error.message);
     }
     for (const streamId of [...this.listeners.keys()]) {
       this.dispatch({ streamId, payload: new Uint8Array(0) });
@@ -781,10 +776,11 @@ export function parseCarrier(
   const major = view.getUint16(2, false);
   if (major !== WIRE_VERSION[0]) throw new TunnelError(`the peer speaks wire ${major}, this client speaks ${WIRE_VERSION[0]}`);
   const type = view.getUint16(6, false);
-  if (type !== 0x10) throw new TunnelError('a non-data frame arrived on a data stream');
   const declared = view.getUint32(14, false);
   if (declared > MAX_PAYLOAD_LEN) throw new TunnelError('a frame declares more than one frame may carry');
   if (frame.length !== FRAME_HEADER_LEN + declared) throw new TunnelError('a frame does not match its declared length');
+  if (type === 0x7f) throw new TunnelError(() => t('error.tunnelEnded'));
+  if (type !== 0x10) throw new TunnelError('a non-data frame arrived on a data stream');
   // `slice` rather than `subarray`: it returns a fresh view over an `ArrayBuffer`, which is
   // what WebCrypto's `BufferSource` accepts.
   return { streamId: view.getUint32(10, false), body: frame.slice(FRAME_HEADER_LEN) };

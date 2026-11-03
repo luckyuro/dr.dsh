@@ -21,22 +21,43 @@
 
 import { t } from './i18n.ts';
 
-/** Refresh the shell and its translations together for already-installed clients. */
-export const OFFLINE_CACHE = 'dr.dsh-client-v3';
+/** Bump for every client release: one cache contains one complete module graph. */
+export const OFFLINE_CACHE = 'dr.dsh-client-v14';
 
 /**
  * The paths cached at install time rather than on first use.
  *
- * The shell and the modules it imports statically are here because they are what a *reload* needs:
- * without `/` there is no page, and without `shell.js` there is no code to explain the state. The
- * rest of the client is cached as it is fetched, which is what makes the second visit work offline
- * even though the first one never asked for every module.
+ * Dynamic imports and their dependencies belong to the same release as the shell. Caching only the
+ * entry points lets a first connection combine new markup with old control or tunnel modules.
  */
 export const PRECACHE_PATHS: readonly string[] = [
   '/',
   '/client/shell.js',
+  '/client/session.js',
+  '/client/tunnel.js',
+  '/client/control.js',
+  '/client/panel.js',
+  '/client/pair.js',
+  '/client/pairing.js',
+  '/client/identity.js',
+  '/client/storage.js',
+  '/client/credential.js',
+  '/client/health.js',
+  '/client/ed25519.js',
+  '/client/spake2.js',
+  '/client/officer.js',
+  '/client/proxy.js',
+  '/client/websocket.js',
+  '/client/worker-service.js',
+  '/client/service-worker.js',
+  '/client/ws-bootstrap.js',
   '/client/i18n.js',
   '/client/offline.js',
+  '/client/routing.js',
+  '/client/interface-bridge.js',
+  '/client/floating-control.js',
+  '/client/proxy-stream.js',
+  '/client/notifications.js',
   '/client/manifest.webmanifest',
   '/client/icon-192.png',
   '/client/icon-512.png',

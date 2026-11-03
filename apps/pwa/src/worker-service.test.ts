@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, test } from 'node:test';
 
-import { WorkerTunnel, offlineResponse, toOutbound, toResponse, type Inbound } from './worker-service.ts';
+import { WorkerTunnel, WorkerViews, injectWebSocketBootstrap, offlineResponse, toOutbound, toResponse, type Inbound } from './worker-service.ts';
 
 /** A page end of the channel, playing the daemon-proxy side. */
 function pageEnd(port: MessagePort, answer: (request: Record<string, unknown>) => Inbound | Promise<Inbound>) {
@@ -147,6 +147,113 @@ test('attaching a new tunnel replaces the old one', async () => {
   assert.equal(answer.status, 204, 'the new tunnel answers');
 });
 
+test('replacing a port rejects its pending requests before accepting the new page', async () => {
+  const { service } = channel();
+  const pending = service.fetch({ method: 'GET', path: '/slow', headers: [], body: new Uint8Array(0) });
+  const rejected = assert.rejects(pending, /detached/);
+  const replacement = new MessageChannel();
+  channels.push(replacement);
+  service.attach(replacement.port1);
+  await rejected;
+  pageEnd(replacement.port2, request => ({ kind: 'response', id: request.id as number, status: 204, headers: [], body: new ArrayBuffer(0) }));
+  assert.equal((await service.fetch({ method: 'GET', path: '/new', headers: [], body: new Uint8Array(0) })).status, 204);
+});
+
+const VIEW_A = '11111111-1111-4111-8111-111111111111';
+const VIEW_B = '22222222-2222-4222-8222-222222222222';
+const VIEW_C = '33333333-3333-4333-8333-333333333333';
+
+function attachView(views: WorkerViews, owner: string, viewId: string, status: number): void {
+  const pair = new MessageChannel();
+  channels.push(pair);
+  views.attach(owner, viewId, pair.port1);
+  pageEnd(pair.port2, request => ({ kind: 'response', id: request.id as number, status, headers: [], body: new ArrayBuffer(0) }));
+}
+
+test('two parent pages route HTTP to their own rooms through document navigation and pushState', async () => {
+  const views = new WorkerViews();
+  attachView(views, 'shell-a', VIEW_A, 201);
+  attachView(views, 'shell-b', VIEW_B, 202);
+  for (const [owner, child, viewId] of [['shell-a', 'frame-a', VIEW_A], ['shell-b', 'frame-b', VIEW_B]]) {
+    views.route({ clientId: owner!, requestUrl: `https://relay.example/__dr/interface?drdshView=${viewId}`, resultingClientId: child! });
+  }
+  const a = views.route({ clientId: 'frame-a', clientUrl: 'https://relay.example/sessions/one', requestUrl: 'https://relay.example/api/state' });
+  const b = views.route({ clientId: 'frame-b', clientUrl: 'https://relay.example/sessions/two', requestUrl: 'https://relay.example/api/state' });
+  const request = { method: 'GET', path: '/api/state', headers: [], body: new Uint8Array(0) };
+  assert.equal((await a.tunnel.fetch(request)).status, 201);
+  assert.equal((await b.tunnel.fetch(request)).status, 202);
+  views.route({ clientId: 'frame-a', requestUrl: 'https://relay.example/', resultingClientId: 'frame-a-after-navigation' });
+  assert.equal(views.route({ clientId: 'frame-a-after-navigation', requestUrl: 'https://relay.example/api/state' }).viewId, VIEW_A);
+  assert.throws(() => views.route({ clientId: 'unrelated', requestUrl: 'https://relay.example/api/state' }), /no connected parent/);
+});
+
+test('room replacement removes old document routes without stealing another parent or document', () => {
+  const views = new WorkerViews();
+  attachView(views, 'shell-a', VIEW_A, 201);
+  attachView(views, 'shell-b', VIEW_B, 202);
+  views.bind('frame-a', VIEW_A);
+  views.bind('frame-b', VIEW_B);
+  assert.throws(() => views.bind('frame-a', VIEW_B), /another interface/);
+  assert.throws(() => views.route({ clientId: 'shell-a', requestUrl: `https://relay.example/__dr/interface?drdshView=${VIEW_B}` }), /another page/);
+  const intruder = new MessageChannel();
+  channels.push(intruder);
+  assert.throws(() => views.attach('shell-b', VIEW_A, intruder.port1), /another page/);
+  attachView(views, 'shell-a', VIEW_C, 203);
+  assert.throws(() => views.route({ clientId: 'frame-a', requestUrl: 'https://relay.example/api/state' }), /no connected parent/);
+  assert.equal(views.route({ clientId: 'frame-b', requestUrl: 'https://relay.example/api/state' }).viewId, VIEW_B);
+  views.detach('shell-a', VIEW_B);
+  assert.equal(views.route({ clientId: 'frame-b', requestUrl: 'https://relay.example/api/state' }).viewId, VIEW_B);
+});
+
+test('a restarted worker requires a registered owner and can rebind a document whose URL lost its view query', () => {
+  const views = new WorkerViews();
+  assert.throws(() => views.bind('frame-a', VIEW_A), /not ready/);
+  attachView(views, 'shell-a', VIEW_A, 201);
+  assert.throws(() => views.route({ clientId: 'frame-a', clientUrl: 'https://relay.example/sessions/one', requestUrl: 'https://relay.example/api/state' }), /no connected parent/);
+  views.bind('frame-a', VIEW_A);
+  assert.equal(views.route({ clientId: 'frame-a', clientUrl: 'https://relay.example/sessions/one', requestUrl: 'https://relay.example/api/state' }).viewId, VIEW_A);
+});
+
+test('cold worker recovery waits for the original document without routing through another restored room', async () => {
+  const views = new WorkerViews();
+  let resolved = false;
+  const waiting = views.waitForRoute({ clientId: 'frame-a', clientUrl: 'https://relay.example/sessions/one', requestUrl: 'https://relay.example/api/state' });
+  void waiting.then(() => { resolved = true; });
+  attachView(views, 'shell-b', VIEW_B, 202);
+  views.bind('frame-b', VIEW_B);
+  attachView(views, 'shell-a', VIEW_A, 201);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  assert.equal(resolved, false, 'restoring the parent alone cannot guess which document it owns');
+  views.bind('frame-a', VIEW_A);
+  const route = await waiting;
+  assert.equal(route.viewId, VIEW_A);
+  assert.equal((await route.tunnel.fetch({ method: 'GET', path: '/api/state', headers: [], body: new Uint8Array(0) })).status, 201);
+  assert.equal(views.route({ clientId: 'frame-b', requestUrl: 'https://relay.example/api/state' }).viewId, VIEW_B);
+});
+
+test('cold worker recovery is bounded when no original parent can restore the document', async () => {
+  const views = new WorkerViews();
+  attachView(views, 'unrelated-shell', VIEW_B, 202);
+  await assert.rejects(views.waitForRoute({ clientId: 'missing', requestUrl: 'https://relay.example/api/state' }, 10), /could not be restored/);
+});
+
+test('retiring a worker ends long responses and restoration waits without allowing its routes to restart', async () => {
+  const views = new WorkerViews();
+  const pair = new MessageChannel();
+  channels.push(pair);
+  views.attach('shell-a', VIEW_A, pair.port1);
+  const route = views.route({ clientId: 'shell-a', requestUrl: 'https://relay.example/events' });
+  const response = assert.rejects(route.tunnel.fetch({ method: 'GET', path: '/events', headers: [], body: new Uint8Array(0) }), /detached/);
+  const restoring = assert.rejects(views.waitForRoute({ clientId: 'missing', requestUrl: 'https://relay.example/api/state' }), /worker is updating/);
+  views.retire();
+  await Promise.all([response, restoring]);
+  assert.equal(views.isRetired, true);
+  assert.throws(() => views.route({ clientId: 'shell-a', requestUrl: 'https://relay.example/' }), /worker is updating/);
+  assert.throws(() => views.attach('shell-a', VIEW_A, pair.port1), /worker is updating/);
+  assert.throws(() => views.bind('frame-a', VIEW_A), /worker is updating/);
+  views.retire();
+});
+
 test('detaching fails what is in flight rather than leaving it pending', async () => {
   const { service, page } = channel();
   // A page that never answers.
@@ -209,6 +316,19 @@ test('a GET carries no body even when the browser would allow one', async () => 
   const request = new Request('https://relay.example/', { method: 'GET' });
   const outbound = await toOutbound(request, 'https://relay.example');
   assert.equal(outbound.body.length, 0);
+});
+
+test('view routing stays out of DSH queries and is injected only into an interface document', async () => {
+  const request = new Request(`https://relay.example/__dr/interface?drdshView=${VIEW_A}&mode=web`);
+  assert.equal((await toOutbound(request, 'https://relay.example')).path, '/?mode=web');
+  const html = new TextEncoder().encode('<html><head><script>boot()</script></head></html>');
+  const embedded = new TextDecoder().decode(injectWebSocketBootstrap(html, 'text/html', true, VIEW_A));
+  assert.match(embedded, new RegExp(`data-drdsh-view="${VIEW_A}"`));
+  assert.ok(embedded.indexOf('/client/ws-bootstrap.js') < embedded.indexOf('boot()'));
+  assert.deepEqual(injectWebSocketBootstrap(html, 'text/html', false, VIEW_A), html);
+  const response = toResponse({ status: 200, headers: [['x-frame-options', 'SAMEORIGIN'], ['content-security-policy', "frame-ancestors 'self'"]], body: html });
+  assert.equal(response.headers.get('x-frame-options'), 'SAMEORIGIN');
+  assert.equal(response.headers.get('content-security-policy'), "frame-ancestors 'self'");
 });
 
 test('a request for another origin is refused', async () => {

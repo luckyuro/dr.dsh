@@ -21,6 +21,13 @@
 
 import { createHash, createHmac, randomBytes } from 'node:crypto';
 import { createServer } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
+import { readFileSync } from 'node:fs';
+
+if (process.argv.includes('--dump-config')) {
+  console.log('[]');
+  process.exit(0);
+}
 
 const port = Number(process.argv[2] ?? '0');
 const token = randomBytes(32).toString('base64url');
@@ -63,7 +70,12 @@ const isLoopbackAuthority = authority =>
 
 let redeemed = 0;
 
-const server = createServer((request, response) => {
+const secure = process.env.FAKE_DSH_TLS_CERT !== undefined;
+const makeServer = secure ? handler => createHttpsServer({
+  cert: readFileSync(process.env.FAKE_DSH_TLS_CERT),
+  key: readFileSync(process.env.FAKE_DSH_TLS_KEY),
+}, handler) : createServer;
+const server = makeServer((request, response) => {
   const url = new URL(request.url ?? '/', 'http://fake-dsh.invalid');
   const authority = request.headers.host ?? '';
   const send = (status, body, headers = {}) => {
@@ -100,9 +112,22 @@ const server = createServer((request, response) => {
   send(404, 'not found\n');
 });
 
+server.on('upgrade', (request, socket) => {
+  if (!authenticated(request) || !isLoopbackAuthority(request.headers.host)
+      || request.headers.origin !== `${secure ? 'https' : 'http'}://${request.headers.host}`) {
+    socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  const accept = createHash('sha1').update(`${request.headers['sec-websocket-key']}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest('base64');
+  socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
+  const payload = Buffer.from('TLS websocket fixture');
+  socket.write(Buffer.concat([Buffer.from([0x81, payload.length]), payload]));
+  socket.on('error', () => {});
+});
+
 server.listen(port, '127.0.0.1', () => {
   const bound = server.address().port;
-  console.log(`dsh web: http://127.0.0.1:${bound}/?token=${token}`);
+  console.log(`dsh web: ${secure ? 'https' : 'http'}://127.0.0.1:${bound}/?token=${token}`);
 });
 
 for (const signal of ['SIGTERM', 'SIGINT']) {

@@ -2,9 +2,10 @@
  * dr.dsh — the DSH-side bundle.
  *
  * This plugin is the *only* DSH-aware TypeScript in the project, and it is
- * deliberately small. Its job is to listen to harness events in-process and hand
- * them to the local daemon over loopback HTTP. It does not encrypt, does not
- * proxy, and does not manage DSH's lifecycle: the daemon owns all of that.
+ * deliberately small. It reports harness events and provides a locally
+ * authorized management page. With relayUrl it owns a scoped native tunnel;
+ * an optional daemon service provides lifecycle supervision. Host-disrupting
+ * management uses OS jobs.
  *
  * ## Why a plugin is needed at all
  *
@@ -29,8 +30,10 @@
  * @module @dr.dsh/dsh-plugin
  */
 
-import { assertSupportedSurface, type DshContextLike } from './dsh-surface.ts';
-import { Reporter, type ReporterConfig } from './reporter.ts';
+import { assertSupportedSurface, watchManagementSurface, type DshContextLike } from './dsh-surface.ts';
+import { mountManagementPage } from './management-web.ts';
+import { mountPluginTunnel, relayOrigin } from './companion.ts';
+import { Reporter } from './reporter.ts';
 
 /** Stable Cordis plugin name; matches the row id in `cordis.patch.yml`. */
 export const name = 'dr.dsh';
@@ -38,15 +41,16 @@ export const name = 'dr.dsh';
 /**
  * Services this plugin requires before `apply` runs.
  *
- * Empty on purpose for M0: reporting works from a plain context. When the
- * plugin grows the lifecycle-control route it will inject `webServer`, and when
- * it reports session details it will inject `sessions`.
+ * Reporting works from a plain context. Management injects its optional Web
+ * services in an isolated child so an unavailable page cannot disable reports.
  */
 export const inject: readonly string[] = [];
 
 /** Plugin configuration, validated in `apply` without a schema dependency yet. */
 export interface Config {
-  /** Loopback URL of the local daemon's report endpoint. */
+  /** Start a plugin-owned native tunnel without installing a daemon service. */
+  relayUrl?: string;
+  /** Legacy profile field; the supervising daemon's DRDSH_REPORT_URL takes precedence. */
   daemonUrl: string;
   /** Which event kinds to report; notifications not listed here are dropped. */
   report: readonly string[];
@@ -67,9 +71,43 @@ const DEFAULTS: Config = {
 export function apply(ctx: DshContextLike, config: Partial<Config> = {}): void {
   const resolved: Config = { ...DEFAULTS, ...config };
   assertSupportedSurface(ctx);
+  const daemonUrl = process.env['DRDSH_REPORT_URL'];
+  const daemonToken = process.env['DRDSH_REPORT_TOKEN'];
+  const supervised = daemonUrl !== undefined || daemonToken !== undefined;
+  const standaloneRelay = !supervised && !process.env.DRDSH_MANAGED_INSTANCE && resolved.relayUrl !== undefined
+    ? relayOrigin(resolved.relayUrl) : undefined;
+  const events = ['turn_complete', 'approval_requested', 'goal_complete', 'subagent_complete'];
+  if (!Array.isArray(resolved.report) || resolved.report.some(event => !events.includes(event))) {
+    throw new Error('dr.dsh: unknown report event; configure only turn_complete, approval_requested, goal_complete or subagent_complete');
+  }
+  ctx.effect(() => watchManagementSurface(ctx, surface => {
+    let cancelled = false;
+    let dispose: (() => void) | undefined;
+    const stopTunnel = standaloneRelay === undefined ? undefined
+      : mountPluginTunnel(ctx, surface, { relayUrl: standaloneRelay, report: resolved.report });
+    void mountManagementPage(surface).then(stop => {
+      if (cancelled) stop();
+      else dispose = stop;
+    }).catch(() => {
+      // Native errors may contain local process arguments, including credentials.
+      console.error('dr.dsh: local management page could not start; check plugin compatibility and private storage permissions. Reporting remains available.');
+    });
+    return async () => { cancelled = true; dispose?.(); await stopTunnel?.(); };
+  }, () => {
+    console.error(standaloneRelay === undefined
+      ? 'dr.dsh: this DSH host does not provide the supported management surface. Reporting remains available.'
+      : 'dr.dsh: this DSH host lacks the Web services required for plugin relay access and local management; install a DSH version supported by this plugin.');
+  }), 'dr.dsh: local management');
+  // The supervisor's ephemeral receiver wins over profile relayUrl so a managed
+  // host never starts a second room or a competing DSH proxy.
+  if (!supervised) return;
+  if (!daemonUrl || !daemonToken || !/^[A-Za-z0-9_-]{43}$/.test(daemonToken)) {
+    throw new Error('dr.dsh: incomplete report credentials; restart DSH through drdsh daemon with plugin reports enabled');
+  }
+  resolved.daemonUrl = daemonUrl;
   assertLoopback(resolved.daemonUrl);
 
-  const reporter = new Reporter(resolved as ReporterConfig);
+  const reporter = new Reporter({ ...resolved, daemonToken });
   // `ctx.effect` (not a bare subscription) so a plugin reload disposes the
   // reporter instead of stacking a second one — DSH reloads plugin trees during
   // development and duplicated reporters would double every notification.
@@ -93,12 +131,16 @@ export function apply(ctx: DshContextLike, config: Partial<Config> = {}): void {
  * @throws Error when the URL is not loopback, or is not a URL at all.
  */
 export function assertLoopback(daemonUrl: string): void {
-  let host: string;
+  let url: URL;
   try {
-    host = new URL(daemonUrl).hostname;
+    url = new URL(daemonUrl);
   } catch {
-    throw new Error(`dr.dsh: daemonUrl is not a URL: ${JSON.stringify(daemonUrl)}`);
+    throw new Error('dr.dsh: daemonUrl is not a URL; use an HTTP or HTTPS loopback origin');
   }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
+    throw new Error('dr.dsh: daemonUrl must use HTTP or HTTPS without URL credentials');
+  }
+  const host = url.hostname;
   const loopback = host === 'localhost' || host === '[::1]' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
   if (!loopback) {
     throw new Error(

@@ -14,75 +14,9 @@
 
 import { t, getLocale, setLocale, readLocale, saveLocale, displayText, errorText, LocalizedError } from './i18n.js';
 import { offlineNotice } from './offline.js';
-
-/**
- * Answers the interface's WebSockets over the tunnel.
- *
- * The interface page cannot reach the tunnel and the service worker cannot intercept a WebSocket
- * upgrade, so the page that owns the tunnel does the carrying. This is the receiving end of
- * `/client/ws-bootstrap.js`: same-origin, no globals shared with DSH's page, and the tunnel itself
- * never leaves this page.
- *
- * @param tunnel - the live tunnel.
- * @param codec - the proxy plane's encoders and decoder, passed in rather than imported: this
- *   script is plain JavaScript served as-is, so a top-level `import` would make it a module the
- *   TypeScript build has to type-check, and the codec is the one part of it worth type-checking.
- */
-function serveInterfaceSockets(tunnel, codec) {
-  const { decodeMessage, encodeWsData, encodeWsOpen } = codec;
-  const channel = new BroadcastChannel('dr-dsh-websocket');
-  // One stream per socket. The daemon's proxy plane correlates frames by the id inside the
-  // message, so the two are kept equal here to leave no room for them to disagree.
-  const sockets = new Map();
-  let nextStream = 100;
-
-  channel.onmessage = event => {
-    const message = event.data;
-    if (message === null || typeof message !== 'object') return;
-
-    if (message.kind === 'open') {
-      const streamId = nextStream;
-      nextStream += 1;
-      const stop = tunnel.on(streamId, payload => {
-        const decoded = decodeMessage(payload);
-        if (decoded === undefined) return;
-        if (decoded.kind === 'wsOpened') {
-          channel.postMessage({ kind: 'opened', id: message.id, status: decoded.status });
-        } else if (decoded.kind === 'wsData') {
-          const frame = decoded.frame;
-          if (frame.kind === 'close') {
-            channel.postMessage({ kind: 'closed', id: message.id, code: 1000, reason: '' });
-            stop();
-            sockets.delete(message.id);
-          } else {
-            channel.postMessage({ kind: 'data', id: message.id, text: frame.text });
-          }
-        } else if (decoded.kind === 'failure') {
-          channel.postMessage({ kind: 'closed', id: message.id, code: 1006, reason: decoded.reason });
-          stop();
-          sockets.delete(message.id);
-        }
-      });
-      sockets.set(message.id, { streamId, stop });
-      void tunnel.send(streamId, encodeWsOpen(message.id, message.target)).catch(error => {
-        channel.postMessage({ kind: 'closed', id: message.id, code: 1006, reason: String(error) });
-      });
-      return;
-    }
-
-    const socket = sockets.get(message.id);
-    if (socket === undefined) return;
-    if (message.kind === 'send') {
-      void tunnel.send(socket.streamId, encodeWsData(message.id, { kind: 'text', text: message.text }));
-      return;
-    }
-    if (message.kind === 'close') {
-      void tunnel.send(socket.streamId, encodeWsData(message.id, { kind: 'close' }));
-      socket.stop();
-      sockets.delete(message.id);
-    }
-  };
-}
+import { interfacePort, serveInterfacePort } from './interface-bridge.js';
+import { NotificationFeed, notificationTitle } from './notifications.js';
+import { installFloatingControl } from './floating-control.js';
 
 const state = document.getElementById('state');
 const connect = document.getElementById('connect');
@@ -98,7 +32,50 @@ const headline = document.getElementById('headline');
 const detail = document.getElementById('detail');
 const actions = document.getElementById('actions');
 const openButton = document.getElementById('open');
+const connectionManager = document.getElementById('connection-manager');
+const harnessView = document.getElementById('harness-view');
+const harnessFrame = document.getElementById('harness-frame');
+const returnToConnection = document.getElementById('return-to-connection');
+const connectionDialog = document.getElementById('connection-dialog');
+const dialogContent = document.getElementById('connection-dialog-content');
+const closeControls = document.getElementById('close-controls');
+const floatingControl = installFloatingControl(returnToConnection);
+const reloadHarness = document.getElementById('reload-harness');
+const disconnect = document.getElementById('disconnect');
 const languageButton = document.getElementById('language');
+const notificationsSection = document.getElementById('notifications');
+const notificationBadge = document.getElementById('notification-badge');
+const notificationAlert = document.getElementById('notification-alert');
+const notificationList = document.getElementById('notification-list');
+const notificationEmpty = document.getElementById('notification-empty');
+const notificationRead = document.getElementById('notification-read');
+const notificationFeed = new NotificationFeed(renderNotifications);
+
+function renderNotifications(view) {
+  notificationsSection.hidden = !view.connected;
+  notificationBadge.hidden = view.unread === 0;
+  notificationBadge.textContent = view.unread === 0 ? '' : t('notification.unread', { count: view.unread });
+  notificationRead.disabled = view.unread === 0;
+  notificationEmpty.hidden = view.entries.length !== 0;
+  const alert = view.alert === null ? '' : notificationTitle(view.alert);
+  if (notificationAlert.textContent !== alert) notificationAlert.textContent = alert;
+  notificationAlert.hidden = view.alert === null;
+  notificationList.replaceChildren(...view.entries.map(({ notification }) => {
+    const item = document.createElement('li');
+    item.dataset.severity = notification.severity;
+    const title = document.createElement('span');
+    title.textContent = notificationTitle(notification);
+    const metadata = document.createElement('small');
+    const time = document.createElement('time');
+    time.dateTime = new Date(notification.atMs).toISOString();
+    time.textContent = new Intl.DateTimeFormat(getLocale(), { dateStyle: 'short', timeStyle: 'medium' }).format(notification.atMs);
+    metadata.append(document.createTextNode(`${t(`notification.severity.${notification.severity}`)} · `), time);
+    item.append(title, metadata);
+    return item;
+  }));
+}
+
+notificationRead.addEventListener('click', () => notificationFeed.markRead());
 
 setLocale(readLocale(() => localStorage, navigator.languages?.length ? navigator.languages : [navigator.language]));
 let stateMessage = '';
@@ -116,6 +93,10 @@ function renderStaticText(element, message) {
 
 function renderLanguage() {
   document.documentElement.lang = getLocale();
+  harnessFrame.title = t('page.frameTitle');
+  returnToConnection.setAttribute('aria-label', t('page.returnToConnection'));
+  returnToConnection.title = t('page.controlInstructions');
+  closeControls.setAttribute('aria-label', t('page.closeControls'));
   for (const element of document.querySelectorAll('[data-i18n]')) {
     renderStaticText(element, t(element.dataset.i18n));
   }
@@ -130,6 +111,7 @@ function renderLanguage() {
   renderDevice();
   state.textContent = displayText(stateMessage);
   if (!panel.hidden) activePanel?.draw();
+  notificationFeed.draw();
 }
 
 languageButton.addEventListener('click', () => {
@@ -179,12 +161,11 @@ function browserLabel() {
 let client = null;
 async function loadClient() {
   if (client === null) {
-    const [session, panelModule, controlModule, proxyCodec, pairing, identity, storage, credential, healthModule] =
+    const [session, panelModule, controlModule, pairing, identity, storage, credential, healthModule] =
       await Promise.all([
         import('/client/session.js'),
         import('/client/panel.js'),
         import('/client/control.js'),
-        import('/client/proxy.js'),
         import('/client/pair.js'),
         import('/client/identity.js'),
         import('/client/storage.js'),
@@ -199,7 +180,6 @@ async function loadClient() {
       session,
       panelModule,
       controlModule,
-      proxyCodec,
       pairing,
       identity,
       storage,
@@ -266,6 +246,7 @@ function renderRooms() {
     choose.textContent = room.room === selectedRoom?.room ? `• ${room.label}` : room.label;
     choose.disabled = room.room === selectedRoom?.room;
     choose.addEventListener('click', () => {
+      clearConnection();
       selectedRoom = room;
       renderRooms();
       show('idle', () => t('room.selected', { label: room.label }));
@@ -295,6 +276,7 @@ async function forgetRoom(room) {
   try {
     const deviceId = device?.deviceId ?? '<id>';
     await store?.forget(room.room);
+    if (selectedRoom?.room === room.room) clearConnection();
     rooms = rooms.filter(candidate => candidate.room !== room.room);
     if (selectedRoom?.room === room.room) selectedRoom = rooms[0] ?? null;
     renderDevice();
@@ -334,6 +316,99 @@ let failuresReported = false;
  * connection attempt has an outcome, and that is a different call stack from the one that created it.
  */
 let control = null;
+let activeTunnel = null;
+let interfaceBridge = null;
+let activeViewId = null;
+let interfaceUrl = null;
+let interfaceAvailable = false;
+let preferManager = false;
+let hasEnteredHarness = false;
+
+function dismissConnectionManager() {
+  preferManager = false;
+  if (connectionDialog.open) connectionDialog.close();
+  returnToConnection.setAttribute('aria-expanded', 'false');
+}
+
+function showConnectionManager(byUser = false) {
+  if (byUser) preferManager = true;
+  connectionManager.hidden = false;
+  if (hasEnteredHarness) {
+    // The same form and listeners move into the dialog; the iframe stays mounted and connected.
+    if (connectionManager.parentElement !== dialogContent) dialogContent.append(connectionManager);
+    returnToConnection.hidden = false;
+    returnToConnection.setAttribute('aria-expanded', 'true');
+    if (!connectionDialog.open) {
+      connectionDialog.showModal();
+      closeControls.focus({ preventScroll: true });
+      connectionDialog.scrollTop = 0;
+    }
+  } else {
+    harnessView.hidden = true;
+    document.body.classList.remove('embedded');
+  }
+}
+
+function showHarness() {
+  if (!interfaceAvailable || interfaceUrl === null || activeTunnel === null) return;
+  hasEnteredHarness = true;
+  if (connectionManager.parentElement !== dialogContent) dialogContent.append(connectionManager);
+  connectionManager.hidden = false;
+  dismissConnectionManager();
+  if (harnessFrame.getAttribute('src') !== interfaceUrl) harnessFrame.src = interfaceUrl;
+  harnessView.hidden = false;
+  returnToConnection.hidden = false;
+  document.body.classList.add('embedded');
+  floatingControl.refresh();
+}
+
+window.addEventListener('message', event => {
+  if (activeTunnel === null || activeViewId === null) return;
+  const port = interfacePort(event, location.origin, harnessFrame.contentWindow, activeViewId);
+  if (port === undefined) return;
+  interfaceBridge?.close();
+  interfaceBridge = serveInterfacePort(activeTunnel, port);
+  interfaceBridge.workerReady();
+});
+let stopTunnelClosed = null;
+let connectionRevision = 0;
+let notificationsSuspended = false;
+
+/** Retire the previous machine before replacing the selected room or opening another tunnel. */
+function clearConnection() {
+  connectionRevision += 1;
+  preferManager = false;
+  activePanel?.stop();
+  activePanel = null;
+  closeTransport();
+  panel.hidden = true;
+}
+
+/** A confirmed disconnect or an explicit replacement retires the old tunnel's resources together. */
+function closeTransport() {
+  stopTunnelClosed?.();
+  stopTunnelClosed = null;
+  // Destroy the old document before closing its transport: assigning src alone
+  // navigates asynchronously and lets its pending requests report spurious failures.
+  harnessFrame.remove();
+  harnessFrame.src = 'about:blank';
+  harnessView.append(harnessFrame);
+  control?.close();
+  control = null;
+  notificationFeed.disconnect();
+  notificationsSuspended = false;
+  interfaceBridge?.close();
+  interfaceBridge = null;
+  activeViewId = null;
+  interfaceUrl = null;
+  interfaceAvailable = false;
+  openButton.hidden = true;
+  reloadHarness.disabled = true;
+  disconnect.disabled = true;
+  showConnectionManager();
+  activeTunnel?.close();
+  activeTunnel = null;
+}
 
 /**
  * Sends this run's failures to the daemon, once, once the connection attempt has an outcome.
@@ -458,6 +533,7 @@ forget.addEventListener('click', async () => {
   try {
     const deviceId = device?.deviceId ?? '<id>';
     await store?.forgetAll();
+    clearConnection();
     device = null;
     rooms = [];
     selectedRoom = null;
@@ -470,13 +546,20 @@ forget.addEventListener('click', async () => {
   }
 });
 
-connect.addEventListener('click', async () => {
+document.getElementById('connection-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (connect.disabled) return;
+  clearConnection();
+  const revision = connectionRevision;
   connect.disabled = true;
+  key.disabled = true;
+  let pairedThisAttempt = false;
   show('connecting', () => t('state.connecting'));
   panel.hidden = true;
   try {
     const loaded = await loadClient();
-    const { session, panelModule, controlModule, proxyCodec, pairing, storage, credential } = loaded;
+    if (revision !== connectionRevision) return;
+    const { session, panelModule, controlModule, pairing, storage, credential } = loaded;
     if (store === null) store = new storage.IndexedDbRoomStore();
 
     // What the user typed decides what happens: a pairing code pairs first, a room key connects with
@@ -493,7 +576,7 @@ connect.addEventListener('click', async () => {
           {
             connect: (room) => openSocket(room),
             report: (phase) => {
-              if (phase.phase === 'waiting') show('pairing', () => t('state.waiting'));
+              if (revision === connectionRevision && phase.phase === 'waiting') show('pairing', () => t('state.waiting'));
             },
           },
           // The label is what the room list shows. The device name the daemon stores is the same
@@ -504,24 +587,27 @@ connect.addEventListener('click', async () => {
           // knows. Passing nothing would generate a fresh identity and silently strand the first room.
           { code: parsed.code, deviceName: browserLabel(), identity: device },
         );
+        if (revision !== connectionRevision) return;
         record = paired.record;
         // One identity, one more room (ADR-0007): pairing again with a second computer must not
         // replace the first one's key, and this call is what used to do exactly that.
         const stored = await store.remember(paired.record, roomLabel(paired.record.room), Date.now());
         device = { privateKey: paired.record.privateKey, publicKey: paired.record.publicKey, deviceId: paired.record.deviceId };
         rooms = await store.listRooms();
-        selectedRoom = rooms.find(candidate => candidate.room === stored.room) ?? rooms[0] ?? null;
+        if (revision !== connectionRevision) return;
+        selectedRoom = rooms.find(candidate => candidate.room === stored.room) ?? stored;
+        room = stored.room;
+        roomKey = stored.roomKey;
+        pairedThisAttempt = true;
         key.value = '';
         renderDevice();
         show('paired', () => t('state.paired', { id: record.deviceId, label: stored.label }));
-        connect.disabled = false;
-        return;
+      } else {
+        roomKey = parsed.roomKey;
+        // A typed room key carries no device identity, even if another computer is selected.
+        room = undefined;
+        record = null;
       }
-      roomKey = parsed.roomKey;
-      // A typed room key is not a stored room, so nothing is selected for it: the session binds no
-      // device identity and the tunnel is a room-key session.
-      room = undefined;
-      record = null;
     }
     roomKey = roomKey ?? selectedRoom?.roomKey;
 
@@ -529,16 +615,22 @@ connect.addEventListener('click', async () => {
     // after a connection has an outcome. It used to be declared here, and the reporter's reference to
     // it threw a ReferenceError that nothing surfaced — found by the browser smoke, which noticed no
     // report had arrived.
-    control = null;
     const panelControl = new panelModule.ControlPanel({
-      control: () => control,
+      control: () => activePanel === panelControl ? control : null,
       render: (shown) => {
+        if (activePanel !== panelControl) return;
         panel.hidden = false;
         panel.dataset.tone = shown.tone;
         headline.textContent = shown.headline;
         detail.textContent = shown.detail ?? '';
         detail.hidden = shown.detail === null;
-        openButton.hidden = !(shown.tone === 'ok' || shown.tone === 'busy');
+        const wasAvailable = interfaceAvailable;
+        interfaceAvailable = shown.interfaceAvailable;
+        openButton.hidden = !interfaceAvailable;
+        reloadHarness.disabled = !interfaceAvailable;
+        disconnect.disabled = activeTunnel === null;
+        if (!interfaceAvailable && (!hasEnteredHarness || wasAvailable)) showConnectionManager();
+        else if (interfaceAvailable && !preferManager) showHarness();
         actions.replaceChildren();
         for (const action of shown.actions) {
           const button = document.createElement('button');
@@ -561,11 +653,28 @@ connect.addEventListener('click', async () => {
         const timer = setInterval(task, everyMs);
         return () => clearInterval(timer);
       },
+      connectionLost: (reason) => {
+        if (activePanel !== panelControl || activeTunnel === null) return;
+        if (reason === 'timeout') {
+          notificationFeed.disconnect();
+          notificationsSuspended = true;
+        } else {
+          closeTransport();
+        }
+        show('failed', () => t(reason === 'timeout' ? 'panel.silent' : 'panel.dropped'));
+      },
+      connectionRestored: () => {
+        if (activePanel !== panelControl || control === null || !notificationsSuspended) return;
+        notificationFeed.connect(control);
+        notificationsSuspended = false;
+        show('ready', () => t('state.ready'));
+      },
     });
     activePanel?.stop();
     activePanel = panelControl;
-    await session.connect({ roomKey, room, device: record }, {
+    await session.connect({ roomKey, room, device: record, waitForDaemon: pairedThisAttempt }, {
       report: (phase) => {
+        if (revision !== connectionRevision) return;
         if (phase.phase === 'connecting') show('connecting', () => t('state.connecting'));
         if (phase.phase === 'ready') {
           show('ready', () => t('state.ready'));
@@ -592,14 +701,29 @@ connect.addEventListener('click', async () => {
           void reportOwnFailures();
         }
       },
-      onTunnel: (tunnel) => {
+      onWorkerReady: (viewId) => {
+        if (revision === connectionRevision && activeViewId === viewId) interfaceBridge?.workerReady();
+      },
+      onTunnel: (tunnel, viewId) => {
+        if (revision !== connectionRevision) {
+          tunnel.close();
+          return;
+        }
+        activeTunnel = tunnel;
+        activeViewId = viewId;
+        interfaceUrl = `/__dr/interface?drdshView=${encodeURIComponent(viewId)}`;
         control = new controlModule.ControlClient(tunnel);
-        serveInterfaceSockets(tunnel, proxyCodec);
+        notificationFeed.connect(control);
         panelControl.connected();
         // A tunnel that was working and then died is "the link dropped", which is advice about
         // this browser's network — not the same as a daemon that stopped answering on a link
         // that is still up.
-        tunnel.onClosed((reason) => panelControl.socketDropped(reason));
+        stopTunnelClosed = tunnel.onClosed((reason) => {
+          if (activeTunnel !== tunnel) return;
+          closeTransport();
+          show('failed', () => t('panel.dropped'));
+          panelControl.socketDropped(reason);
+        });
         // And again here, which is the call that normally sends it: the session reports `ready`
         // *before* it hands over the tunnel, so at that moment there is no control client to send
         // with. Both call sites are needed and neither is redundant — this one has a channel, the
@@ -608,6 +732,7 @@ connect.addEventListener('click', async () => {
       },
     });
   } catch (error) {
+    if (revision !== connectionRevision) return;
     // Offline is checked first: the raw failure here is "Failed to fetch", which names neither the
     // network nor what to do about it.
     if (offline || !navigator.onLine) {
@@ -615,10 +740,13 @@ connect.addEventListener('click', async () => {
       panel.hidden = true;
       return;
     }
-    show('failed', () => error instanceof LocalizedError ? error.message : t('error.connection', { reason: errorText(error) }));
+    show('failed', () => pairedThisAttempt
+      ? t('error.pairedConnection', { reason: errorText(error) })
+      : error instanceof LocalizedError ? error.message : t('error.connection', { reason: errorText(error) }));
     panel.hidden = true;
   } finally {
     connect.disabled = false;
+    key.disabled = false;
   }
 });
 
@@ -673,22 +801,37 @@ async function openSocket(room) {
   };
 }
 
-// The interface opens when the user asks for it, not automatically: a page that navigated
-// away the moment it connected would take the tunnel down with it, and the panel would never
-// be seen.
-//
-// The target is the client's interface path. Not `/`: a service worker does not intercept a
-// navigation to its own page, and this page *is* `/`, so asking for it again would be answered
-// by the browser and the interface would never load. Not `/__dr/dsh/` either: that is what the
-// worker rewrites requests *to*, so asking for it asks the relay for a page it has not got.
-openButton.addEventListener('click', () => {
-  // A new tab, not this one. The tunnel lives in this page: the page owns the carrier socket
-  // and answers the worker's requests, and the worker cannot hold a tunnel on its own. A
-  // navigation replaces this page and ends its script, so the interface would load in a page
-  // whose requests nobody is answering — which is exactly what happened: the interface's HTML
-  // arrived through the tunnel and every asset after it hung.
-  window.open('/__dr/interface', '_blank', 'noopener');
+openButton.addEventListener('click', showHarness);
+returnToConnection.addEventListener('click', () => showConnectionManager(true));
+closeControls.addEventListener('click', dismissConnectionManager);
+connectionDialog.addEventListener('cancel', event => {
+  event.preventDefault();
+  dismissConnectionManager();
 });
+connectionDialog.addEventListener('close', () => returnToConnection.setAttribute('aria-expanded', 'false'));
+const outsideDialog = event => {
+  const rect = connectionDialog.getBoundingClientRect();
+  return event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom;
+};
+let backdropPress = false;
+connectionDialog.addEventListener('pointerdown', event => { backdropPress = event.target === connectionDialog && outsideDialog(event); });
+connectionDialog.addEventListener('click', event => {
+  if (backdropPress && event.target === connectionDialog && outsideDialog(event)) dismissConnectionManager();
+  backdropPress = false;
+});
+reloadHarness.addEventListener('click', () => {
+  if (!interfaceAvailable || interfaceUrl === null) return;
+  interfaceBridge?.close();
+  interfaceBridge = null;
+  harnessFrame.src = interfaceUrl;
+  dismissConnectionManager();
+});
+disconnect.addEventListener('click', () => {
+  clearConnection();
+  show('idle', () => t('state.disconnected'));
+  connect.focus();
+});
+window.addEventListener('pagehide', clearConnection, { once: true });
 
 renderLanguage();
 void loadStoredDevice();

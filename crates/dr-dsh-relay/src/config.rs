@@ -3,8 +3,8 @@
 //! Every value here is either an operational limit or a bind address. There is
 //! deliberately no field that could weaken the security properties: no "log
 //! payloads" switch, no "disable encryption" switch, and no TLS key material,
-//! because the relay is expected to sit behind the operator's own reverse proxy
-//! for TLS (see `docs/self-hosting.md`).
+//! because TLS is handled by the CLI host or the operator's reverse proxy, outside
+//! this crate's dependency boundary (see `docs/operations/tls.md`).
 
 use std::net::SocketAddr;
 

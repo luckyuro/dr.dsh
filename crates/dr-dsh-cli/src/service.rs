@@ -19,6 +19,7 @@ pub(crate) struct Spec {
     log: PathBuf,
 }
 
+#[derive(serde::Serialize)]
 pub(crate) struct State {
     loaded: bool,
     pub(crate) running: bool,
@@ -395,7 +396,7 @@ pub(crate) fn autostart(c: &Config, p: &Paths, enabled: bool) -> Result<()> {
     Ok(())
 }
 
-fn health(bind: &str, daemon: bool) -> Result<bool> {
+fn health(bind: &str, daemon: bool, config: &Config) -> Result<bool> {
     let mut addr: SocketAddr = bind.parse()?;
     if addr.ip().is_unspecified() {
         addr.set_ip(if addr.is_ipv4() {
@@ -404,13 +405,43 @@ fn health(bind: &str, daemon: bool) -> Result<bool> {
             IpAddr::V6(Ipv6Addr::LOCALHOST)
         });
     }
-    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
+    let stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     let endpoint = if daemon { "/" } else { "/healthz" };
+    if (daemon && config.dsh_tls == Some(true)) || (!daemon && config.tls_cert.is_some()) {
+        let name = if daemon {
+            None
+        } else {
+            config.tls_server_name.clone()
+        }
+        .unwrap_or_else(|| addr.ip().to_string());
+        let tls =
+            dr_dsh_tls::client_config_with_options(config.ca_cert.as_deref(), config.tls_insecure)?;
+        let session = rustls::ClientConnection::new(
+            std::sync::Arc::new(tls),
+            rustls::pki_types::ServerName::try_from(name.clone())?,
+        )?;
+        let authority = if name.contains(':') {
+            format!("[{name}]:{}", addr.port())
+        } else {
+            format!("{name}:{}", addr.port())
+        };
+        return health_response(rustls::StreamOwned::new(session, stream), endpoint, &authority, daemon)
+        .context("HTTPS health check failed; check --ca-cert and the certificate name (relay: --tls-server-name; DSH: loopback IP SAN).");
+    }
+    health_response(stream, endpoint, &addr.to_string(), daemon)
+}
+
+fn health_response(
+    mut stream: impl Read + Write,
+    endpoint: &str,
+    authority: &str,
+    daemon: bool,
+) -> Result<bool> {
     write!(
         stream,
-        "GET {endpoint} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n\r\n"
+        "GET {endpoint} HTTP/1.1\r\nHost: {authority}\r\nConnection: close\r\n\r\n"
     )?;
     let mut line = String::new();
     BufReader::new(stream.take(4096)).read_line(&mut line)?;
@@ -432,9 +463,15 @@ pub(crate) fn status(c: &Config, p: &Paths) -> Result<i32> {
     } else {
         c.bind.clone().unwrap_or_default()
     };
-    let ready = health(&bind, daemon).unwrap_or(false);
+    let ready = match health(&bind, daemon, c) {
+        Ok(ready) => ready,
+        Err(error) => {
+            println!("  health check: {error:#}");
+            false
+        }
+    };
     let label = if daemon {
-        "DSH HTTP (no authentication check)"
+        "DSH HTTP(S) (no authentication check)"
     } else {
         "relay health"
     };
@@ -491,6 +528,35 @@ pub(crate) fn logs(_c: &Config, p: &Paths, follow: bool) -> Result<()> {
 mod tests {
     use super::*;
     use std::path::Path;
+    #[test]
+    fn plugin_registration_controls_report_listener_without_storing_credentials() -> Result<()> {
+        let p = Paths::new(Path::new("/tmp/drdsh-plugin-service-test"), "daemon")?;
+        let mut c: Config = serde_json::from_value(serde_json::json!({
+            "version": 1, "prefix": p.prefix, "scope": "daemon", "source": "/src",
+            "components": ["daemon"]
+        }))?;
+        assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "0");
+        c.components.push("plugin".into());
+        assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "1");
+        for mac in [true, false] {
+            let service = render(&c, &p, mac);
+            assert!(service.contains("DSHD_PLUGIN_REPORTS"));
+            assert!(!service.contains("DRDSH_REPORT_TOKEN"));
+            assert!(!service.contains("DRDSH_REPORT_URL"));
+        }
+        c.components.retain(|component| component != "plugin");
+        assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "0");
+        c.plugin_owner = Some(crate::management::PluginOwner::External);
+        c.plugin_reports_enabled = Some(true);
+        assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "1");
+        c.components.push("plugin".into());
+        c.plugin_reports_enabled = Some(false);
+        assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "0");
+        assert_eq!(c.environment(&p)["DSHD_ADMIN"], "0");
+        c.local_admin_enabled = Some(true);
+        assert_eq!(c.environment(&p)["DSHD_ADMIN"], "1");
+        Ok(())
+    }
     #[test]
     fn service_formats_preserve_literal_paths_and_scoped_identity() -> Result<()> {
         let p = Paths::new(

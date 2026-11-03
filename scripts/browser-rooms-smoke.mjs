@@ -23,9 +23,10 @@
 import { spawn } from 'node:child_process';
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
-import { chromium } from 'playwright-core';
+const playwright = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright-core');
+const { chromium } = playwright.default ?? playwright;
 
 const args = process.argv.slice(2);
 function option(name, fallback) {
@@ -42,7 +43,7 @@ const drdshd = option('--drdshd', 'target/debug/drdshd');
 const drdshRelay = option('--drdsh-relay', 'target/debug/drdsh-relay');
 const relayPort = Number(option('--relay-port', '8895'));
 const headed = args.includes('--headed');
-const CHROME = `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
+const CHROME = process.env.CHROMIUM_BIN ?? `${process.env.HOME}/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome`;
 
 if (!existsSync(drdshd) || !existsSync(drdshRelay)) {
   console.error(`need ${drdshd} and ${drdshRelay}; run \`cargo build --workspace\` first`);
@@ -96,7 +97,7 @@ function killTree(child) {
   } catch {
     // Already gone, or never got its own group (a spawn that failed): fall back to the process itself.
     try {
-      killTree(child);
+      child.kill('SIGKILL');
     } catch {
       // Nothing left to kill.
     }
@@ -140,6 +141,8 @@ const relayUrl = `http://127.0.0.1:${relayPort}`;
 async function machine(name) {
   const stateDir = join('target', 'rooms-smoke', name);
   const daemonPort = await freePort();
+  const machine_ = { name, stateDir, daemonPort, auditPath: join(stateDir, 'audit.jsonl'), daemon: null };
+  if (!await serve(machine_)) throw new Error(`${name} did not connect to the relay`);
   const pairing = start(drdshd, ['pair', '--relay', `ws://127.0.0.1:${relayPort}`, '--wait', '120'], {
     DSHD_STATE_DIR: stateDir,
     PATH: `${process.cwd()}/target/test-bin:${process.env.PATH ?? ''}`,
@@ -151,23 +154,20 @@ async function machine(name) {
     process.exit(2);
   }
   return {
-    name,
-    stateDir,
-    daemonPort,
+    ...machine_,
     pairing,
     code: /code:\s+(\S+)/.exec(pairing.log.text)?.[1] ?? '',
-    auditPath: join(stateDir, 'audit.jsonl'),
-    daemon: null,
   };
 }
 
-/** Starts the daemon for a machine, once its device has been enrolled. */
+/** Pair against a live daemon, as installed clients do. */
 async function serve(machine_) {
   machine_.daemon = start(
     drdshd,
-    ['run', '--relay', `ws://127.0.0.1:${relayPort}`, '--port', String(machine_.daemonPort)],
+    ['run', '--local-admin', '--relay', `ws://127.0.0.1:${relayPort}`, '--port', String(machine_.daemonPort)],
     {
       DSHD_STATE_DIR: machine_.stateDir,
+      DSH_HOME: resolve(machine_.stateDir, 'dsh-home'),
       PATH: `${process.cwd()}/target/test-bin:${process.env.PATH ?? ''}`,
     },
   );
@@ -312,7 +312,7 @@ try {
   await page.fill('#key', laptop.code);
   await page.click('#connect');
   await page.waitForFunction(
-    () => /Paired as/.test(document.getElementById('state')?.textContent ?? ''),
+    () => /Paired as/.test(document.getElementById('device')?.textContent ?? ''),
     undefined,
     { timeout: 60_000 },
   );
@@ -323,7 +323,8 @@ try {
     afterFirst.trim(),
   );
 
-  await serve(laptop);
+  await page.waitForFunction(() => document.getElementById('panel')?.dataset.tone === 'ok');
+  await page.locator('#return-to-connection').click();
 
   // 2. Pair with a second machine. Before ADR-0007 this replaced the first record and the first
   //    machine became unreachable without a word.
@@ -356,7 +357,8 @@ try {
     rooms.join(' | '),
   );
 
-  await serve(desktop);
+  await page.waitForFunction(() => document.getElementById('panel')?.dataset.tone === 'ok');
+  await page.locator('#return-to-connection').click();
 
   // 3. Switch to the first machine and connect. Both daemons serve the same DSH build, so the page
   //    looks identical either way — the audit logs are what say which one the session reached.
@@ -420,6 +422,7 @@ try {
   );
 
   // 5. Forgetting one machine leaves the other in place.
+  if (await page.locator('#harness-view').isVisible()) await page.click('#return-to-connection');
   const forgetButtons = await page.$$('#room-list li button:last-child');
   await forgetButtons[0].click();
   await page.waitForFunction(

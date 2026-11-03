@@ -4,7 +4,7 @@
  */
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { test } from 'node:test';
 
 import {
@@ -49,11 +49,26 @@ test('only GETs to the client are cacheable, and `/` only for a navigation', () 
 test('the pre-cache list is the client\'s own files and nothing else', () => {
   assert.ok(PRECACHE_PATHS.includes('/'), 'the shell itself must be cached: a reload needs it');
   assert.ok(PRECACHE_PATHS.includes('/client/shell.js'), 'the code that explains the state');
+  assert.ok(PRECACHE_PATHS.includes('/client/routing.js'), 'the shell needs routing before it can explain an outage');
   for (const path of PRECACHE_PATHS) {
     assert.equal(isClientOwned(path), true, path);
     assert.equal(isCacheable(path, 'GET', path === '/' ? 'navigate' : 'cors'), true, path);
   }
-  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v3');
+  assert.ok(PRECACHE_PATHS.includes('/client/notifications.js'), 'the shell needs its notification model on offline reload');
+  assert.ok(PRECACHE_PATHS.includes('/client/interface-bridge.js'), 'the embedded shell needs its socket bridge offline');
+  assert.ok(PRECACHE_PATHS.includes('/client/floating-control.js'), 'connection controls must remain reachable offline');
+  assert.ok(PRECACHE_PATHS.includes('/client/proxy-stream.js'), 'the socket bridge and HTTP proxy share a stream allocator');
+  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v14');
+});
+
+test('the release cache includes every emitted module and static asset before activation', () => {
+  const modules = readdirSync(new URL('.', import.meta.url))
+    .filter(name => /\.(?:ts|js)$/u.test(name) && !name.endsWith('.test.ts') && !name.endsWith('.d.ts'))
+    .map(name => `/client/${name.replace(/\.ts$/u, '.js')}`);
+  const assets = readdirSync(new URL('../static/', import.meta.url))
+    .map(name => name === 'index.html' ? '/' : `/client/${name}`);
+  assert.equal(new Set(PRECACHE_PATHS).size, PRECACHE_PATHS.length, 'duplicate requests make an atomic cache batch fail');
+  assert.deepEqual([...PRECACHE_PATHS].sort(), [...modules, ...assets].sort());
 });
 
 test('the offline sentence says what is lost and what is not', () => {

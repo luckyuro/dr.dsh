@@ -130,7 +130,7 @@ impl DshResponse {
 /// A client bound to one DSH instance's loopback authority.
 #[derive(Debug, Clone)]
 pub struct DshClient {
-    http: Client<HttpConnector, BoxBody<Bytes, std::io::Error>>,
+    http: Client<hyper_rustls::HttpsConnector<HttpConnector>, BoxBody<Bytes, std::io::Error>>,
     /// `scheme://authority`, e.g. `http://127.0.0.1:3080`.
     base_url: String,
     /// The authority to present as `Host`; identical to what was authenticated.
@@ -335,21 +335,41 @@ impl DshClient {
     /// # Errors
     ///
     /// Returns [`DshClientError::Unexpected`] when `base_url` is not an absolute
-    /// `http` URL with an authority.
+    /// HTTP(S) URL with a literal loopback authority and explicit port.
     pub fn new(base_url: &str) -> Result<Self, DshClientError> {
         let authority = base_url
             .strip_prefix("http://")
-            .filter(|rest| !rest.is_empty() && !rest.contains('/'))
+            .or_else(|| base_url.strip_prefix("https://"))
+            .filter(|rest| !rest.is_empty() && !rest.contains(['/', '?', '#', '@']))
             .ok_or_else(|| DshClientError::Unexpected {
                 status: StatusCode::BAD_REQUEST,
-                detail: format!("base URL must be http://<authority>, got {base_url:?}"),
+                detail: "DSH base URL must be http(s)://<loopback-ip>:<port>; keep DSH on loopback"
+                    .into(),
             })?;
+        let addr: std::net::SocketAddr = authority.parse().map_err(|_| DshClientError::Unexpected {
+            status: StatusCode::BAD_REQUEST,
+            detail: "DSH authority must be a literal loopback IP and port; use 127.0.0.1:<port> or [::1]:<port>".into(),
+        })?;
+        if !addr.ip().is_loopback() || addr.port() == 0 {
+            return Err(DshClientError::Unexpected {
+                status: StatusCode::BAD_REQUEST,
+                detail: "DSH must stay on a loopback address with a nonzero port; remote DSH origins are refused".into(),
+            });
+        }
         let mut connector = HttpConnector::new();
-        // DSH serves plain HTTP on loopback. Allowing the connector to reach
-        // anything else would be a way for a misconfiguration to leave the
-        // machine, so the only permitted host is the one we were constructed
-        // with — enforced in `send`, where the URL is assembled.
-        connector.enforce_http(true);
+        connector.enforce_http(false);
+        let tls = if base_url.starts_with("https://") {
+            dr_dsh_tls::client_config(None).map_err(|error| {
+                DshClientError::Transport(format!("DSH TLS configuration failed: {error:#}"))
+            })?
+        } else {
+            dr_dsh_tls::untrusted_client_config()
+        };
+        let connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls)
+            .https_or_http()
+            .enable_http1()
+            .wrap_connector(connector);
         let http = Client::builder(TokioExecutor::new()).build(connector);
         Ok(Self {
             http,
@@ -498,6 +518,7 @@ impl DshClient {
             .method(Method::GET)
             .uri(target)
             .header(header::HOST, &self.authority)
+            .header(header::ORIGIN, &self.base_url)
             .header(header::CONNECTION, "upgrade")
             .header(header::UPGRADE, "websocket")
             // A fixed key: this is not a browser, and the value only has to be present
@@ -643,7 +664,9 @@ mod tests {
     #[test]
     fn a_client_needs_an_absolute_http_authority() {
         assert!(DshClient::new("http://127.0.0.1:3080").is_ok());
-        assert!(DshClient::new("https://127.0.0.1:3080").is_err());
+        assert!(DshClient::new("https://192.168.1.2:3080").is_err());
+        assert!(DshClient::new("http://example.com:3080").is_err());
+        assert!(DshClient::new("http://127.0.0.1:3080?token=secret").is_err());
         assert!(DshClient::new("http://127.0.0.1:3080/").is_err());
         assert!(DshClient::new("127.0.0.1:3080").is_err());
         assert!(DshClient::new("").is_err());

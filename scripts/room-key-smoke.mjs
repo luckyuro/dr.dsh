@@ -21,7 +21,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { pairWithCode } from '../apps/pwa/src/pair.ts';
 import { encodeRequest, request } from '../apps/pwa/src/proxy.ts';
@@ -40,7 +40,7 @@ function option(name, fallback) {
 }
 const drdshd = option('--drdshd', 'target/debug/drdshd');
 const drdshRelay = option('--drdsh-relay', 'target/debug/drdsh-relay');
-const stateDir = option('--state-dir', 'target/room-key-smoke-state');
+const stateDir = resolve(option('--state-dir', 'target/room-key-smoke-state'));
 const keyPath = join(stateDir, 'room-key');
 
 if (!existsSync(drdshd) || !existsSync(drdshRelay)) {
@@ -92,7 +92,7 @@ function killTree(child) {
   } catch {
     // Already gone, or never got its own group (a spawn that failed): fall back to the process itself.
     try {
-      killTree(child);
+      child.kill('SIGKILL');
     } catch {
       // Nothing left to kill.
     }
@@ -232,7 +232,7 @@ check(
   paired !== null && Buffer.from(paired.roomKey).toString('base64url') === storedKey,
   paired === null
     ? '(no device)'
-    : `device key ${Buffer.from(paired.roomKey).toString('base64url').slice(0, 8)}… vs stored ${storedKey.slice(0, 8)}…`,
+    : 'paired and stored key bytes compared without printing key material',
 );
 
 // ---------------------------------------------------------------------------------------------

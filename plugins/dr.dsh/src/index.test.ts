@@ -18,12 +18,16 @@ test('a loopback daemon URL is accepted in every spelling', () => {
   assert.doesNotThrow(() => assertLoopback('http://localhost:8790'));
   assert.doesNotThrow(() => assertLoopback('http://[::1]:8790'));
   assert.doesNotThrow(() => assertLoopback('http://127.5.5.5:8790'));
+  assert.doesNotThrow(() => assertLoopback('https://127.0.0.1:8790'));
+  assert.doesNotThrow(() => assertLoopback('https://[::1]:8790'));
 });
 
 test('a non-loopback daemon URL is refused, not warned about', () => {
   assert.throws(() => assertLoopback('http://192.168.1.10:8790'), /loopback/);
   assert.throws(() => assertLoopback('https://relay.example/report'), /loopback/);
   assert.throws(() => assertLoopback('not-a-url'), /not a URL/);
+  assert.throws(() => assertLoopback('ftp://127.0.0.1:8790'), /HTTP or HTTPS/);
+  assert.throws(() => assertLoopback('https://user:password@127.0.0.1:8790'), /without URL credentials/);
 });
 
 test('the surface guard accepts a context that offers the plugin contract', () => {

@@ -50,6 +50,7 @@ interface Peer {
 interface FakeSocket {
   /** Frames the client wrote, as they went on the wire. */
   readonly sent: Uint8Array<ArrayBuffer>[];
+  readonly closeCount: number;
   /** Delivers a raw frame as if it came from the daemon. */
   push(frame: Uint8Array<ArrayBuffer>): void;
   /** Reports that the socket closed. */
@@ -69,6 +70,7 @@ async function fakeDaemon(): Promise<{ peer: Peer; fake: FakeSocket }> {
   const closeHandlers: ((reason: string) => void)[] = [];
   const sent: Uint8Array<ArrayBuffer>[] = [];
   const seen: { streamId: number; payload: Uint8Array<ArrayBuffer> }[] = [];
+  let closeCount = 0;
 
   let openKey = await deriveKey(ROOT, new Uint8Array(32), LABELS.clientToDaemon);
   let sealKey = await deriveKey(ROOT, new Uint8Array(32), LABELS.daemonToClient);
@@ -135,6 +137,7 @@ async function fakeDaemon(): Promise<{ peer: Peer; fake: FakeSocket }> {
 
   const fake: FakeSocket = {
     sent,
+    get closeCount() { return closeCount; },
     push: deliver,
     drop(reason: string) {
       for (const handler of [...closeHandlers]) handler(reason);
@@ -150,7 +153,10 @@ async function fakeDaemon(): Promise<{ peer: Peer; fake: FakeSocket }> {
       closed(handler: (reason: string) => void) {
         closeHandlers.push(handler);
       },
-      close() {},
+      close() {
+        closeCount += 1;
+        for (const handler of [...closeHandlers]) handler('the socket closed');
+      },
     },
   };
   return { peer: { seen, send: seal }, fake };
@@ -167,6 +173,39 @@ async function connected(): Promise<{ tunnel: Tunnel; peer: Peer; fake: FakeSock
 async function settle(): Promise<void> {
   await new Promise(resolve => setTimeout(resolve, 20));
 }
+
+test('concurrent sends keep counter order when the first encryption takes longer', async context => {
+  const { fake } = await fakeDaemon();
+  const counters: number[] = [];
+  let capture = false;
+  const tunnel = await Tunnel.open({
+    ...fake.socket,
+    send(frame) {
+      if (!capture) { fake.socket.send(frame); return; }
+      const { body } = parseCarrier(frame);
+      counters.push(Number(new DataView(body.buffer, body.byteOffset, body.byteLength).getBigUint64(0, false)));
+    },
+  }, ROOT);
+  capture = true;
+  const encrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+  let release = (): void => {};
+  let entered = (): void => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let first = true;
+  context.mock.method(crypto.subtle, 'encrypt', async (...args: Parameters<SubtleCrypto['encrypt']>) => {
+    if (first) { first = false; entered(); await held; }
+    return await encrypt(...args);
+  });
+  const a = tunnel.send(50, new Uint8Array([1]));
+  await started;
+  const b = tunnel.send(51, new Uint8Array([2]));
+  await settle();
+  release();
+  await Promise.all([a, b]);
+  assert.deepEqual(counters, [1, 2], 'parallel encryption must not reorder authenticated frame counters');
+  tunnel.close();
+});
 
 test('the room id matches the derivation the daemon documents', async () => {
   // Pinned so a change fails loudly: a different room id means the client and the daemon
@@ -260,12 +299,139 @@ test('a socket that dies during the handshake rejects instead of hanging', async
 
 test('a frame that fails authentication ends the tunnel', async () => {
   const { tunnel, fake } = await connected();
-  fake.push(carrier(1, new Uint8Array(8 + 16).fill(0xab)));
+  const lastAuthenticated = tunnel.lastAuthenticatedInboundAt;
+  const body = new Uint8Array(8 + 16).fill(0xab);
+  new DataView(body.buffer).setBigUint64(0, 1n, false);
+  fake.push(carrier(1, body));
   await settle();
   assert.ok(
     tunnel.failure instanceof TunnelError,
     `expected a failure, got ${String(tunnel.failure)}`,
   );
+  assert.equal(tunnel.failure.message, 'a frame failed authentication');
+  assert.equal(tunnel.lastAuthenticatedInboundAt, lastAuthenticated, 'unauthenticated wire traffic is not liveness evidence');
+  assert.equal(fake.closeCount, 1);
+  assert.equal(tunnel.isEstablished, false);
+});
+
+test('GoAway closes once, preserves its cause and ignores queued traffic after terminal failure', async () => {
+  const { tunnel, peer, fake } = await connected();
+  const closed: string[] = [];
+  const received: Uint8Array<ArrayBuffer>[] = [];
+  tunnel.on(4, payload => received.push(payload));
+  tunnel.onClosed(reason => {
+    assert.equal(tunnel.failure?.message, reason, 'the cause is visible before cleanup callbacks');
+    assert.equal(tunnel.isEstablished, false);
+    closed.push(reason);
+    tunnel.close();
+    fake.drop('another close callback during cleanup');
+  });
+  const goAway = carrier(CONTROL_STREAM, new Uint8Array(0));
+  new DataView(goAway.buffer).setUint16(6, 0x7f, false); // GoAway
+  fake.push(goAway);
+  fake.push(carrier(4, new Uint8Array(8)));
+  await settle();
+
+  const failure = tunnel.failure;
+  assert.ok(failure instanceof TunnelError);
+  assert.match(failure.message, /remote connection was ended.*Reconnect.*authorized/);
+  assert.equal(fake.closeCount, 1, 'synchronous close callbacks and explicit cleanup cannot close twice');
+  assert.deepEqual(closed, [failure.message]);
+  assert.deepEqual(received.map(payload => payload.length), [0], 'stream consumers see one end signal');
+  assert.equal(tunnel.isDeviceBound, false);
+
+  await peer.send(4, new TextEncoder().encode('late data'));
+  fake.drop('a later network close');
+  await settle();
+  assert.equal(tunnel.failure, failure, 'later events preserve the original error object');
+  assert.deepEqual(closed, [failure.message]);
+  assert.deepEqual(received.map(payload => payload.length), [0]);
+  const written = fake.sent.length;
+  await assert.rejects(tunnel.send(4, new Uint8Array([1])), error => error === failure);
+  assert.equal(fake.sent.length, written, 'a terminated tunnel writes no more frames');
+});
+
+test('a terminal failure during encryption prevents the pending frame from reaching the socket', async () => {
+  const { tunnel, fake } = await connected();
+  const written = fake.sent.length;
+  const pending = tunnel.send(4, new Uint8Array([1]));
+  fake.drop('connection ended while sealing');
+  await assert.rejects(pending, error => error === tunnel.failure);
+  assert.equal(fake.sent.length, written);
+  assert.equal(fake.closeCount, 1);
+});
+
+test('explicit close rejects in-flight and queued sends before the socket close event', async context => {
+  const { fake } = await fakeDaemon();
+  let closes = 0;
+  const tunnel = await Tunnel.open({ ...fake.socket, close() { closes += 1; } }, ROOT);
+  const written = fake.sent.length;
+  const notifications: string[] = [];
+  tunnel.onClosed(reason => {
+    notifications.push(reason);
+    tunnel.close();
+  });
+  const encrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+  let release = (): void => {};
+  let entered = (): void => {};
+  const held = new Promise<void>(resolve => { release = resolve; });
+  const started = new Promise<void>(resolve => { entered = resolve; });
+  let encryptions = 0;
+  context.mock.method(crypto.subtle, 'encrypt', async (...args: Parameters<SubtleCrypto['encrypt']>) => {
+    encryptions += 1;
+    entered();
+    await held;
+    return await encrypt(...args);
+  });
+  const first = tunnel.send(4, new Uint8Array([1]));
+  await started;
+  const second = tunnel.send(5, new Uint8Array([2]));
+  const results = Promise.allSettled([first, second]);
+  tunnel.close();
+  const failure = tunnel.failure;
+  // A browser's close event is asynchronous. Finish the held encryption without
+  // delivering that event: close itself must already have made both writes invalid.
+  release();
+  assert.deepEqual(await results, [
+    { status: 'rejected', reason: failure },
+    { status: 'rejected', reason: failure },
+  ]);
+  assert.ok(failure instanceof TunnelError);
+  assert.equal(tunnel.isEstablished, false);
+  assert.equal(tunnel.isDeviceBound, false);
+  assert.equal(fake.sent.length, written);
+  assert.equal(encryptions, 1, 'queued frames must not begin encryption after close');
+  assert.equal(closes, 1);
+  assert.deepEqual(notifications, [failure.message]);
+  await assert.rejects(tunnel.send(6, new Uint8Array([3])), error => error === failure);
+  fake.drop('the delayed socket close event');
+  assert.equal(tunnel.failure, failure);
+  assert.equal(closes, 1);
+  assert.deepEqual(notifications, [failure.message]);
+});
+
+test('an encryption failure rejects queued sends and ends the session without skipping a counter', async context => {
+  const { tunnel, fake } = await connected();
+  const written = fake.sent.length;
+  const failure = new Error('the browser could not encrypt this frame');
+  let encryptions = 0;
+  context.mock.method(crypto.subtle, 'encrypt', async () => {
+    encryptions += 1;
+    throw failure;
+  });
+  const results = await Promise.allSettled([
+    tunnel.send(4, new Uint8Array([1])),
+    tunnel.send(5, new Uint8Array([2])),
+  ]);
+  assert.deepEqual(results, [
+    { status: 'rejected', reason: failure },
+    { status: 'rejected', reason: failure },
+  ]);
+  assert.equal(tunnel.failure, failure);
+  assert.equal(tunnel.isEstablished, false);
+  assert.equal(fake.sent.length, written);
+  assert.equal(fake.closeCount, 1);
+  assert.equal(encryptions, 1);
 });
 
 test('an out-of-order frame is refused instead of silently skipping content', async () => {

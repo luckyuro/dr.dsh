@@ -33,9 +33,10 @@ export const INTERFACE_PATH = `${TUNNEL_PREFIX}/interface`;
 /**
  * Request paths the service worker must leave alone.
  *
- * The relay and DSH share one origin from the page's point of view, so this list is the whole
- * of what tells them apart. It has to name **only** paths that are unambiguously the client's
- * own, because a path listed here is fetched from the relay rather than through the tunnel.
+ * The relay and DSH share one origin from the page's point of view. This list
+ * names the client's own files; the worker's control and internal request
+ * paths are excluded separately below. A path listed here is fetched from the
+ * relay rather than through the tunnel.
  *
  * `/assets/` and `/icons/` used to be listed, on the assumption that they were the client's.
  * They are not: DSH's own interface is a built web app, and its hashed bundles live under
@@ -47,9 +48,6 @@ export const INTERFACE_PATH = `${TUNNEL_PREFIX}/interface`;
 const PASS_THROUGH_PREFIXES: readonly string[] = [
   // The client's own modules. The relay serves these from disk; DSH has no `/client/`.
   '/client/',
-  // The daemon's control surface. It travels through the same tunnel, but as a control message
-  // rather than as a proxied DSH request, so it must not be rewritten into DSH's namespace.
-  `${TUNNEL_PREFIX}/control/`,
 ];
 
 /**
@@ -75,10 +73,15 @@ export const SHELL_PATH = '/';
  */
 export function isInterceptablePath(pathname: string, mode: string = 'no-cors'): boolean {
   if (!pathname.startsWith('/')) return false;
-  // The interface path is the one tunnel-prefixed request that *is* intercepted: it is the
-  // page asking for DSH, so it has to be translated rather than passed through.
+  // DSH's relative assets resolve beneath the interface's virtual prefix, so
+  // only the worker's own endpoints are excluded. Excluding the whole prefix
+  // sends /__dr/assets and /__dr/plugins to the relay and leaves a blank UI.
   if (pathname === INTERFACE_PATH) return true;
-  if (pathname.startsWith(TUNNEL_PREFIX)) return false;
+  if (pathname === TUNNEL_PREFIX
+    || pathname === `${TUNNEL_PREFIX}/control`
+    || pathname.startsWith(`${TUNNEL_PREFIX}/control/`)
+    || pathname === `${TUNNEL_PREFIX}/dsh`
+    || pathname.startsWith(`${TUNNEL_PREFIX}/dsh/`)) return false;
   if (pathname === SHELL_PATH && mode === 'navigate') return false;
   return !PASS_THROUGH_PREFIXES.some(prefix => pathname.startsWith(prefix));
 }
