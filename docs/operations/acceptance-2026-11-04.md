@@ -27,7 +27,7 @@ DSH `0.2.2-alpha.2` 使用本次固定并验证的 Cordis alpha.1 依赖组合�
 
 | 检查 | 结果与范围 |
 | :--- | :--- |
-| `pnpm run verify` | Rust 312 项、TypeScript 349 项、CLI/打包脚本 9 项通过；clippy、类型、DSH 导入隔离与文档链接通过 |
+| `pnpm run verify` | Rust 322 项、TypeScript 349 项、CLI/打包脚本 9 项通过；clippy、类型、DSH 导入隔离与文档链接通过 |
 | `browser-pairing-smoke.mjs` | **15/15**：回车一次提交，配对后自动连接真实 DSH；约 1.5 秒打开界面；保留 daemon PID、刷新免输入、崩溃报告落盘 |
 | `browser-rooms-smoke.mjs` | **14/14**：v1 数据迁移、第二台电脑追加、一身份多房间、正确机器的审计记录、遗忘单台与切换无浏览器错误 |
 | `browser-embedded-smoke.mjs` | `0.2.2-alpha.2` **19/19**，另含离线脚本 **6/6**；真实 mux、主机目录与新建目录、160 个并发 HTTP 拒绝、多房间隔离、Worker 更换与冷启动、第二客户端拒绝、重载与断开重连 |
