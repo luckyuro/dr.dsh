@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { encodeRequest, request } from './proxy.ts';
+import { encodeRequest, request, requestStream } from './proxy.ts';
 import type { Tunnel } from './tunnel.ts';
 
 /** A tunnel that replays a scripted response as soon as a request is sent. */
@@ -144,6 +144,65 @@ test('an already aborted request never enters the tunnel', async () => {
   abort.abort();
   await assert.rejects(request(tunnel, 13, encodeRequest(1, 'GET', '/unused'), abort.signal), /cancelled/);
   assert.equal(sent.length, 0);
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
+});
+
+test('a streamed response delivers successive chunks and closes only at its end', async () => {
+  const { tunnel, handlers, closed } = scriptedTunnel(() => [message(4, [...u64(1), 0, 200, 0, 0])]);
+  const response = await requestStream(tunnel, 15, encodeRequest(1, 'GET', '/events'));
+  const reader = response.body.getReader();
+  const first = reader.read();
+  handlers.get(15)?.(message(5, text('data: first\n\n')));
+  assert.equal(new TextDecoder().decode((await first).value), 'data: first\n\n');
+  const second = reader.read();
+  handlers.get(15)?.(message(5, text('data: next\n\n')));
+  assert.equal(new TextDecoder().decode((await second).value), 'data: next\n\n');
+  handlers.get(15)?.(message(6, []));
+  assert.equal((await reader.read()).done, true);
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
+});
+
+test('a failure after streamed headers errors the body instead of silently truncating it', async () => {
+  const { tunnel, handlers, closed } = scriptedTunnel(() => [message(4, [...u64(1), 0, 200, 0, 0])]);
+  const response = await requestStream(tunnel, 17, encodeRequest(1, 'GET', '/events'));
+  const reader = response.body.getReader();
+  const rejected = assert.rejects(reader.read(), /DSH response failed/);
+  handlers.get(17)?.(message(7, [...u64(1), ...text('DSH response failed')]));
+  await rejected;
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
+});
+
+test('cancelling a streamed body releases its consumer and discards late frames', async () => {
+  const { tunnel, handlers, closed } = scriptedTunnel(() => [message(4, [...u64(1), 0, 200, 0, 0])]);
+  const response = await requestStream(tunnel, 19, encodeRequest(1, 'GET', '/events'));
+  await response.body.cancel();
+  assert.equal(handlers.size, 1);
+  assert.doesNotThrow(() => handlers.get(19)?.(message(5, [])));
+  handlers.get(19)?.(message(6, []));
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
+});
+
+test('a paused consumer cannot retain an unbounded event stream', async () => {
+  const { tunnel, handlers, closed } = scriptedTunnel(() => [message(4, [...u64(1), 0, 200, 0, 0])]);
+  const response = await requestStream(tunnel, 21, encodeRequest(1, 'GET', '/events'));
+  const chunk = message(5, text('x'.repeat(64 * 1024)));
+  for (let index = 0; index < 129; index += 1) handlers.get(21)?.(chunk);
+  await assert.rejects(response.body.getReader().read(), /not consuming/);
+  handlers.get(21)?.(message(6, []));
+  assert.equal(handlers.size, 0);
+  assert.equal(closed.size, 0);
+});
+
+test('carrier closure errors an open response body and releases its subscriptions', async () => {
+  const { tunnel, handlers, closed } = scriptedTunnel(() => [message(4, [...u64(1), 0, 200, 0, 0])]);
+  const response = await requestStream(tunnel, 23, encodeRequest(1, 'GET', '/events'));
+  const rejected = assert.rejects(response.body.getReader().read(), /carrier ended/);
+  for (const notify of closed) notify('carrier ended');
+  await rejected;
   assert.equal(handlers.size, 0);
   assert.equal(closed.size, 0);
 });

@@ -22,7 +22,7 @@
 import { t } from './i18n.ts';
 
 /** Bump for every client release: one cache contains one complete module graph. */
-export const OFFLINE_CACHE = 'dr.dsh-client-v14';
+export const OFFLINE_CACHE = 'dr.dsh-client-v17';
 
 /**
  * The paths cached at install time rather than on first use.
@@ -42,6 +42,8 @@ export const PRECACHE_PATHS: readonly string[] = [
   '/client/identity.js',
   '/client/storage.js',
   '/client/credential.js',
+  '/client/validation.js',
+  '/client/preflight.js',
   '/client/health.js',
   '/client/ed25519.js',
   '/client/spake2.js',
@@ -57,6 +59,7 @@ export const PRECACHE_PATHS: readonly string[] = [
   '/client/interface-bridge.js',
   '/client/floating-control.js',
   '/client/proxy-stream.js',
+  '/client/proxy-ws.js',
   '/client/notifications.js',
   '/client/manifest.webmanifest',
   '/client/icon-192.png',

@@ -58,7 +58,7 @@ test('the pre-cache list is the client\'s own files and nothing else', () => {
   assert.ok(PRECACHE_PATHS.includes('/client/interface-bridge.js'), 'the embedded shell needs its socket bridge offline');
   assert.ok(PRECACHE_PATHS.includes('/client/floating-control.js'), 'connection controls must remain reachable offline');
   assert.ok(PRECACHE_PATHS.includes('/client/proxy-stream.js'), 'the socket bridge and HTTP proxy share a stream allocator');
-  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v14');
+  assert.equal(OFFLINE_CACHE, 'dr.dsh-client-v17');
 });
 
 test('the release cache includes every emitted module and static asset before activation', () => {
@@ -68,7 +68,8 @@ test('the release cache includes every emitted module and static asset before ac
   const assets = readdirSync(new URL('../static/', import.meta.url))
     .map(name => name === 'index.html' ? '/' : `/client/${name}`);
   assert.equal(new Set(PRECACHE_PATHS).size, PRECACHE_PATHS.length, 'duplicate requests make an atomic cache batch fail');
-  assert.deepEqual([...PRECACHE_PATHS].sort(), [...modules, ...assets].sort());
+  assert.deepEqual([...PRECACHE_PATHS].sort(), [...modules, '/client/validation.js', '/client/proxy-ws.js', ...assets].sort());
+  assert.ok(readFileSync(new URL('../../../packages/validation/src/index.js', import.meta.url), 'utf8').includes('validateCredential'));
 });
 
 test('the offline sentence says what is lost and what is not', () => {

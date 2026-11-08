@@ -334,7 +334,7 @@ fn child_args(request: &Request) -> Managed<Vec<String>> {
         "service.enable" => vec!["enable".into()],
         "service.disable" => vec!["disable".into()],
         "logs.tail" => vec!["logs".into()],
-        "doctor" => vec!["doctor".into()],
+        "doctor" => vec!["doctor".into(), "--json".into()],
         "audit.read" => vec!["audit".into()],
         "audit.clear" => vec!["audit".into(), "--clear".into()],
         "crashes.read" => vec!["crashes".into()],

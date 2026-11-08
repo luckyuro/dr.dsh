@@ -3,6 +3,7 @@ import { decodeMessage, encodeWsData, encodeWsOpen } from './proxy.ts';
 import { allocateProxyStream } from './proxy-stream.ts';
 import { toDshPath } from './routing.ts';
 import type { SocketTunnel } from './websocket.ts';
+import { WebSocketTextAssembler } from '@dr.dsh/protocol/proxy-ws';
 
 export interface InterfaceBridge {
   workerReady(): void;
@@ -21,7 +22,7 @@ export function interfacePort(event: Pick<MessageEvent, 'origin' | 'source' | 'd
 
 /** All wire identifiers come from the tunnel allocator, including across iframe reloads. */
 export function serveInterfacePort(tunnel: SocketTunnel, port: MessagePort): InterfaceBridge {
-  const sockets = new Map<number, { streamId: number; stop(): void }>();
+  const sockets = new Map<number, { streamId: number; text: WebSocketTextAssembler; stop(): void }>();
   let closed = false;
   const post = (message: unknown): void => {
     if (closed) return;
@@ -31,6 +32,7 @@ export function serveInterfacePort(tunnel: SocketTunnel, port: MessagePort): Int
     const socket = sockets.get(id);
     if (socket === undefined) return;
     sockets.delete(id);
+    socket.text.reset();
     socket.stop();
     if (upstream) void tunnel.send(socket.streamId, encodeWsData(socket.streamId, { kind: 'close' })).catch(() => {});
     post({ kind: 'closed', id, code, reason });
@@ -51,6 +53,7 @@ export function serveInterfacePort(tunnel: SocketTunnel, port: MessagePort): Int
       try {
         const streamId = allocateProxyStream(tunnel);
         const encoded = encodeWsOpen(streamId, toDshPath(message.target));
+        const text = new WebSocketTextAssembler();
         const stop = tunnel.on(streamId, payload => {
           if (closed || !sockets.has(id)) return;
           let decoded;
@@ -62,10 +65,18 @@ export function serveInterfacePort(tunnel: SocketTunnel, port: MessagePort): Int
             else post({ kind: 'opened', id, status: decoded.status });
           } else if (decoded.kind === 'wsData') {
             if (decoded.frame.kind === 'close') retire(id, 1000, '', false);
+            else if (text.pending) retire(id, 1006, 'DSH interrupted a fragmented message; reconnect the interface.', true);
             else post({ kind: 'data', id, text: decoded.frame.text });
+          } else if (decoded.kind === 'wsTextChunk') {
+            try {
+              const complete = text.push(decoded);
+              if (complete !== undefined) post({ kind: 'data', id, text: complete });
+            } catch {
+              retire(id, 1006, 'DSH sent invalid WebSocket text fragments; update both daemon and client, then reconnect.', true);
+            }
           } else if (decoded.kind === 'failure') retire(id, 1006, decoded.reason, false);
         });
-        sockets.set(id, { streamId, stop });
+        sockets.set(id, { streamId, text, stop });
         void tunnel.send(streamId, encoded).catch(() => retire(id, 1006, 'The tunnel could not open the interface socket. Reconnect to your computer.', true));
       } catch {
         post({ kind: 'closed', id, code: 1006, reason: 'The tunnel could not allocate this interface socket. Reconnect to your computer.' });

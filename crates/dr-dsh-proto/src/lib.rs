@@ -37,6 +37,7 @@ pub mod error;
 pub mod frame;
 pub mod json;
 pub mod mux;
+pub mod proxy_ws;
 
 pub use error::{ProtoError, Result};
 

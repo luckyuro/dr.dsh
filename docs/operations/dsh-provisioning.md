@@ -1,11 +1,12 @@
 # daemon 自动安装 DSH 与插件
 
-以下行为从 v0.2.0 起可用；旧二进制需先更新。
+以下说明对应当前源码构建。已发布 v0.2.0 的固定版本仍为 `0.2.2-alpha.2`，不随本文自动改变。
 
 首次执行 `drdsh daemon install`，未传 `--dsh` 时会通过本机 npm 从
-`https://registry.npmjs.org` 安装固定版本 **DSH 0.2.2-alpha.2**。主机须已安装
+`https://registry.npmjs.org` 安装固定版本 **DSH 0.2.2-rc.1**。主机须已安装
 Node **24.9 或更新版本**及 npm；安装器不安装 Node，也不修改全局 npm 包或上游源码仓库。
-DSH 的 Cordis、loader、include、group、timer、cosmokit 与 schemastery 使用已验收的 alpha.1 版本组合。
+DSH 的 Cordis 固定为 `4.1.0`，loader/include/group 为 `1.1.0`，timer 为 `1.2.0`，
+cosmokit 为 `1.9.0`，schemastery 为 `3.19.0`。
 这些是 npm 安装约束，不修改 DSH 源码。DSH 顶层版本固定但底层范围仍浮动时，
 曾出现首次提示无法保存（`settings/rejected: next is not a function`）和会话创建失败。
 安装器现在固定这一组合，并在复用私有目录时检查版本；已有外部 `--dsh` 安装由用户维护。
@@ -23,14 +24,15 @@ DSH 的 Cordis、loader、include、group、timer、cosmokit 与 schemastery 使
 该命令省略 `--dsh` 和 `--with-plugin`，并在安装完成后启动服务。要登录时自动启动可再加
 `--enable`；仅准备文件则去掉 `--start`。
 
-安装位置为 `<prefix>/lib/dr.dsh/daemon/dsh/0.2.2-alpha.2/`，内含 npm 的 `package-lock.json`、
+安装位置为 `<prefix>/lib/dr.dsh/daemon/dsh/0.2.2-rc.1/`，内含 npm 的 `package-lock.json`、
 依赖和固定 Node 绝对路径的启动脚本。`daemon.json` 保存 `dshManaged: true`、
 `dshVersion` 与该启动脚本的绝对路径。npm 安装、版本检查与插件 ESM 产物准备均在停止现有服务前完成。
 失败会报告发生在哪一阶段；不会改用旧 Release 或 PATH 上另一个 DSH。
 自动下载隔离用户与全局 npm 配置，固定官方 registry 并保留 TLS 证书校验；可使用已有的网络代理。
 
 使用 `--dsh /absolute/path/to/dsh` 时，安装器使用所选程序并保留其外部归属。重新安装时，
-已有 DSH 路径、插件归属和已选择的插件组件继续沿用；旧安装未选择插件时可用 `--with-plugin`
+已有 DSH 路径、插件归属和已选择的插件组件继续沿用；私有 `0.2.2-alpha.2` 安装也保留其
+版本、目录和原先的 Cordis alpha.1 固定组合，不会随 daemon 更新强制升级 DSH；旧安装未选择插件时可用 `--with-plugin`
 补装。该默认行为不自动迁移 `DSH_HOME`、会话、账号状态、设备登记或配对密钥。
 
 插件产物使用普通 JavaScript ESM，可直接安装进 DSH 的 `node_modules`。源码安装调用

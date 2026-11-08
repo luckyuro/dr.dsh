@@ -30,8 +30,12 @@ DSH 和会话数据留在你的电脑上。dr.dsh 将真实的 DSH 界面送到�
 
 发布包支持 **Linux x86_64（musl）** 和 **macOS Apple Silicon**。Linux 提供 Relay、Daemon 和混合包；
 macOS 提供 Daemon 包。独立插件包包含这两个平台的原生程序。
-DSH 兼容基准为 `0.2.2-alpha.2`，同时回归 `0.2.1-rc.5`。
+已发布的 v0.2.0 包使用 DSH `0.2.2-alpha.2`；当前源码支持 `0.2.2-rc.1`，同时回归 `0.2.1-rc.5`。
 自动安装会固定已验收的 DSH 与 Cordis 依赖组合，详见[兼容记录](docs/integration/dsh-surface.md)。
+
+当前源码还加入了结构化诊断与输入校验，修复了自定义管理实例接管、持续响应和长会话快照。
+这些改动尚未包含在 v0.2.0 下载包中。具体变更和配套升级要求见[未发布的源码更新](docs/operations/releases.md#未发布的源码更新)，
+实测范围见 [11 月 7 日验收记录](docs/operations/acceptance-2026-11-07.md)。
 
 ## 快速开始
 

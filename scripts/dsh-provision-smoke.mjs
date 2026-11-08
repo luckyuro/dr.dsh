@@ -1,5 +1,6 @@
 /** Real npm DSH provisioning and plugin registration in isolated directories.
  * --check-browser also checks first-run settings writes with PLAYWRIGHT_MODULE / CHROMIUM_BIN.
+ * --previous-drdsh <binary> verifies an older managed installation survives the new installer.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -14,6 +15,9 @@ const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const binary = resolve(args[0] === '--drdsh' ? args[1] : join(repo, 'target/debug/drdsh'));
 if (!existsSync(binary)) { console.error('Build drdsh first, or pass --drdsh <binary>.'); process.exit(2); }
+const previousAt = args.indexOf('--previous-drdsh');
+const previousBinary = previousAt >= 0 && args[previousAt + 1] ? resolve(args[previousAt + 1]) : undefined;
+if (previousAt >= 0 && (!previousBinary || !existsSync(previousBinary))) { console.error('--previous-drdsh needs an existing older drdsh binary.'); process.exit(2); }
 const scratch = mkdtempSync('/tmp/drdsh-provision-');
 const prefix = join(scratch, 'prefix');
 const bundle = join(scratch, 'bundle');
@@ -93,7 +97,7 @@ try {
   const configPath = join(prefix, 'etc/dr.dsh/daemon.json');
   const config = JSON.parse(readFileSync(configPath, 'utf8'));
   assert.equal(config.dshManaged, true);
-  assert.equal(config.dshVersion, '0.2.2-alpha.2');
+  assert.equal(config.dshVersion, '0.2.2-rc.1');
   assert.equal((await command(config.dsh, ['--version'])).trim(), config.dshVersion);
   assert.deepEqual(config.components, ['daemon', 'plugin']);
   check('omitting --dsh and --with-plugin installs pinned DSH and the plugin');
@@ -124,7 +128,7 @@ try {
   const dependencyPath = join(privateRoot, 'node_modules/@deepseek-ai/cordis/package.json');
   const dependency = readFileSync(dependencyPath, 'utf8');
   const before = readFileSync(configPath, 'utf8');
-  writeFileSync(dependencyPath, dependency.replace('4.0.6-alpha.1', '4.0.6-alpha.2'));
+  writeFileSync(dependencyPath, dependency.replace('4.1.0', '4.999.0'));
   let rejected = false;
   try { await command(binary, install); } catch { rejected = true; }
   finally { writeFileSync(dependencyPath, dependency); }
@@ -132,6 +136,30 @@ try {
   assert.equal(readFileSync(configPath, 'utf8'), before);
   assert.equal(readFileSync(lock, 'utf8'), lockBefore);
   check('incompatible private dependencies fail before changing the saved installation or lock');
+  if (previousBinary) {
+    stage = 'existing managed DSH version retention';
+    const previousPrefix = join(scratch, 'previous-prefix');
+    const previousHome = join(scratch, 'previous-home');
+    const previousInstall = ['daemon', 'install', '--source', bundle, '--prefix', previousPrefix,
+      '--dsh-home', previousHome, '--workdir', scratch];
+    copyFileSync(previousBinary, join(bundle, 'bin/drdsh'));
+    await command(previousBinary, previousInstall);
+    const previousConfigPath = join(previousPrefix, 'etc/dr.dsh/daemon.json');
+    const oldConfig = JSON.parse(readFileSync(previousConfigPath, 'utf8'));
+    assert.equal(oldConfig.dshVersion, '0.2.2-alpha.2');
+    const oldLock = join(dirname(dirname(oldConfig.dsh)), 'package-lock.json');
+    const oldLockBytes = readFileSync(oldLock, 'utf8');
+    copyFileSync(binary, join(bundle, 'bin/drdsh'));
+    await command(binary, previousInstall);
+    const retained = JSON.parse(readFileSync(previousConfigPath, 'utf8'));
+    assert.equal(retained.dshVersion, oldConfig.dshVersion);
+    assert.equal(retained.dsh, oldConfig.dsh);
+    assert.equal(retained.dshHome, previousHome);
+    assert.equal(readFileSync(oldLock, 'utf8'), oldLockBytes);
+    assert.equal((await command(retained.dsh, ['--version'])).trim(), oldConfig.dshVersion);
+    await command(binary, ['daemon', 'uninstall', '--prefix', previousPrefix]);
+    check('upgrading the installer preserves an existing alpha runtime, launcher, profile and lockfile');
+  }
   console.log(`Passed ${checks} DSH provisioning checks.`);
 } catch (error) {
   console.error(`DSH provisioning smoke failed during ${stage}: ${error instanceof assert.AssertionError ? 'assertion failed' : error.message}`);

@@ -349,6 +349,16 @@ try {
   assert.equal(new URL(page.url()).pathname, '/');
   assert.equal(await mux(frame, true), true);
   check('a real DSH opens automatically in the connected page and its live mux answers');
+  await frame.evaluate(() => {
+    const events = new EventSource(new URL('./plugins/events', location.href));
+    window.__DRDSH_SMOKE_EVENTS__ = { source: events, graphs: 0 };
+    events.addEventListener('message', event => {
+      if (JSON.parse(event.data).type === 'graph') window.__DRDSH_SMOKE_EVENTS__.graphs += 1;
+    });
+  });
+  await until(() => frame.evaluate(() => window.__DRDSH_SMOKE_EVENTS__.graphs > 0), 'an initial plugin graph before the event stream ends', 8000);
+  assert.equal(await frame.evaluate(() => window.__DRDSH_SMOKE_EVENTS__.source.readyState), 1);
+  check('the real plugin event stream delivers its graph while the HTTP response remains open');
   if (args.includes('--check-account-origin')) {
     const account = await frame.evaluate(async () => {
       const call = async (method, args) => {
@@ -449,6 +459,19 @@ try {
   assert.ok(refusals.every(status => status === 503));
   assert.equal(await mux(frame, true), true);
   check('160 concurrent HTTP refusals do not close or confuse the existing live socket');
+  const managementSocketRefused = await frame.evaluate(() => new Promise(resolve => {
+    const url = new URL('/_drdsh/manage', location.href);
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(url);
+    const finish = refused => { clearTimeout(timer); socket.close(); resolve(refused); };
+    const timer = setTimeout(() => finish(false), 5000);
+    socket.addEventListener('open', () => finish(false), { once: true });
+    socket.addEventListener('error', () => finish(true), { once: true });
+    socket.addEventListener('close', () => finish(true), { once: true });
+  }));
+  assert.equal(managementSocketRefused, true);
+  assert.equal(await mux(frame, true), true);
+  check('the encrypted WebSocket proxy also refuses the local management namespace');
 
   const second = await context.newPage();
   const otherFrame = await connect(second, url, secondKey, false);
@@ -464,6 +487,7 @@ try {
     }
   });
   await workerDebug.send('ServiceWorker.enable');
+  const graphsBeforeReplacement = await frame.evaluate(() => window.__DRDSH_SMOKE_EVENTS__.graphs);
   const replacement = [page, second].map(tab => tab.evaluate(() => new Promise(resolve => {
     navigator.serviceWorker.addEventListener('controllerchange', () => resolve(true), { once: true });
   })));
@@ -480,6 +504,9 @@ try {
   }, 'HTTP routing after worker replacement');
   assert.equal(await mux(frame, true), true);
   check('a service worker replacement restores both live ports without mixing machines');
+  await until(() => frame.evaluate(previous => window.__DRDSH_SMOKE_EVENTS__.graphs > previous,
+    graphsBeforeReplacement), 'plugin events reconnecting after worker replacement');
+  check('an open plugin event stream releases the old worker and reconnects after replacement');
 
   assert.ok(activeWorkerId, 'Chromium exposes the active service worker for the cold-start check');
   await workerDebug.send('ServiceWorker.stopWorker', { versionId: activeWorkerId });
@@ -487,6 +514,7 @@ try {
   assert.ok(await otherFrame.evaluate(async () => (await (await fetch('/')).text()).includes('fake dsh')));
   assert.equal(await mux(frame, true), true);
   check('a terminated service worker restores both HTTP routes without changing the live socket');
+  await frame.evaluate(() => window.__DRDSH_SMOKE_EVENTS__.source.close());
 
   const rival = await browser.newContext();
   const rivalPage = await rival.newPage();

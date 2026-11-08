@@ -536,6 +536,10 @@ mod tests {
             "components": ["daemon"]
         }))?;
         assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "0");
+        assert_eq!(
+            c.environment(&p)["DRDSH_MANAGER_PREFIX"],
+            p.prefix.to_string_lossy()
+        );
         c.components.push("plugin".into());
         assert_eq!(c.environment(&p)["DSHD_PLUGIN_REPORTS"], "1");
         for mac in [true, false] {

@@ -12,7 +12,7 @@ import { afterEach, test } from 'node:test';
 
 import { serveWorker } from './officer.ts';
 import type { Tunnel } from './tunnel.ts';
-import { WorkerTunnel } from './worker-service.ts';
+import { WorkerTunnel, toResponse } from './worker-service.ts';
 
 /** Channels opened by a test, released afterwards so the runner can exit. */
 const channels: MessageChannel[] = [];
@@ -103,7 +103,7 @@ test('a page request reaches DSH through the tunnel and its answer comes back', 
     body: new Uint8Array(0),
   });
   assert.equal(answer.status, 200);
-  assert.equal(new TextDecoder().decode(answer.body), '<html>DSH</html>');
+  assert.equal(await toResponse(answer).text(), '<html>DSH</html>');
   assert.deepEqual(answer.headers, [['content-type', 'text/html']]);
 });
 
@@ -136,8 +136,8 @@ test('two requests in flight are answered on their own streams', async () => {
     worker.fetch({ method: 'GET', path: '/a.css', headers: [], body: new Uint8Array(0) }),
     worker.fetch({ method: 'GET', path: '/b.js', headers: [], body: new Uint8Array(0) }),
   ]);
-  assert.equal(new TextDecoder().decode(first.body), 'same');
-  assert.equal(new TextDecoder().decode(second.body), 'same');
+  assert.equal(await toResponse(first).text(), 'same');
+  assert.equal(await toResponse(second).text(), 'same');
 });
 
 test('a tunnel that fails reaches the worker as a reason, not a hang', async () => {

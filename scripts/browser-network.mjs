@@ -1,4 +1,5 @@
 const offlineSessions = new WeakMap();
+export const OFFLINE_PROBE_PATH = '/__dr/control/offline-probe';
 
 /** Load a cached document with transport blocked and the offline browser indicator set. */
 export async function reloadOffline(context, page) {
@@ -9,21 +10,18 @@ export async function reloadOffline(context, page) {
   // otherwise a test of the page's offline message only tests that emulator regression.
   const session = await context.newCDPSession(page);
   offlineSessions.set(page, session);
-  try {
-    await session.send('Network.enable');
-    await session.send('Network.setBypassServiceWorker', { bypass: true });
-    const blocked = await page.evaluate(async () => {
-      try { await fetch('/healthz', { cache: 'no-store' }); return false; }
-      catch { return true; }
+  await session.send('Network.enable');
+  // This reserved path passes through the worker without caching or tunnelling.
+  // Globally bypassing the worker here can break the shell's pending dynamic imports.
+  const blocked = await page.evaluate(async path => {
+    try { await fetch(path, { cache: 'no-store' }); return false; }
+    catch { return true; }
+  }, OFFLINE_PROBE_PATH);
+  if (!blocked) throw new Error('The offline navigation did not keep uncached network requests blocked.');
+  if (await page.evaluate(() => navigator.onLine)) {
+    await session.send('Network.overrideNetworkState', {
+      offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
     });
-    if (!blocked) throw new Error('The offline navigation did not keep uncached network requests blocked.');
-    if (await page.evaluate(() => navigator.onLine)) {
-      await session.send('Network.overrideNetworkState', {
-        offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1,
-      });
-    }
-  } finally {
-    await session.send('Network.setBypassServiceWorker', { bypass: false });
   }
 }
 

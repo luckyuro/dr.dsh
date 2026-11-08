@@ -173,10 +173,13 @@ async fn start_fake_dsh() -> Result<(SocketAddr, Log), Box<dyn std::error::Error
                             .await;
                     }
                     axum::extract::ws::Message::Text(text) => {
+                        let reply = if text == "large-snapshot" {
+                            "历史😀".repeat(20_000)
+                        } else {
+                            format!("dsh-saw:{text}")
+                        };
                         let _ = socket
-                            .send(axum::extract::ws::Message::Text(
-                                format!("dsh-saw:{text}").into(),
-                            ))
+                            .send(axum::extract::ws::Message::Text(reply.into()))
                             .await;
                     }
                     axum::extract::ws::Message::Close(_) => break,
@@ -676,6 +679,29 @@ async fn a_websocket_upgrade_carries_frames_in_both_directions()
         }
         other => return Err(format!("expected a frame, got {other:?}").into()),
     }
+
+    // A session replay is one DSH message but several encrypted carrier frames.
+    let mut payload = Vec::new();
+    message::encode(
+        &ProxyMessage::WsData(message::WsData {
+            id: 9,
+            frame: message::WsFrame::Text("large-snapshot".into()),
+        }),
+        &mut payload,
+    )?;
+    client.send(1, &payload).await?;
+    let expected = "历史😀".repeat(20_000);
+    let mut received = Vec::new();
+    while received.len() < expected.len() {
+        let answer = tokio::time::timeout(PATIENCE, client.next_inbound()).await??;
+        assert!(answer.payload.len() < dr_dsh_proto::MAX_PAYLOAD_LEN as usize);
+        let chunk = dr_dsh_proto::proxy_ws::decode(&answer.payload)?;
+        assert_eq!(chunk.id, 9);
+        assert_eq!(chunk.total as usize, expected.len());
+        assert_eq!(chunk.offset as usize, received.len());
+        received.extend_from_slice(chunk.bytes);
+    }
+    assert_eq!(String::from_utf8(received)?, expected);
 
     // A second frame in the same direction, to prove the connection stays usable rather
     // than being a one-shot exchange.

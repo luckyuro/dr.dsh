@@ -13,14 +13,7 @@
 
 import { t, LocalizedError, type DisplayText } from './i18n.ts';
 
-/** The alphabet a displayed pairing code uses. */
-const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-
-/** How many symbols a code carries, once its grouping dashes are removed. */
-const CODE_SYMBOLS = 10;
-
-/** A room key, as unpadded base64url of 32 bytes. */
-const ROOM_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/u;
+import { validateCredential } from '@dr.dsh/validation';
 
 /** Why the pasted text was neither credential. */
 export class CredentialError extends LocalizedError {
@@ -54,27 +47,8 @@ export function classifyCredential(text: string): Credential {
     );
   }
 
-  // Grouping is presentation: `drdsh daemon pair` prints `XXXX-XXXX-XX`, and people paste it either way.
-  const symbols = [...trimmed.toUpperCase()].filter(character => character !== '-' && !/\s/u.test(character));
-  const folded = symbols.map(character =>
-    character === 'I' || character === 'L'
-      ? '1'
-      : character === 'O'
-        ? '0'
-        : character === 'U'
-          ? 'V'
-          : character,
-  );
-  if (folded.length === CODE_SYMBOLS && folded.every(symbol => CODE_ALPHABET.includes(symbol))) {
-    // Re-grouped rather than stored as typed, so the value that reaches the parser is the one the
-    // parser tests: two spellings of the same code must not become two code paths.
-    const ungrouped = folded.join('');
-    return { kind: 'code', code: `${ungrouped.slice(0, 4)}-${ungrouped.slice(4, 8)}-${ungrouped.slice(8)}` };
-  }
-
-  if (ROOM_KEY_PATTERN.test(trimmed)) {
-    return { kind: 'roomKey', roomKey: trimmed };
-  }
+  const result = validateCredential(trimmed);
+  if (!result.issues) return result.value;
 
   // One message for every near miss, naming both shapes: telling a user "that is 42 characters"
   // is useful only if they know it should be 43, and they do not.

@@ -50,6 +50,7 @@ server.listen(0, '127.0.0.1'); await once(server, 'listening');
 const origin = `http://127.0.0.1:${server.address().port}`;
 let browser;
 const browserErrors = [];
+const clientFailures = [];
 let activePage;
 let checks = 0;
 const check = message => console.log(`ok ${++checks} - ${message}`);
@@ -62,6 +63,10 @@ async function visit(context) {
   const page = await context.newPage();
   activePage = page;
   page.on('pageerror', error => browserErrors.push(error.message));
+  page.on('requestfailed', request => {
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith('/client/')) clientFailures.push(`${path}: ${request.failure()?.errorText}`);
+  });
   await page.goto(origin, { waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => navigator.serviceWorker.controller !== null);
   await page.reload({ waitUntil: 'domcontentloaded' });
@@ -156,7 +161,8 @@ try {
   await page.waitForFunction(() => document.getElementById('state')?.dataset.phase === 'offline');
   assert.equal(await page.title(), 'dr.dsh');
   assert.deepEqual(await pairingFingerprint(page), pairing);
-  assert.ok((await page.locator('#room-list').textContent()).includes('cache-upgrade-host'));
+  // The offline event can arrive before the shell finishes its asynchronous storage load.
+  await until(async () => (await page.locator('#room-list').textContent()).includes('cache-upgrade-host'), 'saved room rendering in the earlier offline shell');
   check('after the failed upgrade the earlier shell reloads offline and retains its pairing');
 
   await restoreOnline(context, page); unavailable = undefined;
@@ -184,7 +190,7 @@ try {
   await reloadOffline(context, page);
   await page.waitForFunction(() => document.getElementById('state')?.dataset.phase === 'offline');
   assert.deepEqual(await pairingFingerprint(page), pairing);
-  assert.ok((await page.locator('#room-list').textContent()).includes('cache-upgrade-host'));
+  await until(async () => (await page.locator('#room-list').textContent()).includes('cache-upgrade-host'), 'saved room rendering in the upgraded offline shell');
   assert.ok(Object.keys(await snapshot(page, newCache)).every(path => path === '/' || path.startsWith('/client/')));
   check('the upgraded complete shell also reloads offline without caching DSH paths or losing pairing');
   await context.close();
@@ -193,6 +199,7 @@ try {
   // Assertions compare only public asset hashes or private in-memory test digests; avoid dumping either.
   console.error(`Cache upgrade smoke failed after ${checks} checks: ${error instanceof assert.AssertionError ? 'assertion failed' : error.message}`);
   console.error('Browser errors:', browserErrors.join(' | '));
+  console.error('Client requests:', clientFailures.join(' | '));
   console.error('Page state:', await activePage?.evaluate(() => ({ online: navigator.onLine, phase: document.getElementById('state')?.dataset.phase, text: document.getElementById('state')?.textContent, booted: !!window.__DR_DSH_HEALTH__, form: !!document.getElementById('connection-form') })));
   process.exitCode = 1;
 } finally {

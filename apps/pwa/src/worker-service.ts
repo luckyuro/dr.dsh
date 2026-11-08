@@ -15,6 +15,7 @@
  * page  ─▶ worker   { kind: 'hand', port }          the tunnel, and the port to ask on
  * worker ─▶ page    { kind: 'request', id, method, path, headers, body }
  * page  ─▶ worker   { kind: 'response', id, status, headers, body }
+ * page  ─▶ worker   { kind: 'response-stream', id, status, headers, body: ReadableStream }
  * page  ─▶ worker   { kind: 'failed', id, reason }
  * ```
  *
@@ -78,12 +79,13 @@ export interface OutboundAnswer {
   /** Response headers. */
   readonly headers: readonly (readonly [string, string])[];
   /** The response body. */
-  readonly body: Uint8Array<ArrayBuffer>;
+  readonly body: Uint8Array<ArrayBuffer> | ReadableStream<Uint8Array<ArrayBuffer>>;
 }
 
 /** What the worker receives over the port. */
 export type Inbound =
   | { readonly kind: 'response'; readonly id: number; readonly status: number; readonly headers: readonly (readonly [string, string])[]; readonly body: ArrayBuffer }
+  | { readonly kind: 'response-stream'; readonly id: number; readonly status: number; readonly headers: readonly (readonly [string, string])[]; readonly body: ReadableStream<Uint8Array<ArrayBuffer>> }
   | { readonly kind: 'failed'; readonly id: number; readonly reason: string };
 
 /**
@@ -95,6 +97,7 @@ export type Inbound =
  */
 export class WorkerTunnel {
   private port: MessagePort | null = null;
+  private lifetime = new AbortController();
   private nextId = 1;
   private readonly pending = new Map<
     number,
@@ -113,6 +116,7 @@ export class WorkerTunnel {
    */
   public attach(port: MessagePort): void {
     this.detach();
+    this.lifetime = new AbortController();
     this.port = port;
     port.onmessage = (event: MessageEvent) => this.absorb(event.data as Inbound);
     port.start();
@@ -120,6 +124,9 @@ export class WorkerTunnel {
 
   /** Detaches the tunnel, failing anything in flight. */
   public detach(): void {
+    // Headers may already have resolved fetch(). Retiring a worker must also
+    // release these live bodies, or an endless SSE response blocks activation.
+    this.lifetime.abort(new Error('the tunnel was detached'));
     this.port?.close();
     this.port = null;
     for (const [, waiting] of this.pending) {
@@ -156,6 +163,7 @@ export class WorkerTunnel {
     if (waiting === undefined) {
       // A late answer for a request nobody is waiting for — the page reloaded, or a
       // duplicate. Dropping it is right; throwing here would kill the worker's handler.
+      if (message.kind === 'response-stream') void message.body.cancel().catch(() => {});
       return;
     }
     this.pending.delete(message.id);
@@ -166,9 +174,45 @@ export class WorkerTunnel {
     waiting.resolve({
       status: message.status,
       headers: message.headers,
-      body: new Uint8Array(message.body),
+      body: message.kind === 'response-stream'
+        ? workerBody(message.body, this.lifetime.signal, message.headers.some(([name, value]) =>
+          name.toLowerCase() === 'content-type' && value.toLowerCase().startsWith('text/event-stream')))
+        : new Uint8Array(message.body),
     });
   }
+}
+
+/** Retiring an SSE response must produce EOF: Chromium treats an errored body as a permanent EventSource failure. */
+function workerBody(body: ReadableStream<Uint8Array<ArrayBuffer>>, signal: AbortSignal, events: boolean): ReadableStream<Uint8Array<ArrayBuffer>> {
+  if (!events) return body.pipeThrough(new TransformStream<Uint8Array<ArrayBuffer>, Uint8Array<ArrayBuffer>>(), { signal });
+  const reader = body.getReader();
+  let ended = false;
+  let controller: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>>;
+  const cleanup = () => { ended = true; signal.removeEventListener('abort', retire); };
+  const retire = () => {
+    if (ended) return;
+    cleanup();
+    controller.close();
+    void reader.cancel().catch(() => {});
+  };
+  return new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(value) {
+      controller = value;
+      signal.addEventListener('abort', retire, { once: true });
+      if (signal.aborted) retire();
+    },
+    async pull() {
+      try {
+        const next = await reader.read();
+        if (ended) return;
+        if (next.done) { cleanup(); controller.close(); }
+        else controller.enqueue(next.value);
+      } catch (error) {
+        if (!ended) { cleanup(); controller.error(error); }
+      }
+    },
+    async cancel() { cleanup(); await reader.cancel(); },
+  });
 }
 
 /** Keeps every shell and its documents on the tunnel that shell handed over. */
@@ -344,6 +388,11 @@ export function toResponse(answer: OutboundAnswer): Response {
       continue;
     }
     headers.append(name, value);
+  }
+  // Fetch forbids a body even when it is empty for these HTTP statuses.
+  if ([204, 205, 304].includes(answer.status)) {
+    if (answer.body instanceof ReadableStream) void answer.body.cancel().catch(() => {});
+    return new Response(null, { status: answer.status, headers });
   }
   return new Response(answer.body, { status: answer.status, headers });
 }

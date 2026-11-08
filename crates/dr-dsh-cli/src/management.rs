@@ -447,6 +447,12 @@ impl Config {
                 p.root.join("client").to_string_lossy().into(),
             );
         } else {
+            // A managed plugin must address this installation even when the
+            // service manager starts it without the installer's environment.
+            env.insert(
+                "DRDSH_MANAGER_PREFIX".into(),
+                p.prefix.to_string_lossy().into(),
+            );
             env.insert(
                 "DSHD_PLUGIN_REPORTS".into(),
                 if self.plugin_reports_enabled() {
@@ -892,7 +898,7 @@ pub(crate) fn help(scope: &str) -> String {
   --plugin-owner external leaves the DSH bundle to DSH's package manager.
   --plugin-reports is independent of bundle ownership; old settings remain compatible.
   --local-admin enables authenticated local IPC when daemon next starts (default off).
-  First installation installs private DSH 0.2.2-alpha.2 and the daemon-owned plugin.
+  First installation installs private DSH 0.2.2-rc.1 and the daemon-owned plugin.
   Automatic DSH installation needs Node >=24.9 and npm; --dsh uses an existing DSH.
   Reinstallation preserves an existing DSH path and plugin ownership/selection.
 

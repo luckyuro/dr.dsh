@@ -255,12 +255,7 @@ async function install(component, options, p) {
     if (list.includes('client')) cpSync(join(source, 'apps/pwa/dist'), join(staging, 'client'), { recursive: true });
     if (list.includes('plugin')) {
       const dest = join(staging, 'plugin');
-      mkdirSync(dest);
-      for (const file of ['package.json', 'cordis.patch.yml', 'src']) cpSync(join(source, 'plugins/dr.dsh', file), join(dest, file), { recursive: true });
-      const manifest = JSON.parse(readFileSync(join(dest, 'package.json'), 'utf8'));
-      delete manifest.devDependencies;
-      delete manifest.scripts;
-      atomicWrite(join(dest, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`);
+      await inherit(process.execPath, [join(source, 'scripts/package-plugin-source.mjs'), dest], { cwd: source });
     }
     if (previous) for (const name of [...services(list)].reverse()) {
       if (previous.components.includes(name) && serviceState(previous, name).running) {

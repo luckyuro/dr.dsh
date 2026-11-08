@@ -21,6 +21,8 @@ const STATIC = new Map([
   ['/_drdsh/manage', { file: 'manage.html', type: 'text/html; charset=utf-8' }],
   ['/_drdsh/manage.css', { file: 'manage.css', type: 'text/css; charset=utf-8' }],
   ['/_drdsh/manage.js', { file: 'manage.js', type: 'text/javascript; charset=utf-8' }],
+  ['/_drdsh/validation.js', { file: 'validation.js', type: 'text/javascript; charset=utf-8' }],
+  ['/_drdsh/diagnostics.js', { file: 'diagnostics.js', type: 'text/javascript; charset=utf-8' }],
 ]);
 const METHODS = new Map([
   ...[...STATIC.keys()].map(path => [path, 'GET'] as const),
@@ -226,14 +228,17 @@ export function createManagementHandler(surface: DshManagementSurface, resources
 }
 
 function quote(value: string): string { return `'${value.replaceAll("'", "'\\''")}'`; }
-export async function createTrustedLauncher(storageRoot: string, executable = process.execPath, entrypoint = process.argv[1]): Promise<string> {
+export async function createTrustedLauncher(storageRoot: string, prefix: string, executable = process.execPath, entrypoint = process.argv[1]): Promise<string> {
+  if ([storageRoot, prefix].some(value => !isAbsolute(value) || /[\0\r\n]/u.test(value))) throw new ManagementError('dsh_launcher_unavailable', 'The management storage and daemon prefix must be absolute local directories; repair the local plugin configuration before installing daemon.');
   if (!entrypoint || !isAbsolute(entrypoint) || !isAbsolute(executable) || /[\0\r\n]/u.test(entrypoint + executable)) throw new ManagementError('dsh_launcher_unavailable', 'DSH did not start through an absolute local CLI entrypoint; restart it through its installed CLI before installing daemon.');
   const node = await realpath(executable);
   const script = await realpath(entrypoint);
   if (!(await lstat(node)).isFile() || !(await lstat(script)).isFile()) throw new ManagementError('dsh_launcher_unavailable', 'The running DSH Node executable and CLI entrypoint must be regular local files.');
-  const hash = createHash('sha256').update(`${node}\0${script}`).digest('hex').slice(0, 16);
+  // OS services do not inherit the manual host's environment. Keep this launcher
+  // bound to the same manager so handoff cannot fall back to another installation.
+  const source = `#!/bin/sh\nexport DRDSH_MANAGER_PREFIX=${quote(prefix)}\nexport DRDSH_MANAGER_STORAGE=${quote(storageRoot)}\nexec ${quote(node)} ${quote(script)} "$@"\n`;
+  const hash = createHash('sha256').update(source).digest('hex').slice(0, 16);
   const path = join(storageRoot, `dsh-launcher-${hash}`);
-  const source = `#!/bin/sh\nexec ${quote(node)} ${quote(script)} "$@"\n`;
   try { await writeFile(path, source, { mode: 0o700, flag: 'wx' }); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
@@ -266,7 +271,7 @@ function openBrowser(command: string, url: string): Promise<void> {
 export async function mountManagementPage(surface: DshManagementSurface): Promise<() => void> {
   const bundledDirectory = fileURLToPath(new URL(`../native/${nativeTarget()}/`, import.meta.url));
   const first = await createManager({ profileHome: surface.profile.home, bundledDirectory });
-  const dsh = await createTrustedLauncher(first.storageRoot);
+  const dsh = await createTrustedLauncher(first.storageRoot, first.prefix);
   const installDefaults: InstallDefaults = { dsh, dshHome: surface.profile.home, workdir: surface.profile.cwd, port: surface.port };
   const manager = await createManager({ profileHome: surface.profile.home, storageRoot: first.storageRoot, prefix: first.prefix, bundledDirectory, installDefaults });
   const authority = await createLocalManagementAuthority({ storageRoot: manager.storageRoot });
@@ -274,7 +279,7 @@ export async function mountManagementPage(surface: DshManagementSurface): Promis
   const web = createManagementHandler(surface, {
     manager, authority, installDefaults, managed: Boolean(process.env.DRDSH_MANAGED_INSTANCE), localBrowserAvailable: command !== undefined,
     async readAsset(file) {
-      const bytes = await readFile(new URL(`../web/${file}`, import.meta.url));
+      const bytes = await readFile(file === 'validation.js' ? new URL(import.meta.resolve('@dr.dsh/validation')) : new URL(`../web/${file}`, import.meta.url));
       if (bytes.length > 1024 * 1024) throw new ManagementError('management_asset_too_large', 'The plugin management asset exceeds its size limit; reinstall a complete plugin package.');
       return bytes;
     },

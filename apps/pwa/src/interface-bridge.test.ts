@@ -6,6 +6,7 @@ import { serveWorker } from './officer.ts';
 import { WorkerTunnel } from './worker-service.ts';
 import type { SocketTunnel } from './websocket.ts';
 import type { Tunnel } from './tunnel.ts';
+import { encodeTextChunk, MAX_TEXT_CHUNK_BYTES } from '@dr.dsh/protocol/proxy-ws';
 
 const cleanup: (() => void)[] = [];
 afterEach(() => { for (const stop of cleanup.splice(0)) stop(); });
@@ -89,6 +90,26 @@ test('two embedded documents can use the same local socket id without sharing tr
   assert.deepEqual(b.seen, []);
   const payload = left.sent[0]!.payload;
   assert.equal(new TextDecoder().decode(payload.slice(16, 16 + new DataView(payload.buffer).getUint32(12))), '/api/remote.mux');
+});
+
+test('a large session snapshot reaches the iframe as one intact text message', async () => {
+  const host = standIn();
+  const connected = attach(host.tunnel);
+  connected.client.postMessage({ kind: 'open', id: 1, target: '/__dr/api/remote.mux' });
+  await tick();
+  const stream = host.sent[0]!.stream;
+  host.listeners.get(stream)?.(opened(stream));
+  const text = JSON.stringify({ history: '历史😀'.repeat(20000) });
+  const bytes = new TextEncoder().encode(text);
+  for (let offset = 0; offset < bytes.length; offset += MAX_TEXT_CHUNK_BYTES) {
+    host.listeners.get(stream)?.(encodeTextChunk({ id: stream, total: bytes.length, offset,
+      bytes: bytes.slice(offset, offset + MAX_TEXT_CHUNK_BYTES) }));
+  }
+  await tick();
+  assert.deepEqual(connected.seen, [{ kind: 'opened', id: 1, status: 101 }, { kind: 'data', id: 1, text }]);
+  host.listeners.get(stream)?.(encodeWsData(stream, { kind: 'text', text: 'next message' }));
+  await tick();
+  assert.deepEqual(connected.seen.at(-1), { kind: 'data', id: 1, text: 'next message' });
 });
 
 test('reloading closes every old upstream socket and allocates fresh wire ids', async () => {

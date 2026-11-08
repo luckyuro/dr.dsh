@@ -6,6 +6,7 @@
   "description": "dr.dsh wire protocol: types, constants, and a conformance corpus",
   "exports": {
     ".": "./src/index.ts",
+    "./proxy-ws": "./src/proxy-ws.ts",
     "./conformance": "./src/conformance.ts"
   },
   "scripts": {

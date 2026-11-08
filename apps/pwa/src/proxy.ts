@@ -19,6 +19,7 @@
  */
 
 import { type Tunnel, TunnelError } from './tunnel.ts';
+import { decodeTextChunk, PROXY_TEXT_VERSION, type TextChunk } from '@dr.dsh/protocol/proxy-ws';
 
 /** Message tags, matching `crates/dr-dsh-daemon/src/proxy/message.rs`. */
 const TAG = {
@@ -161,6 +162,7 @@ export function encodeWsData(
  */
 export function decodeMessage(payload: Uint8Array<ArrayBuffer>): ProxyInbound | undefined {
   if (payload.length < 4 || payload[0] !== MAGIC[0] || payload[1] !== MAGIC[1]) return undefined;
+  if (payload[2] === PROXY_TEXT_VERSION) return { kind: 'wsTextChunk', ...decodeTextChunk(payload) };
   if (payload[2] !== VERSION) {
     throw new TunnelError(`the daemon speaks proxy message version ${payload[2]}, this client speaks ${VERSION}`);
   }
@@ -202,6 +204,7 @@ export function decodeMessage(payload: Uint8Array<ArrayBuffer>): ProxyInbound | 
 
 /** What the daemon can send on a proxied stream. */
 export type ProxyInbound =
+  | ({ readonly kind: 'wsTextChunk' } & TextChunk)
   | { readonly kind: 'responseStart'; readonly id: number; readonly status: number; readonly headers: ReadonlyMap<string, string> }
   | { readonly kind: 'responseBody'; readonly chunk: Uint8Array<ArrayBuffer> }
   | { readonly kind: 'responseEnd' }
@@ -350,6 +353,100 @@ export async function request(
     stopClosed();
     signal?.removeEventListener('abort', aborted);
   }
+}
+
+/** A response whose body remains live while DSH produces more data. */
+export interface StreamingResponse {
+  readonly head: ResponseHead;
+  readonly body: ReadableStream<Uint8Array<ArrayBuffer>>;
+}
+
+/**
+ * Delivers headers immediately, so SSE and other open responses reach the browser.
+ * Cancellation drops decoded data while draining late frames: this wire version
+ * has no per-request HTTP cancellation message.
+ */
+export async function requestStream(
+  tunnel: Tunnel,
+  streamId: number,
+  encoded: Uint8Array<ArrayBuffer>,
+  signal?: AbortSignal,
+): Promise<StreamingResponse> {
+  if (signal?.aborted) throw new TunnelError('the interface request was cancelled because its worker route ended');
+  let head: ResponseHead | undefined;
+  let ended = false;
+  let controller!: ReadableStreamDefaultController<Uint8Array<ArrayBuffer>>;
+  let resolveHead!: (response: StreamingResponse) => void;
+  let rejectHead!: (error: Error) => void;
+  let stopFrames = () => {};
+  let stopClosed = () => {};
+  const response = new Promise<StreamingResponse>((resolve, reject) => {
+    resolveHead = resolve;
+    rejectHead = reject;
+  });
+  const cleanup = () => {
+    stopFrames();
+    stopClosed();
+    signal?.removeEventListener('abort', aborted);
+  };
+  const fail = (reason: string, drain = false) => {
+    if (ended) return;
+    ended = true;
+    cleanup();
+    if (drain) discardResponse(tunnel, streamId);
+    const error = new TunnelError(reason);
+    rejectHead(error);
+    controller.error(error);
+  };
+  const aborted = () => fail('the interface request was cancelled because its worker route ended', true);
+  const body = new ReadableStream<Uint8Array<ArrayBuffer>>({
+    start(value) { controller = value; },
+    cancel() { aborted(); },
+  }, {
+    // The carrier can outpace a suspended tab. Bound that queue instead of
+    // retaining an unlimited response while the browser is not consuming it.
+    highWaterMark: 8 * 1024 * 1024,
+    size: chunk => chunk.byteLength,
+  });
+  stopClosed = tunnel.onClosed(reason => fail(reason));
+  if (!ended) {
+    stopFrames = tunnel.on(streamId, payload => {
+      if (ended) return;
+      try {
+        const message = decodeMessage(payload);
+        if (message?.kind === 'responseStart') {
+          if (head) throw new TunnelError('DSH sent response headers twice; reconnect the interface');
+          head = { id: message.id, status: message.status, headers: message.headers };
+          resolveHead({ head, body });
+        } else if (message?.kind === 'responseBody') {
+          if (!head) throw new TunnelError('a response body arrived before its head');
+          if (message.chunk.byteLength > (controller.desiredSize ?? 0)) {
+            fail('this browser is not consuming the streamed response fast enough; reload the interface or reconnect', true);
+            return;
+          }
+          controller.enqueue(message.chunk);
+        } else if (message?.kind === 'responseEnd') {
+          if (!head) throw new TunnelError('a response ended before its head arrived');
+          ended = true;
+          cleanup();
+          controller.close();
+        } else if (message?.kind === 'failure') {
+          fail(message.reason);
+        }
+      } catch (error) {
+        fail(error instanceof Error ? error.message : 'DSH sent an unreadable response; reconnect the interface', true);
+      }
+    });
+  }
+  if (ended) cleanup();
+  else {
+    signal?.addEventListener('abort', aborted, { once: true });
+    if (signal?.aborted) aborted();
+    else void tunnel.send(streamId, encoded).catch(error => {
+      fail(error instanceof Error ? error.message : 'the interface request could not enter the tunnel; reconnect');
+    });
+  }
+  return await response;
 }
 
 function discardResponse(tunnel: Tunnel, streamId: number): void {

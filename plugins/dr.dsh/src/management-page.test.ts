@@ -9,12 +9,15 @@ import { test } from 'node:test';
 import { createContext, runInContext } from 'node:vm';
 import { createManagementHandler } from './management-web.ts';
 import { createLocalManagementAuthority } from './manager.ts';
+import * as validation from '@dr.dsh/validation';
+
+const diagnostics = await import(new URL('../web/diagnostics.js', import.meta.url).href);
 
 const storageKey = 'drdsh.management.job';
 const jobId = 'a'.repeat(32);
 const prefix = '/private/test-instance';
 type Reply = { status?: number; body: unknown };
-type FetchOptions = { body?: string; headers: Record<string, string>; method: string };
+type FetchOptions = { body?: string; headers: Record<string, string>; method: string; signal: AbortSignal };
 type ResponsePort = { status: number; ok: boolean; json(): Promise<unknown> };
 type Listener = (event: { preventDefault(): void }) => unknown;
 
@@ -31,11 +34,18 @@ class PageElement {
   children: PageElement[] = [];
   files: { size: number; text(): Promise<string> }[] = [];
   flags = new Map<string, boolean>();
+  attributes = new Map<string, string>();
+  parentElement = { parentElement: { dataset: {} } };
+  focused = false;
   classList = { toggle: (name: string, value: boolean) => this.flags.set(name, value) };
   addEventListener(type: string, listener: Listener): void { this.listeners.set(type, listener); }
   append(...children: PageElement[]): void { this.children.push(...children); }
   replaceChildren(...children: PageElement[]): void { this.children = children; this.textContent = ''; }
   querySelector(): PageElement { return this; }
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  removeAttribute(name: string): void { this.attributes.delete(name); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
+  focus(): void { this.focused = true; }
 }
 
 const success = (result: unknown): Reply => ({ body: { version: 1, requestId: 'page-test', ok: true, result } });
@@ -64,6 +74,7 @@ async function page(options: {
     return found;
   };
   const submit = get('submit-job'); submit.dataset.operation = 'service.disable';
+  get('dashboard').hidden = true;
   const buttons = [submit, get('unlock-button'), get('lock'), get('refresh'), get('jobs-refresh')];
   const storage = new Map<string, string>();
   if (options.saved !== undefined) storage.set(storageKey, options.saved);
@@ -101,7 +112,8 @@ async function page(options: {
     },
     sessionStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value), removeItem: (key: string) => storage.delete(key) },
     location: { hash: '', pathname: '/_drdsh/manage', search: '' }, history: { replaceState() {} },
-    URLSearchParams, AbortSignal, Date, confirm: () => true, fetch: fetchPage,
+    URLSearchParams, AbortSignal, AbortController, Date, confirm: () => true, fetch: fetchPage,
+    validation, ...diagnostics,
     navigator: { clipboard: { async writeText(text: string) {
       if (options.clipboardDenied) throw new Error('clipboard denied');
       clipboard.push(text);
@@ -109,7 +121,7 @@ async function page(options: {
     setTimeout(callback: () => unknown, milliseconds = 0) { const id = ++nextTimer; timers.set(id, { callback, milliseconds }); return id; },
     clearTimeout(id: number) { timers.delete(id); },
   });
-  runInContext(await readFile(new URL('../web/manage.js', import.meta.url), 'utf8'), context);
+  runInContext((await readFile(new URL('../web/manage.js', import.meta.url), 'utf8')).replace(/^import .+;\n/gmu, ''), context);
   await until(() => !submit.disabled);
   const click = async (id: string, type = 'click') => {
     const listener = get(id).listeners.get(type);
@@ -193,6 +205,51 @@ test('copying a pairing is explicit, uses the browser address and stops after ca
   await app.click('pair-copy');
   assert.equal(app.clipboard.length, 1);
   assert.equal(app.storage.size, 0, 'copying must not persist the pairing secret');
+});
+
+test('locking while a response body is pending aborts it and allows immediate reauthorization', async () => {
+  const service = pairingService();
+  let stall = false;
+  let reading = false;
+  let aborted = false;
+  const app = await page({ fetch: async (path, init) => {
+    const response = await service.fetch(path, init);
+    if (!stall || !path.endsWith('/state')) return response;
+    return { ...response, json: () => new Promise((_, reject) => {
+      reading = true;
+      init.signal.addEventListener('abort', () => { aborted = true; reject(init.signal.reason); }, { once: true });
+    }) };
+  } });
+  await app.unlock();
+  stall = true;
+  app.get('refresh').listeners.get('click')!({ preventDefault() {} });
+  await until(() => reading);
+  assert.equal(app.get('lock').disabled, false);
+  await app.click('lock');
+  assert.equal(aborted, true);
+  assert.equal(app.get('dashboard').hidden, true);
+  stall = false;
+  await app.unlock();
+  assert.equal(app.get('dashboard').hidden, false);
+});
+
+test('authorization format errors remain local and configuration errors focus the first invalid field', async () => {
+  const app = await page();
+  await app.unlock('WRONG-CODE');
+  assert.equal(app.get('dashboard').hidden, true);
+  assert.equal(app.get('capability-error').hidden, false);
+  assert.equal(app.get('capability').focused, true);
+  await app.unlock();
+  app.get('relay').value = 'https://relay.example';
+  app.get('port').value = '0';
+  app.get('workdir').value = 'relative';
+  await app.click('config-form', 'submit');
+  assert.equal(app.get('config-errors').hidden, false);
+  assert.equal(app.get('relay').getAttribute('aria-invalid'), 'true');
+  assert.equal(app.get('relay').focused, true);
+  assert.equal(app.get('port-error').hidden, false);
+  assert.equal(app.get('workdir-error').hidden, false);
+  assert.deepEqual(app.requests, []);
 });
 
 test('clipboard denial leaves the current code visible with manual copy instructions', async () => {

@@ -15,14 +15,14 @@
  * @module @dr.dsh/pwa/officer
  */
 
-import { encodeRequest, request } from './proxy.ts';
+import { encodeRequest, requestStream } from './proxy.ts';
 import { allocateProxyStream } from './proxy-stream.ts';
 import type { Tunnel } from './tunnel.ts';
 
 /** The messages the page sends to the worker. */
 export interface OfficerReply {
-  /** `response` or `failed`. */
-  readonly kind: 'response' | 'failed';
+  /** A streamed answer or a failure before its headers arrive. */
+  readonly kind: 'response-stream' | 'failed';
   /** The request this answers. */
   readonly id: number;
   /** HTTP status, on a response. */
@@ -30,7 +30,7 @@ export interface OfficerReply {
   /** Response headers, on a response. */
   readonly headers?: readonly (readonly [string, string])[];
   /** Response body, on a response. */
-  readonly body?: ArrayBuffer;
+  readonly body?: ReadableStream<Uint8Array<ArrayBuffer>>;
   /** Why the request failed, on a failure. */
   readonly reason?: string;
 }
@@ -74,16 +74,14 @@ export function serveWorker(tunnel: Tunnel, port: MessagePort): () => void {
           headers: incoming.headers,
           body: new Uint8Array(incoming.body),
         });
-        const answer = await request(tunnel, streamId, encoded, lifetime.signal);
-        if (stopped) return;
+        const answer = await requestStream(tunnel, streamId, encoded, lifetime.signal);
+        if (stopped) { await answer.body.cancel().catch(() => {}); return; }
         post(port, {
-          kind: 'response',
+          kind: 'response-stream',
           id: incoming.id,
           status: answer.head.status,
           headers: [...answer.head.headers],
-          // `slice()` rather than the view itself: the body has to be copied to be
-          // transferable, and a view into a larger buffer would send that buffer.
-          body: answer.body.slice().buffer,
+          body: answer.body,
         });
       } catch (error) {
         if (stopped) return;
@@ -111,8 +109,15 @@ export function serveWorker(tunnel: Tunnel, port: MessagePort): () => void {
 /** Posts a reply, ignoring a port that has already closed. */
 function post(port: MessagePort, reply: OfficerReply): void {
   try {
-    port.postMessage(reply);
+    port.postMessage(reply, reply.body ? [reply.body] : []);
   } catch {
+    // A failed transfer must not leave a live upstream response accumulating.
+    void reply.body?.cancel().catch(() => {});
+    if (reply.kind === 'response-stream') {
+      try {
+        port.postMessage({ kind: 'failed', id: reply.id, reason: 'this browser could not transfer a streamed response; update the browser and reconnect' });
+      } catch { /* The worker has already gone away. */ }
+    }
     // The worker went away between the request and its answer. Nothing to do and nowhere to
     // report it: the page is closing.
   }

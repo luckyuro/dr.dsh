@@ -201,10 +201,13 @@ async function serve(event: FetchEvent, knownClient?: Client): Promise<Response>
     const answer = await tunnel.fetch(outbound);
     const isInterface = new URL(request.url).pathname === INTERFACE_PATH || request.mode === 'navigate';
     const headers = answer.headers.find(([name]) => name.toLowerCase() === 'content-type')?.[1];
-    return toResponse({
-      ...answer,
-      body: injectWebSocketBootstrap(answer.body, headers, isInterface, viewId),
-    });
+    if (isInterface && headers?.includes('text/html')) {
+      const body = answer.body instanceof ReadableStream
+        ? new Uint8Array(await new Response(answer.body).arrayBuffer())
+        : answer.body;
+      return toResponse({ ...answer, body: injectWebSocketBootstrap(body, headers, true, viewId) });
+    }
+    return toResponse(answer);
   } catch (error) {
     // Failure transparency is a product requirement: a tunnel that is down must say so in
     // words, not show a browser network error the user cannot interpret.

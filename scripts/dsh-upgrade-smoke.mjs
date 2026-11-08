@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import { stagePluginSource } from './package-plugin-source.mjs';
 
 const repo = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const binary = process.argv[2];
@@ -39,6 +40,7 @@ const sink = createServer((req, res) => {
 function start(args) {
   const child = spawn(resolve(binary), args, {
     cwd: scratch, env: { ...process.env, DSH_HOME: join(scratch, 'home'), CI: '1',
+      DRDSH_MANAGER_STORAGE: join(scratch, 'manager'), DRDSH_MANAGER_PREFIX: join(scratch, 'prefix'),
       DRDSH_REPORT_URL: sink.listening ? `http://127.0.0.1:${sink.address().port}` : undefined,
       DRDSH_REPORT_TOKEN: sink.listening ? reportToken : undefined,
     }, stdio: ['ignore', 'pipe', 'pipe'],
@@ -79,7 +81,9 @@ try {
   const supported = JSON.parse(readFileSync(join(repo, 'plugins/dr.dsh/package.json'), 'utf8')).engines.dsh.split(' || ');
   assert.ok(supported.includes(version), 'update the reviewed compatibility matrix before testing a new version');
   check(`real DSH ${version} executable`);
-  await command(['plugin', '--profile', 'web', 'add', join(repo, 'plugins/dr.dsh')]);
+  const plugin = join(scratch, 'plugin');
+  await stagePluginSource(plugin);
+  await command(['plugin', '--profile', 'web', 'add', plugin]);
   const profile = JSON.parse(readFileSync(join(scratch, 'home/profiles/web/package.json'), 'utf8'));
   assert.ok(profile.dsh.profile.bundles.includes('@dr.dsh/dsh-plugin'));
   check('bundle installs through the real DSH plugin command');

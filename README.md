@@ -31,9 +31,15 @@ Phone / browser ⇄ Relay (server + PWA) ⇄ Daemon or plugin tunnel (your compu
 
 Release packages support **Linux x86_64 (musl)** and **macOS Apple Silicon**. Linux offers Relay,
 Daemon and mixed packages; macOS offers a Daemon package. The standalone plugin archive contains
-native programs for both platforms. The DSH compatibility baseline is `0.2.2-alpha.2`, with regression
-coverage for `0.2.1-rc.5`. Automatic installation pins the verified DSH and Cordis dependency combination;
+native programs for both platforms. The published v0.2.0 packages use DSH `0.2.2-alpha.2`;
+the current source supports `0.2.2-rc.1`, with regression coverage for `0.2.1-rc.5`.
+Automatic installation pins the verified DSH and Cordis dependency combination;
 see the [compatibility record](docs/integration/dsh-surface.md).
+
+The current source also adds structured diagnostics and input validation, preserves custom management
+instances during handoff, and fixes streaming responses and large conversation snapshots. These changes
+are not yet in the v0.2.0 downloads. See the [unreleased changes and upgrade requirements](docs/operations/releases.md#未发布的源码更新)
+and the [November 7 acceptance record](docs/operations/acceptance-2026-11-07.md).
 
 ## Quick start
 

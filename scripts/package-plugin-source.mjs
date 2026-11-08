@@ -22,13 +22,18 @@ export async function stagePluginSource(destination) {
     if (result.diagnostics?.some(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error)) {
       throw new Error(`Plugin source ${name} could not be compiled; run the repository TypeScript checks before packaging.`);
     }
-    await writeFile(join(destination, 'src', name.replace(/\.ts$/u, '.js')), result.outputText);
+    await writeFile(join(destination, 'src', name.replace(/\.ts$/u, '.js')), result.outputText.replaceAll("'@dr.dsh/validation'", "'./validation.js'"));
   }
   for (const file of ['web', 'cordis.patch.yml']) await cp(join(source, file), join(destination, file), { recursive: true });
+  await cp(join(root, 'packages/validation/src/index.js'), join(destination, 'src/validation.js'));
   const metadata = JSON.parse(await readFile(join(source, 'package.json'), 'utf8'));
   metadata.version = JSON.parse(await readFile(join(root, 'package.json'), 'utf8')).version;
   metadata.exports = { '.': './src/index.js' };
   delete metadata.devDependencies;
+  if (metadata.dependencies) {
+    delete metadata.dependencies['@dr.dsh/validation'];
+    if (Object.keys(metadata.dependencies).length === 0) delete metadata.dependencies;
+  }
   delete metadata.scripts;
   await writeFile(join(destination, 'package.json'), `${JSON.stringify(metadata, null, 2)}\n`);
   return metadata;
