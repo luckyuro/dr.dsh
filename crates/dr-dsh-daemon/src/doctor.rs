@@ -13,12 +13,14 @@ use std::path::Path;
 use std::process::{Command, ExitCode, Stdio};
 
 use anyhow::Result;
+use serde::Serialize;
 
 /// The port DSH's web profile listens on unless configured otherwise.
 const DEFAULT_DSH_PORT: u16 = 3080;
 
 /// Result of one check, in increasing severity.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "lowercase")]
 enum Level {
     Pass,
     Warn,
@@ -41,39 +43,72 @@ impl Level {
 ///
 /// Only for I/O the operator cannot act on; failed checks are reported in the
 /// output, not as errors, so a `doctor` run always produces a readable report.
-pub fn run(dsh: Option<&Path>, port: Option<u16>) -> Result<ExitCode> {
-    let port = port.unwrap_or(DEFAULT_DSH_PORT);
-    let mut worst = Level::Pass;
-
-    print_check(check_platform(), &mut worst);
-    print_check(check_cpu(), &mut worst);
-    print_check(check_audit(), &mut worst);
-    print_check(check_loopback_available(port), &mut worst);
-    print_check(check_dsh_binary(dsh), &mut worst);
-
-    println!();
-    match worst {
-        Level::Pass => {
-            println!("All checks passed. `drdshd run` should be able to start DSH.");
-            Ok(ExitCode::SUCCESS)
+pub fn run(dsh: Option<&Path>, port: Option<u16>, json: bool) -> Result<ExitCode> {
+    let report = diagnose(dsh, port.unwrap_or(DEFAULT_DSH_PORT));
+    if json {
+        println!("{}", serde_json::to_string(&report)?);
+    } else {
+        for check in &report.checks {
+            println!("[{}] {}", check.level.marker(), check.message);
         }
-        Level::Warn => {
-            println!("Checks passed with warnings. Review them before pairing a device.");
-            Ok(ExitCode::SUCCESS)
-        }
-        Level::Fail => {
-            println!("At least one check failed; fix it before running the daemon.");
-            Ok(ExitCode::FAILURE)
+        println!("\n{}", report.summary);
+    }
+    Ok(if report.level == Level::Fail {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    })
+}
+
+#[derive(Serialize)]
+struct Check {
+    id: &'static str,
+    title: &'static str,
+    level: Level,
+    message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    remedy: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+struct Report {
+    version: u8,
+    level: Level,
+    summary: &'static str,
+    checks: Vec<Check>,
+}
+
+impl Report {
+    fn new(checks: Vec<Check>) -> Self {
+        let level = checks
+            .iter()
+            .map(|check| check.level)
+            .max()
+            .unwrap_or(Level::Pass);
+        let summary = match level {
+            Level::Pass => "All checks passed. `drdshd run` should be able to start DSH.",
+            Level::Warn => "Checks passed with warnings. Review them before pairing a device.",
+            Level::Fail => "At least one check failed; fix it before running the daemon.",
+        };
+        Self {
+            version: 1,
+            level,
+            summary,
+            checks,
         }
     }
 }
 
-fn print_check(check: (Level, String), worst: &mut Level) {
-    let (level, message) = check;
-    if level == Level::Fail || (*worst == Level::Pass && level == Level::Warn) {
-        *worst = level;
-    }
-    println!("[{}] {}", level.marker(), message);
+fn diagnose(dsh: Option<&Path>, port: u16) -> Report {
+    Report::new([
+        ("platform", "Operating system", "Use a supported macOS or Linux host.", check_platform()),
+        ("cpu", "CPU baseline", "Use the release built for this CPU architecture.", check_cpu()),
+        ("audit", "Audit records", "Check the state directory permissions and DSHD_AUDIT setting.", check_audit()),
+        ("loopback", "Local DSH port", "Check whether DSH already owns this port. Otherwise choose a free port; diagnosis does not enable attach mode.", check_loopback_available(port)),
+        ("dsh", "DSH executable", "Install DSH or configure its absolute executable path, then run diagnosis again.", check_dsh_binary(dsh)),
+    ].into_iter().map(|(id, title, remedy, (level, message))| Check {
+        id, title, level, message, remedy: (level != Level::Pass).then_some(remedy),
+    }).collect())
 }
 
 /// Reports the platform so bug reports carry it without being asked.
@@ -175,12 +210,7 @@ fn check_audit() -> (Level, String) {
             ),
         );
     }
-    let Ok(state) = crate::state::state_dir() else {
-        return (
-            Level::Warn,
-            "audit log: cannot locate the state directory".to_owned(),
-        );
-    };
+    let state = crate::state::state_path();
     let path = crate::audit::path_in(&state);
     match crate::audit::read(&path) {
         Ok(read) => {
@@ -241,7 +271,7 @@ fn check_loopback_available(port: u16) -> (Level, String) {
             Level::Warn,
             format!(
                 "loopback {addr} is already in use: a DSH instance may already be running \
-                 (the daemon will attach to it in proxy-only mode), or another program holds the port"
+                 or another program holds the port; check its owner before starting DSH"
             ),
         ),
         Err(error) => (Level::Fail, format!("cannot bind loopback {addr}: {error}")),

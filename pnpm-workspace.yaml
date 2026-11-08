@@ -10,6 +10,7 @@ packages:
   # Pairing + E2E crypto, implemented twice (TS here, Rust in crates/dr-dsh-crypto)
   # against the same conformance corpus.
   - packages/crypto
+  - packages/validation
   # The DSH-side plugin: events, lifecycle coordination, PWA host glue.
   - plugins/dr.dsh
   # The remote client (PWA). Must stay a pure static bundle.

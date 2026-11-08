@@ -45,7 +45,7 @@ async function serveHost(path) {
   };
   const web = createManagementHandler(surface, {
     manager, authority, installDefaults: settings.manager.installDefaults, managed: true, localBrowserAvailable: false,
-    async readAsset(file) { return readFile(join(repo, 'plugins/dr.dsh/web', file)); },
+    async readAsset(file) { return readFile(file === 'validation.js' ? join(repo, 'packages/validation/src/index.js') : join(repo, 'plugins/dr.dsh/web', file)); },
     async openLocal() { throw new Error('This smoke host intentionally has no desktop browser.'); },
   });
   handler = web.handler;
@@ -278,11 +278,50 @@ async function runSmoke() {
         await context.addCookies([{ name: 'dsh-smoke', value: cookie.split('=')[1], url: origin }]);
         await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin });
         const page = await context.newPage();
+        const browserErrors = [];
+        page.on('pageerror', error => browserErrors.push(error.message));
+        const screenshots = join(repo, 'output/playwright');
+        mkdirSync(screenshots, { recursive: true });
         await page.goto(`${origin}/_drdsh/manage`, { waitUntil: 'domcontentloaded' });
+        await page.screenshot({ path: join(screenshots, 'validation-management-authorization-mobile.png'), fullPage: true });
         await page.locator('#authorization summary').click();
+        await page.fill('#capability', 'bad-code');
+        await page.locator('#unlock-form button').click();
+        await page.locator('#capability-error').waitFor({ state: 'visible' });
+        assert.ok(await page.locator('#dashboard').isHidden(), 'format validation must not unlock management');
         await page.fill('#capability', readFileSync(join(storageRoot, 'local-unlock'), 'utf8').trim());
         await page.locator('#unlock-form button').click();
         await page.locator('#dashboard').waitFor({ state: 'visible' });
+        await page.locator('nav a[href="#configuration"]').click();
+        const beforeInvalid = readFileSync(configPath, 'utf8');
+        await page.fill('#relay', 'https://relay.example');
+        await page.fill('#port', '0');
+        await page.fill('#workdir', 'relative');
+        await page.click('#save-config');
+        assert.deepEqual(browserErrors, [], 'configuration validation must not throw');
+        await page.locator('#config-errors').waitFor({ state: 'visible' });
+        assert.equal(await page.locator('#config-errors li').count(), 3);
+        assert.equal(await page.evaluate(() => document.activeElement.id), 'relay');
+        assert.equal(readFileSync(configPath, 'utf8'), beforeInvalid, 'invalid form data must not reach the configuration writer');
+        await page.screenshot({ path: join(screenshots, 'validation-management-errors-mobile.png'), fullPage: true });
+        await page.locator('nav a[href="#diagnosis"]').click();
+        await page.click('[data-read="doctor"]');
+        await page.locator('.check').first().waitFor();
+        assert.equal(await page.locator('.check').count(), 5);
+        assert.match(await page.locator('#diagnosis-summary').textContent(), /需要确认/u);
+        await page.click('[data-filter="warn"]');
+        assert.ok(await page.locator('.check').count() > 0);
+        assert.equal(await page.locator('.check:not([data-level="warn"])').count(), 0);
+        await page.click('[data-filter="all"]');
+        await page.screenshot({ path: join(screenshots, 'validation-management-diagnosis-mobile.png'), fullPage: true });
+        await page.setViewportSize({ width: 1360, height: 960 });
+        await page.screenshot({ path: join(screenshots, 'validation-management-diagnosis-desktop.png'), fullPage: true });
+        await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+        await page.screenshot({ path: join(screenshots, 'validation-management-diagnosis-dark.png'), fullPage: true });
+        await page.emulateMedia({ colorScheme: 'light' });
+        await page.setViewportSize({ width: 390, height: 844 });
+        check('browser validation blocks invalid configuration, focuses its first error and filters five real diagnostic checks');
+        await page.locator('nav a[href="#devices"]').click();
         await page.click('#pair-begin');
         await page.locator('#pair-copy').waitFor({ state: 'visible' });
         assert.match(await page.locator('#pair-detail').textContent(), /http:\/\/127\.0\.0\.1/u);
@@ -299,6 +338,8 @@ async function runSmoke() {
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'mobile management page must fit its viewport');
         await page.click('#lock');
         await page.locator('#dashboard').waitFor({ state: 'hidden' });
+        assert.equal(await page.locator('#diagnostics').textContent(), '');
+        assert.deepEqual(browserErrors, [], 'management must not emit browser exceptions');
         await page.evaluate(() => navigator.clipboard.writeText(''));
         check('the real mobile management page unlocks, copies a live pairing code, cancels it and locks without horizontal overflow');
       } finally { await browser.close(); }

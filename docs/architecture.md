@@ -75,8 +75,17 @@ daemon，不进入 relay crate（[ADR-0018](decisions/0018-tls-transport.md)）�
 **客户端如何被服务**：页面外壳打开隧道，把专属 `MessageChannel` 的一端交给 Service Worker，
 另一端由页面用 `proxy.ts` 服务。每次交接绑定外壳、viewId 和 iframe 文档，HTTP 请求只进入所属
 视图。`hand` / `handed` 确认交接，`bind-view` / `bound` 绑定文档，`unhand` 释放路由；
-`request` / `response` / `failed` 通过 id 对应请求。Worker 不自行 fetch 隧道地址，避免递归拦截。
+`request` / `response-stream` / `failed` 通过 id 对应请求（也接受旧页面的 `response`）。Worker 不自行 fetch 隧道地址，避免递归拦截。
 后台线程冷启动时请求外壳恢复端口；更新时先结束旧 Worker 的长驻请求，再由新 Worker 接管。
+
+HTTP 响应头和正文在 daemon 与 PWA 中逐段转发；插件热更新的 `/plugins/events` SSE 无需等待
+连接结束即可交付。页面向 Worker 转移 `ReadableStream`，浏览器预检会验证这项能力；仅界面 HTML
+为注入启动脚本而收集全文。浏览器暂停消费时，每条响应最多暂存 8 MiB，超限会明确失败。
+视图退出或 Worker 更换会取消本地读流；现有 wire 没有单条 HTTP 取消消息，迟到片段会被丢弃，
+直到该响应或 carrier 结束，carrier 关闭同时结束 daemon 的上游请求。
+Worker 正常更换时只对 SSE 以 EOF 结束，使浏览器重新订阅；其他响应的中断仍表现为失败，避免误收截断正文。
+DSH 的大型 WebSocket 文本快照通过 PX v2 分片，浏览器校验顺序及 UTF-8 后一次性交付，最大 8 MiB；
+carrier 仍为 64 KiB。普通消息继续使用 PX v1，具体升级边界见 [ADR-0028](decisions/0028-streaming-and-large-snapshots.md)。
 
 **客户端分发**：中继把客户端模块从 `DSH_RELAY_CLIENT_DIR` 指向的目录读出（由 `pnpm --filter @dr.dsh/pwa build` 产出）。它不内嵌构建产物——那意味着把生成物提交进仓库并逐行评审。未安装客户端时仍然提供一页说明如何构建，而不是 404：404 会让"缺一个目录"看起来像"中继坏了"。只提供扁平 `.js` 模块，且拒绝 `..`、绝对路径、反斜杠与 `.ts`。
 
@@ -136,6 +145,18 @@ WebSocket 通过校验来源后的专属 MessagePort 交给父页；HTTP 通过 
 Harness 本身占满视口。按钮的位置保存在当前浏览器，窗口变小后会限制在可见范围内。
 
 **边界**：不持有 DSH 凭据；除隧道之外没有触达 DSH 的路径。
+
+### 1.5 输入校验与诊断展示
+
+`packages/validation` 是插件服务端、管理页和 PWA 共用的纯 ESM 模块，提供字段问题、
+规范化输入与 Standard Schema V1 接口，不依赖 UI 框架。输入格式检查不替代本机权限或加密设备验证。
+管理页按概览、配置、设备、诊断和维护分区；PWA 在连接前检查凭据格式与浏览器 API，保存的电脑优先展示。
+
+原生 `doctor --json` 生成版本化本机报告，管理页独立的诊断模型负责状态汇总、筛选、建议与旧文本回退。
+失败、未知格式或截断结果不能显示为全部通过。报告不覆盖中继可达性或模型任务。
+共享模块打包进入插件和 PWA，不从远程 CDN 加载；PWA 与其余模块一起原子预缓存。
+决策见 [ADR-0027](decisions/0027-validation-and-diagnostics.md)，接口与框架验证见
+[校验接入指南](development/validation.md)。
 
 ---
 

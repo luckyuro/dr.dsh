@@ -28,13 +28,18 @@ pub const STATE_DIR_ENV: &str = "DSHD_STATE_DIR";
 ///
 /// Returns an error only when the directory cannot be created.
 pub fn state_dir() -> std::io::Result<PathBuf> {
-    let directory = resolve(
+    let directory = state_path();
+    std::fs::create_dir_all(&directory)?;
+    std::fs::canonicalize(directory)
+}
+
+/// Read-only consumers must not create state merely to explain its absence.
+pub(crate) fn state_path() -> PathBuf {
+    resolve(
         std::env::var_os(STATE_DIR_ENV),
         std::env::var_os("XDG_DATA_HOME"),
         std::env::var_os("HOME"),
-    );
-    std::fs::create_dir_all(&directory)?;
-    std::fs::canonicalize(directory)
+    )
 }
 
 /// Canonicalizes a state directory without changing an existing parent's permissions.

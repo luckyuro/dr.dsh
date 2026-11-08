@@ -17,11 +17,47 @@ import { offlineNotice } from './offline.js';
 import { interfacePort, serveInterfacePort } from './interface-bridge.js';
 import { NotificationFeed, notificationTitle } from './notifications.js';
 import { installFloatingControl } from './floating-control.js';
+import { validateCredential } from './validation.js';
+import { browserChecks, transferableStreamsAvailable } from './preflight.js';
 
 const state = document.getElementById('state');
 const connect = document.getElementById('connect');
 const forget = document.getElementById('forget');
 const key = document.getElementById('key');
+const credentialError = document.getElementById('credential-error');
+let credentialProblem = false;
+const browserCapabilities = browserChecks({
+  secure: globalThis.isSecureContext === true,
+  crypto: !!globalThis.crypto?.subtle,
+  websocket: typeof WebSocket === 'function',
+  worker: 'serviceWorker' in navigator,
+  storage: typeof indexedDB !== 'undefined',
+  streams: transferableStreamsAvailable(),
+});
+function renderBrowserChecks() {
+  document.getElementById('browser-summary').textContent = t('browser.summary', { count: browserCapabilities.filter(check => check.available).length, total: browserCapabilities.length });
+  document.getElementById('browser-checks').replaceChildren(...browserCapabilities.map(check => {
+    const row = document.createElement('li'); row.dataset.available = String(check.available);
+    const name = document.createElement('span'); name.textContent = t(`browser.${check.id}`);
+    const status = document.createElement('span'); status.textContent = t(check.available ? 'browser.available' : 'browser.unavailable');
+    row.append(name, status); return row;
+  }));
+}
+function checkCredential(focus = false) {
+  const typed = key.value.trim();
+  const result = validateCredential(typed, getLocale());
+  const problem = typed === '' && selectedRoom !== null ? '' : result.issues?.[0].message ?? '';
+  credentialProblem = !!problem;
+  credentialError.textContent = problem;
+  credentialError.hidden = !problem;
+  if (problem) {
+    key.setAttribute('aria-invalid', 'true');
+    if (focus) key.focus();
+  } else key.removeAttribute('aria-invalid');
+  return !problem;
+}
+key.addEventListener('input', () => { if (credentialProblem) checkCredential(); });
+key.addEventListener('blur', () => { if (key.value.trim()) checkCredential(); });
 const pairingHint = document.getElementById('pairing-hint');
 const connectionHint = document.getElementById('connection-hint');
 const deviceLine = document.getElementById('device');
@@ -112,6 +148,9 @@ function renderLanguage() {
   state.textContent = displayText(stateMessage);
   if (!panel.hidden) activePanel?.draw();
   notificationFeed.draw();
+  renderBrowserChecks();
+  document.querySelector('.flow').setAttribute('aria-label', t('page.progress'));
+  if (credentialProblem) checkCredential();
 }
 
 languageButton.addEventListener('click', () => {
@@ -126,6 +165,13 @@ function show(phase, message) {
   // Remembered for crash reports: "where was the page when it broke" is the first question a report
   // has to answer, and by the time it is built the visible text has moved on.
   currentPhase = phase;
+  const step = phase === 'ready' ? 2 : ['pairing', 'paired', 'connecting'].includes(phase) ? 1 : 0;
+  for (const item of document.querySelectorAll('[data-step]')) {
+    const index = Number(item.dataset.step);
+    item.toggleAttribute('data-active', index === step);
+    item.toggleAttribute('data-complete', index < step);
+    if (index === step) item.setAttribute('aria-current', 'step'); else item.removeAttribute('aria-current');
+  }
 }
 
 /** The phase the page is in, as `health.ClientPhase` names the ones a report can carry. */
@@ -549,6 +595,13 @@ forget.addEventListener('click', async () => {
 document.getElementById('connection-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   if (connect.disabled) return;
+  if (!checkCredential(true)) return;
+  const missing = browserCapabilities.filter(check => !check.available && check.id !== 'storage');
+  if (missing.length) {
+    show('failed', () => t('browser.blocked', { features: missing.map(check => t(`browser.${check.id}`)).join(', ') }));
+    document.getElementById('browser-preflight').open = true;
+    return;
+  }
   clearConnection();
   const revision = connectionRevision;
   connect.disabled = true;

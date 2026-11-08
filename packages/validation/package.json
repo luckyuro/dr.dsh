@@ -1,0 +1,10 @@
+{
+  "name": "@dr.dsh/validation",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Framework-independent dr.dsh input validation and Standard Schema interfaces",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./src/index.js" } },
+  "scripts": { "typecheck": "tsc -b", "test": "node --test 'src/*.test.ts'" },
+  "devDependencies": { "typescript": "^5.9.3", "@types/node": "^22.20.2" }
+}

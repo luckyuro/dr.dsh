@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/protocol" },
     { "path": "packages/crypto" },
+    { "path": "packages/validation" },
     { "path": "plugins/dr.dsh" },
     { "path": "apps/pwa" },
     // The service worker is its own project because a worker global scope and a

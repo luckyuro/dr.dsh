@@ -15,7 +15,7 @@
  * event names and payloads require the real-harness upgrade smoke test. Cordis
  * accepts arbitrary event names, so a static name set cannot detect an upgrade.
  *
- * ## What is relied on (DSH 0.2.2-alpha.2)
+ * ## What is relied on (DSH 0.2.2-rc.1)
  *
  * | Assumption | Evidence in DSH |
  * | :--- | :--- |
@@ -33,9 +33,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 /** DSH release this surface was verified against. */
-export const VERIFIED_DSH_VERSION = '0.2.2-alpha.2';
+export const VERIFIED_DSH_VERSION = '0.2.2-rc.1';
 /** Exact upstream source revision reviewed for this integration. */
-export const VERIFIED_DSH_REVISION = 'f3803c96974ad4a94195fb97e5c637e9c2a3afe3';
+export const VERIFIED_DSH_REVISION = '66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db';
 
 /**
  * The minimal shape of the Cordis context this plugin uses.
@@ -259,7 +259,7 @@ interface ManagementContext extends DshContextLike {
 }
 
 /**
- * The runtime members used here were checked in DSH 0.2.1-rc.5 and 0.2.2-alpha.2:
+ * The runtime members used here were checked in DSH 0.2.1-rc.5, 0.2.2-alpha.2 and 0.2.2-rc.1:
  * dsh-host-webserver's WebServer, dsh-client-connection's HostConnectionHandle,
  * dsh-app-boot's ProfileContext and dsh-cmdline's AppExit/AppReady. A separate
  * injected child keeps missing Web services and management setup failures from

@@ -1,4 +1,6 @@
-'use strict';
+import * as validation from '/_drdsh/validation.js';
+import { readDoctorReport, describeCheck, summarizeReport, levelNames } from '/_drdsh/diagnostics.js';
+
 (() => {
   const $ = id => document.getElementById(id);
   const apiRoot = '/_drdsh/api';
@@ -11,6 +13,33 @@
   let refreshBusy = false;
   let configDirty = false;
   let busy = false;
+  let authorizationRevision = 0;
+  const activeRequests = new Set();
+  let doctorReport;
+  let doctorText = '';
+  let reportFilter = 'all';
+  let showAllErrors = false;
+  const touched = new Set();
+  const configFields = { relay: 'relay', port: 'port', workdir: 'workdir', dsh: 'dsh', dshHome: 'dsh-home', caCert: 'ca-cert' };
+  const sections = {
+    overview: ['运行概览', '了解当前实例，继续下一步设置。'],
+    configuration: ['连接与配置', '配置中继和本机环境，保存前检查输入。'],
+    devices: ['配对与设备', '添加设备，或撤销不再需要的访问权限。'],
+    diagnosis: ['诊断中心', '找出问题所在，获取下一步处理建议。'],
+    maintenance: ['服务维护', '管理服务的启动、更新与卸载。'],
+  };
+  function navigate(id, updateHistory = true) {
+    if (!Object.hasOwn(sections, id)) id = 'overview';
+    for (const section of document.querySelectorAll('[data-view]')) section.hidden = section.id !== id;
+    for (const link of document.querySelectorAll('nav a')) {
+      const selected = link.getAttribute('href') === `#${id}`;
+      link.classList.toggle('selected', selected);
+      if (selected) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current');
+    }
+    $('page-title').textContent = sections[id][0];
+    $('page-description').textContent = sections[id][1];
+    if (updateHistory) history.replaceState(null, '', `${location.pathname}${location.search}#${id}`);
+  }
   let lastJob;
   let lastJobPrefix;
   const jobStorageKey = 'drdsh.management.job';
@@ -35,12 +64,15 @@
     $('notice').textContent = text;
     $('notice').classList.toggle('error', error);
     $('notice').hidden = !text;
+    $('notice').setAttribute('role', error ? 'alert' : 'status');
   };
   function setPairCode(code = '') {
     $('pair-code').textContent = code;
     $('pair-copy').hidden = !code;
   }
   const lock = (reason = '') => {
+    authorizationRevision += 1;
+    for (const request of activeRequests) request.abort();
     token = undefined;
     clearTimeout(expiryTimer);
     clearTimeout(pairTimer);
@@ -49,6 +81,19 @@
     $('authorization').hidden = false;
     $('dashboard').hidden = true;
     $('lock').hidden = true;
+    $('auth-status').textContent = '等待本机授权';
+    $('auth-status').removeAttribute('data-authorized');
+    $('authorization-expiry').textContent = '';
+    $('capability').value = '';
+    $('capability-file').value = '';
+    $('capability-error').hidden = true;
+    $('capability').removeAttribute('aria-invalid');
+    $('diagnostics').textContent = '';
+    $('diagnosis-checks').replaceChildren();
+    $('diagnosis-report').hidden = true;
+    $('diagnosis-empty').hidden = false;
+    doctorReport = undefined;
+    doctorText = '';
     setPairCode();
     $('pairing').hidden = true;
     if (reason) message(reason);
@@ -56,30 +101,39 @@
   function requestError(text, status, code, retryable) {
     return Object.assign(new Error(text), { status, code, retryable });
   }
-  async function request(path, body) {
-    let response;
+  async function request(path, body, acceptDiagnostic = false) {
+    const controller = new AbortController();
+    const revision = authorizationRevision;
+    activeRequests.add(controller);
     try {
-      response = await fetch(`${apiRoot}/${path}`, {
-        method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store',
-        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(115_000),
-      });
-    } catch {
-      throw requestError('无法连接本机 DSH。后台作业可能仍在执行；等待 DSH 重启后刷新此页并重新授权。', 0, 'network_unavailable', true);
-    }
-    if (response.status === 401) {
-      lock('管理授权已失效，或 DSH 已重新启动。请重新授权后查看后台作业。');
-    }
-    let value;
-    try { value = await response.json(); } catch {
-      throw requestError('DSH 未返回管理响应。请先返回 DSH 完成登录，再刷新管理页。', response.status, 'invalid_management_response', response.status !== 401);
-    }
-    if (!value || typeof value !== 'object') throw requestError('DSH 返回的管理响应无效，请稍后重试。', response.status, 'invalid_management_response', response.status !== 401);
-    if (!response.ok || value.ok === false) {
-      const retryable = response.status >= 500 || [408, 429].includes(response.status) || value.error?.retryable === true;
-      throw requestError(value.error?.message ?? value.message ?? `本机请求失败（HTTP ${response.status}）。`, response.status, value.error?.code ?? 'http_error', retryable);
-    }
-    return value;
+      let response;
+      try {
+        response = await fetch(`${apiRoot}/${path}`, {
+          method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store',
+          headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.any([controller.signal, AbortSignal.timeout(115_000)]),
+        });
+      } catch {
+        throw requestError('无法连接本机 DSH。后台作业可能仍在执行；等待 DSH 重启后刷新此页并重新授权。', 0, 'network_unavailable', true);
+      }
+      if (revision !== authorizationRevision) throw requestError('管理页已锁定。请重新授权。', 401, 'management_locked', false);
+      if (response.status === 401) {
+        lock('管理授权已失效，或 DSH 已重新启动。请重新授权后查看后台作业。');
+      }
+      let value;
+      try { value = await response.json(); } catch {
+        throw requestError('DSH 未返回管理响应。请先返回 DSH 完成登录，再刷新管理页。', response.status, 'invalid_management_response', response.status !== 401);
+      }
+      if (!value || typeof value !== 'object') throw requestError('DSH 返回的管理响应无效，请稍后重试。', response.status, 'invalid_management_response', response.status !== 401);
+      const failedDiagnostic = acceptDiagnostic && value.ok === false && value.error?.code === 'diagnostic_failed'
+        && typeof value.result?.text === 'string' && value.result.exitCode === 1;
+      if (!response.ok || (value.ok === false && !failedDiagnostic)) {
+        const retryable = response.status >= 500 || [408, 429].includes(response.status) || value.error?.retryable === true;
+        throw requestError(value.error?.message ?? value.message ?? `本机请求失败（HTTP ${response.status}）。`, response.status, value.error?.code ?? 'http_error', retryable);
+      }
+      if (revision !== authorizationRevision) throw requestError('管理页已锁定。请重新授权。', 401, 'management_locked', false);
+      return value;
+    } finally { activeRequests.delete(controller); }
   }
   async function execute(operation, params = {}) {
     const result = await request('execute', { operation, params });
@@ -88,13 +142,21 @@
   async function action(fn) {
     if (busy) return;
     busy = true;
+    const revision = authorizationRevision;
     const buttons = [...document.querySelectorAll('button')];
     for (const button of buttons) button.disabled = true;
-    try { await fn(); } catch (error) { message(error.message, true); }
-    finally { busy = false; for (const button of buttons) button.disabled = false; }
+    $('lock').disabled = false;
+    $('content').setAttribute('aria-busy', 'true');
+    try { await fn(); } catch (error) { if (revision === authorizationRevision) message(error.message, true); }
+    finally { busy = false; for (const button of buttons) button.disabled = false; $('content').removeAttribute('aria-busy'); }
   }
   async function unlock(capability) {
-    const result = await request('unlock', { capability: capability.trim() });
+    const checked = validation.validateCapability(capability, 'zh-CN');
+    $('capability-error').hidden = !checked.issues;
+    $('capability-error').textContent = checked.issues?.[0].message ?? '';
+    if (checked.issues) { $('capability').setAttribute('aria-invalid', 'true'); $('capability').focus(); return; }
+    $('capability').removeAttribute('aria-invalid');
+    const result = await request('unlock', { capability: checked.value });
     const session = result.result ?? result;
     if (typeof session.token !== 'string' || typeof session.expiresAtMs !== 'number') throw new Error('本机授权响应无效，请重启插件后重试。');
     token = session.token;
@@ -104,6 +166,10 @@
     $('authorization').hidden = true;
     $('dashboard').hidden = false;
     $('lock').hidden = false;
+    $('auth-status').textContent = '本机已授权';
+    $('auth-status').setAttribute('data-authorized', '');
+    $('authorization-expiry').textContent = `${new Date(session.expiresAtMs).toLocaleTimeString()} 到期`;
+    navigate(location.hash.slice(1), false);
     message('本机管理已解锁。');
     await refresh();
     if (lastJob) pollJob(lastJob);
@@ -132,6 +198,10 @@
       $('save-config').textContent = state.installed ? '保存配置' : '安装后台服务';
       $('config-note').textContent = state.installed ? '配置直接保存到 daemon.json。重启 daemon 后应用更改。' : '安装将保留现有 DSH 插件，并启用本机管理与事件报告。';
       $('handoff-card').hidden = !state.installed || !!state.host?.managed;
+      $('next-title').textContent = state.installed ? '连接另一台设备' : '配置连接';
+      $('next-description').textContent = state.installed ? '确认服务运行后，生成配对码并在另一台设备输入。' : '先填写中继地址，再安装后台服务。';
+      $('next-action').textContent = state.installed ? '管理配对设备 →' : '打开连接配置 →';
+      $('next-action').setAttribute('href', state.installed ? '#devices' : '#configuration');
       populate();
       if (state.hasConfiguration) {
         const status = await execute('status');
@@ -319,16 +389,61 @@
   $('refresh').addEventListener('click', () => void action(refresh));
   $('jobs-refresh').addEventListener('click', () => void action(jobs));
   $('devices-refresh').addEventListener('click', () => void action(devices));
-  $('config-form').addEventListener('input', () => { configDirty = true; });
+  function configuration() {
+    const value = { dshTls: $('dsh-tls').checked, tlsInsecure: $('insecure-tls').checked };
+    for (const [field, id] of Object.entries(configFields)) value[field] = $(id).value;
+    if (!value.caCert && state?.hasConfiguration) value.caCert = null;
+    return value;
+  }
+  function checkConfiguration(focus = false) {
+    const checked = validation.validateConfiguration(configuration(), 'zh-CN');
+    const errors = validation.fieldErrors(checked);
+    for (const [field, id] of Object.entries(configFields)) {
+      const error = (showAllErrors || touched.has(field)) ? errors[field] : undefined;
+      $(`${id}-error`).textContent = error ?? '';
+      $(`${id}-error`).hidden = !error;
+      if (error) $(id).setAttribute('aria-invalid', 'true'); else $(id).removeAttribute('aria-invalid');
+    }
+    $('config-errors').hidden = !showAllErrors || !checked.issues;
+    $('config-errors').replaceChildren();
+    if (showAllErrors && checked.issues) {
+      const title = document.createElement('strong');
+      title.textContent = `请修正 ${checked.issues.length} 项输入后继续`;
+      const list = document.createElement('ul');
+      for (const problem of checked.issues) {
+        const id = configFields[problem.path[0]];
+        const item = document.createElement('li');
+        const link = document.createElement('a');
+        link.textContent = problem.message;
+        link.href = `#${id}`;
+        link.addEventListener('click', event => { event.preventDefault(); if (['dsh', 'dsh-home', 'ca-cert'].includes(id)) $('advanced-config').open = true; $(id).focus(); });
+        item.append(link); list.append(item);
+      }
+      $('config-errors').append(title, list);
+    }
+    $('config-state').textContent = checked.issues ? '输入尚未完成' : configDirty ? '有未保存的更改' : '配置就绪';
+    if (focus && checked.issues) {
+      const id = configFields[checked.issues[0].path[0]];
+      if (['dsh', 'dsh-home', 'ca-cert'].includes(id)) $('advanced-config').open = true;
+      $(id).focus();
+    }
+    return checked;
+  }
+  for (const [field, id] of Object.entries(configFields)) $(id).addEventListener('blur', () => {
+    if ($(id).value.trim()) { touched.add(field); checkConfiguration(); }
+  });
+  $('config-form').addEventListener('input', event => {
+    configDirty = true;
+    for (const [field, id] of Object.entries(configFields)) if (id === event.target?.id) touched.add(field);
+    checkConfiguration();
+  });
   $('config-form').addEventListener('submit', event => {
     event.preventDefault();
+    showAllErrors = true;
+    const checked = checkConfiguration(true);
+    if (checked.issues) return;
     void action(async () => {
-      const params = { relay: $('relay').value.trim(), port: Number($('port').value), dshTls: $('dsh-tls').checked, tlsInsecure: $('insecure-tls').checked };
-      for (const [key, id] of [['dsh', 'dsh'], ['dshHome', 'dsh-home'], ['workdir', 'workdir'], ['caCert', 'ca-cert']]) {
-        const value = $(id).value.trim();
-        if (value) params[key] = value;
-        else if (key === 'caCert' && state.hasConfiguration) params[key] = null;
-      }
+      const params = checked.value;
       if (state.installed) {
         const result = await execute('config.set', params);
         message(result.restartRequired ? '配置已保存。点击“重启 daemon”应用更改，当前 DSH 会重新启动。' : '配置已保存。');
@@ -340,6 +455,9 @@
         } else await submit('install', { ...params, start: false, enable: true });
         configDirty = false;
       }
+      showAllErrors = false;
+      touched.clear();
+      checkConfiguration();
     });
   });
   $('handoff').addEventListener('click', () => void action(async () => {
@@ -384,29 +502,66 @@
     if (button.dataset.confirm && !confirm(button.dataset.confirm)) return;
     void action(() => submit(button.dataset.operation));
   });
-  for (const button of document.querySelectorAll('[data-read]')) button.addEventListener('click', () => void action(async () => {
-    $('diagnostics').textContent = '';
-    let response;
-    try {
-      response = await fetch(`${apiRoot}/execute`, {
-        method: 'POST', credentials: 'same-origin', cache: 'no-store',
-        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ operation: button.dataset.read, params: {} }), signal: AbortSignal.timeout(115_000),
-      });
-    } catch { throw new Error('无法连接本机 DSH。请确认 DSH 正在运行，再重新读取诊断。'); }
-    let value;
-    try { value = await response.json(); } catch { throw new Error('DSH 未返回诊断响应。请先返回 DSH 完成登录，再刷新管理页。'); }
-    if (response.status === 401) lock('管理授权已失效，或 DSH 已重新启动。请重新授权后读取诊断。');
-    const result = value.result;
-    const failedReport = button.dataset.read === 'doctor' && value.ok === false
-      && value.error?.code === 'diagnostic_failed' && typeof result?.text === 'string' && result.exitCode === 1;
-    if (!response.ok || (value.ok !== true && !failedReport)) throw new Error(value.error?.message ?? `读取诊断失败（HTTP ${response.status}）。`);
-    $('diagnostics').textContent = `${result.text ?? JSON.stringify(result, null, 2)}${result.truncated ? '\n（结果已截断）' : ''}`;
-    message(failedReport ? '诊断发现失败项（退出码 1）。请查看下方报告中的原因和处理建议。' : `${button.textContent}已读取。`, failedReport);
+  function renderReport() {
+    if (!doctorReport) return;
+    const summary = summarizeReport(doctorReport);
+    $('diagnosis-summary').textContent = summary.heading;
+    $('diagnosis-summary').parentElement.parentElement.dataset.level = summary.level;
+    $('diagnosis-checks').replaceChildren();
+    for (const button of document.querySelectorAll('[data-filter]')) {
+      button.setAttribute('aria-pressed', String(button.dataset.filter === reportFilter));
+      button.textContent = button.dataset.filter === 'all' ? `全部 ${doctorReport.checks.length}`
+        : `${levelNames[button.dataset.filter]} ${summary.counts[button.dataset.filter]}`;
+    }
+    const visible = doctorReport.checks.filter(check => reportFilter === 'all' || check.level === reportFilter);
+    for (const item of visible) {
+      const check = describeCheck(item);
+      const card = document.createElement('article'); card.className = 'card check'; card.dataset.level = check.level;
+      const icon = document.createElement('span'); icon.className = 'check-icon'; icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = check.level === 'pass' ? '✓' : check.level === 'warn' ? '!' : '×';
+      const content = document.createElement('div');
+      const title = document.createElement('h3'); title.textContent = check.title;
+      const detail = document.createElement('p'); detail.textContent = check.message;
+      content.append(title, detail);
+      if (check.remedy) { const remedy = document.createElement('p'); remedy.className = 'remedy'; remedy.textContent = `建议：${check.remedy}`; content.append(remedy); }
+      const badge = document.createElement('span'); badge.className = 'badge'; badge.textContent = levelNames[check.level];
+      card.append(icon, content, badge); $('diagnosis-checks').append(card);
+    }
+    if (!visible.length) { const empty = document.createElement('p'); empty.className = 'card empty'; empty.textContent = '没有此状态的检查项。'; $('diagnosis-checks').append(empty); }
+  }
+  for (const button of document.querySelectorAll('[data-filter]')) button.addEventListener('click', () => { reportFilter = button.dataset.filter; renderReport(); });
+  $('copy-diagnosis').addEventListener('click', () => void action(async () => {
+    if (!token || !doctorText) return;
+    try { await navigator.clipboard.writeText(doctorText); message('诊断报告已复制。'); }
+    catch { message('浏览器未允许复制。请展开“原始输出”，手动选择报告。', true); $('raw-output').open = true; }
   }));
-  for (const link of document.querySelectorAll('nav a')) link.addEventListener('click', () => {
-    for (const other of document.querySelectorAll('nav a')) other.classList.toggle('selected', other === link);
+  for (const button of document.querySelectorAll('[data-read]')) button.addEventListener('click', () => void action(async () => {
+    const operation = button.dataset.read;
+    navigate('diagnosis');
+    message(operation === 'doctor' ? '正在检查本机环境…' : '正在读取记录…');
+    const value = await request('execute', { operation, params: {} }, operation === 'doctor');
+    const result = value.result;
+    if (!result || typeof result !== 'object') throw new Error('本机未返回完整诊断结果，请重试。');
+    $('diagnostics').textContent = `${result.text ?? JSON.stringify(result, null, 2)}${result.truncated ? '\n（结果已截断）' : ''}`;
+    if (operation === 'doctor') {
+      doctorText = $('diagnostics').textContent;
+      doctorReport = readDoctorReport(result);
+      reportFilter = 'all';
+      $('diagnosis-empty').hidden = true;
+      $('diagnosis-report').hidden = !doctorReport;
+      $('raw-output').open = !doctorReport;
+      if (doctorReport) {
+        $('diagnosis-meta').textContent = `${new Date().toLocaleString()} · ${doctorReport.checks.length} 项基础检查${doctorReport.legacy ? ' · 旧版文本报告' : ''}`;
+        renderReport();
+        const summary = summarizeReport(doctorReport);
+        message(`${summary.heading}。请查看各项结果。`, summary.level === 'fail');
+      } else message('已收到原始输出，无法识别为完整诊断报告。请查看下方输出并确认原生程序版本。', true);
+    } else { $('raw-output').open = true; message(`${button.textContent}已读取。`); }
+  }));
+  for (const link of document.querySelectorAll('nav a, [data-navigate]')) link.addEventListener('click', event => {
+    event.preventDefault(); navigate(link.getAttribute('href').slice(1));
   });
+  globalThis.addEventListener?.('hashchange', () => navigate(location.hash.slice(1), false));
   // Consume the one-time secret before any request; history and referrers retain no credential.
   const launch = new URLSearchParams(location.hash.slice(1)).get('launch');
   if (launch) history.replaceState(null, '', location.pathname + location.search);

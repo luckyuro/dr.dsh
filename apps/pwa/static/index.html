@@ -1,207 +1,1033 @@
 <!doctype html>
 <html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dr.dsh</title>
-<!-- Installable: a manifest, platform icons, and the service worker the page already registers. The
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>dr.dsh</title>
+    <!-- Installable: a manifest, platform icons, and the service worker the page already registers. The
      manifest lives under /client/ because that is the one directory the relay serves files from,
      and it is same-origin so the app's scope is the whole relay. -->
-<link rel="manifest" href="/client/manifest.webmanifest">
-<meta name="theme-color" content='#2563eb'>
-<link rel="icon" href="/client/favicon-16.png" sizes="16x16" type="image/png">
-<link rel="icon" href="/client/favicon-32.png" sizes="32x32" type="image/png">
-<link rel="apple-touch-icon" href="/client/apple-touch-icon.png" sizes="180x180">
-<style>
-  :root { color-scheme: light dark; --fg: #1a1a1a; --muted: #6b7280; --accent: #2563eb; }
-  @media (prefers-color-scheme: dark) { :root { --fg: #e5e7eb; --muted: #9ca3af; --accent: #60a5fa; } }
-  body { font: 16px/1.6 system-ui, sans-serif; color: var(--fg); margin: 0; padding: 3rem 1.5rem; }
-  main { max-width: 34rem; margin: 0 auto; }
-  [hidden] { display: none !important; }
-  body.embedded { padding: 0; overflow: hidden; }
-  #harness-view { position: fixed; inset: 0; }
-  #harness-frame { display: block; width: 100%; height: 100%; border: 0; }
-  #return-to-connection { position: fixed; z-index: 20; box-sizing: border-box; width: 44px; height: 44px;
-    left: clamp(max(12px, env(safe-area-inset-left, 0px)), var(--control-left, calc(100vw - 56px)), calc(100vw - 44px - max(12px, env(safe-area-inset-right, 0px))));
-    top: clamp(max(12px, env(safe-area-inset-top, 0px)), var(--control-top, 45vh), calc(100dvh - 44px - max(12px, env(safe-area-inset-bottom, 0px))));
-    margin: 0; padding: 0; border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent); border-radius: 50%;
-    box-shadow: 0 2px 12px #0003; background: light-dark(#fff, #252a34); color: var(--accent);
-    font-size: .9rem; line-height: 1; touch-action: none; user-select: none; cursor: grab; }
-  #return-to-connection[data-dragging] { cursor: grabbing; }
-  #return-to-connection:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
-  .visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-    overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-  #connection-dialog { box-sizing: border-box; width: min(38rem, calc(100vw - 24px));
-    max-width: none; max-height: calc(100vh - 24px); max-height: calc(100dvh - 24px); margin: auto; padding: 0;
-    border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent); border-radius: 1rem;
-    background: light-dark(#fff, #171a21); color: var(--fg); box-shadow: 0 16px 64px #0005; overflow: auto; }
-  #connection-dialog::backdrop { background: #0005; }
-  .dialog-heading { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; gap: 1rem;
-    padding: .85rem 1.25rem; background: inherit; border-bottom: 1px solid color-mix(in srgb, var(--fg) 15%, transparent); }
-  .dialog-heading h2 { font-size: 1rem; margin: 0; flex: 1; }
-  #close-controls { margin: 0; padding: .2rem .6rem; font-size: 1.5rem; line-height: 1.2; background: transparent; color: inherit; }
-  #dialog-session-actions { display: flex; flex-wrap: wrap; gap: .5rem; padding: .75rem 1.25rem 0; }
-  #dialog-session-actions button { margin: 0; padding: .4rem .8rem; font-size: .9rem; }
-  #disconnect { background: transparent; color: var(--fg); border: 1px solid currentColor; }
-  #connection-dialog #connection-manager { box-sizing: border-box; max-width: none; width: 100%; padding: 1.25rem; }
-  #connection-dialog .page-header h1 img { width: 8rem; }
-  #connection-dialog #language { margin-bottom: 0; font-size: .85rem; padding: .35rem .65rem; }
-  @media (max-width: 420px) {
-    #connection-dialog { width: calc(100vw - 16px); max-height: calc(100dvh - 16px); border-radius: .75rem; }
-    #connection-dialog #connection-manager { padding: 1rem; }
-    .dialog-heading { padding: .7rem 1rem; }
-    #dialog-session-actions { padding-left: 1rem; padding-right: 1rem; }
-  }
-  .page-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem 1rem; }
-  #language { margin: 0 0 .5rem auto; background: transparent; color: var(--accent);
-              border: 1px solid currentColor; }
-  #room-list li { flex-wrap: wrap; overflow-wrap: anywhere; }
-  h1 { font-size: 1.5rem; margin: 0 0 .5rem; }
-  h1 img { display: block; width: 18rem; max-width: 100%; height: auto; }
-  p { color: var(--muted); }
-  label { display: block; font-weight: 600; margin: 1.5rem 0 .35rem; }
-  input { box-sizing: border-box; width: 100%; padding: .6rem .7rem; font: inherit; font-family: ui-monospace, monospace;
-          border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); border-radius: .4rem;
-          background: transparent; color: inherit; }
-  button { margin-top: 1rem; padding: .6rem 1.1rem; font: inherit; font-weight: 600; border: 0;
-           border-radius: .4rem; background: var(--accent); color: #fff; cursor: pointer; }
-  button[disabled] { opacity: .55; cursor: progress; }
-  #state { margin-top: 1.25rem; min-height: 2.5rem; }
-  #state[data-phase="failed"] { color: #dc2626; }
-  #state[data-phase="offline"] { color: #b45309; }
-  #panel { margin-top: 1.5rem; }
-  #panel[hidden] { display: none; }
-  #headline { font-weight: 600; margin: 0; }
-  #detail { margin: .25rem 0 0; font-size: .9rem; }
-  #panel[data-tone="ok"] #headline { color: #15803d; }
-  #panel[data-tone="warn"] #headline { color: #b45309; }
-  #panel[data-tone="error"] #headline { color: #dc2626; }
-  #actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: 1rem; }
-  #actions button { margin-top: 0; }
-  #actions p { flex-basis: 100%; margin: .25rem 0 0; font-size: .85rem; color: var(--muted); }
-  #open[hidden] { display: none; }
-  #forget { background: transparent; color: var(--muted);
-            border: 1px solid color-mix(in srgb, var(--fg) 25%, transparent); }
-  #forget[hidden] { display: none; }
-  #device { font-size: .9rem; }
-  #notifications { margin-top: 1.5rem; }
-  #notifications h2 { font-size: 1rem; margin-bottom: .25rem; }
-  #notification-badge { margin-left: .5rem; color: var(--accent); font-size: .85rem; }
-  #notification-alert { border-left: .25rem solid #b45309; padding: .5rem .75rem; font-weight: 600; }
-  #notification-list { padding-left: 1.3rem; max-height: 16rem; overflow: auto; }
-  #notification-list li { margin: .5rem 0; }
-  #notification-list li[data-severity="alert"] { font-weight: 600; }
-  #notification-list small { display: block; color: var(--muted); font-weight: normal; }
-  #notifications button { margin-top: .25rem; }
-  .hint { font-size: .9rem; margin: .5rem 0; }
-  details { margin-top: 1.5rem; font-size: .9rem; }
-  summary { cursor: pointer; font-weight: 600; }
-  details li { margin: .6rem 0; }
-  #state, #device, #detail, .hint, details { overflow-wrap: anywhere; }
-  code { background: color-mix(in srgb, currentColor 12%, transparent); padding: .1em .35em; border-radius: .25rem; }
-  a { color: var(--accent); }
-</style>
-</head>
-<body>
-<main id="connection-manager">
-  <header class="page-header">
-  <h1>
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="/client/logo-dark.png">
-      <img src="/client/logo.png" width="720" height="192" alt="dr.dsh">
-    </picture>
-  </h1>
-  <button id="language" type="button" lang="zh-CN" aria-label="Switch to Chinese">中文</button>
-  </header>
-  <p data-i18n="page.intro">This page connects your browser to the DeepSeek Harness running on your own computer.
-     Traffic is end-to-end encrypted: this relay forwards it without being able to read it.</p>
+    <link rel="manifest" href="/client/manifest.webmanifest" />
+    <meta name="theme-color" content="#155d4f" />
+    <link
+      rel="icon"
+      href="/client/favicon-16.png"
+      sizes="16x16"
+      type="image/png"
+    />
+    <link
+      rel="icon"
+      href="/client/favicon-32.png"
+      sizes="32x32"
+      type="image/png"
+    />
+    <link
+      rel="apple-touch-icon"
+      href="/client/apple-touch-icon.png"
+      sizes="180x180"
+    />
+    <style>
+      :root {
+        color-scheme: light;
+        --fg: #1c2938;
+        --muted: #657587;
+        --accent: #216956;
+        --bg: #f3f6f5;
+        --card: #fff;
+        --line: #dce5e0;
+        --soft: #eaf3ee;
+        --error: #af383a;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        font:
+          15px/1.65 Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          "PingFang SC",
+          sans-serif;
+        color: var(--fg);
+        background: var(--bg);
+        margin: 0;
+        padding: 32px 28px;
+      }
+      main {
+        max-width: 1040px;
+        margin: 0 auto;
+      }
+      [hidden] {
+        display: none !important;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          color-scheme: dark;
+          --fg: #e4eee8;
+          --muted: #a4b7ac;
+          --accent: #388269;
+          --bg: #15221d;
+          --card: #1d2d26;
+          --line: #384d41;
+          --soft: #273f32;
+          --error: #f19b96;
+        }
+      }
+      body.embedded {
+        padding: 0;
+        overflow: hidden;
+      }
+      #harness-view {
+        position: fixed;
+        inset: 0;
+      }
+      #harness-frame {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+      #return-to-connection {
+        position: fixed;
+        z-index: 20;
+        box-sizing: border-box;
+        width: 44px;
+        height: 44px;
+        left: clamp(
+          max(12px, env(safe-area-inset-left, 0px)),
+          var(--control-left, calc(100vw - 56px)),
+          calc(100vw - 44px - max(12px, env(safe-area-inset-right, 0px)))
+        );
+        top: clamp(
+          max(12px, env(safe-area-inset-top, 0px)),
+          var(--control-top, 45vh),
+          calc(100dvh - 44px - max(12px, env(safe-area-inset-bottom, 0px)))
+        );
+        margin: 0;
+        padding: 0;
+        border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+        border-radius: 50%;
+        box-shadow: 0 2px 12px #0003;
+        background: light-dark(#fff, #252a34);
+        color: var(--accent);
+        font-size: 0.9rem;
+        line-height: 1;
+        touch-action: none;
+        user-select: none;
+        cursor: grab;
+      }
+      #return-to-connection[data-dragging] {
+        cursor: grabbing;
+      }
+      #return-to-connection:focus-visible {
+        outline: 3px solid var(--accent);
+        outline-offset: 3px;
+      }
+      .visually-hidden {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip-path: inset(50%);
+        white-space: nowrap;
+        border: 0;
+      }
+      #connection-dialog {
+        box-sizing: border-box;
+        width: min(38rem, calc(100vw - 24px));
+        max-width: none;
+        max-height: calc(100vh - 24px);
+        max-height: calc(100dvh - 24px);
+        margin: auto;
+        padding: 0;
+        border: 1px solid color-mix(in srgb, var(--fg) 20%, transparent);
+        border-radius: 1rem;
+        background: light-dark(#fff, #171a21);
+        color: var(--fg);
+        box-shadow: 0 16px 64px #0005;
+        overflow: auto;
+      }
+      #connection-dialog::backdrop {
+        background: #0005;
+      }
+      .dialog-heading {
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+        padding: 0.85rem 1.25rem;
+        background: inherit;
+        border-bottom: 1px solid color-mix(in srgb, var(--fg) 15%, transparent);
+      }
+      .dialog-heading h2 {
+        font-size: 1rem;
+        margin: 0;
+        flex: 1;
+      }
+      #close-controls {
+        margin: 0;
+        padding: 0.2rem 0.6rem;
+        font-size: 1.5rem;
+        line-height: 1.2;
+        background: transparent;
+        color: inherit;
+      }
+      #dialog-session-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        padding: 0.75rem 1.25rem 0;
+      }
+      #dialog-session-actions button {
+        margin: 0;
+        padding: 0.4rem 0.8rem;
+        font-size: 0.9rem;
+      }
+      #disconnect {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid currentColor;
+      }
+      #connection-dialog #connection-manager {
+        box-sizing: border-box;
+        max-width: none;
+        width: 100%;
+        padding: 1.25rem;
+      }
+      #connection-dialog .page-header h1 img {
+        width: 8rem;
+      }
+      #connection-dialog #language {
+        margin-bottom: 0;
+        font-size: 0.85rem;
+        padding: 0.35rem 0.65rem;
+      }
+      @media (max-width: 420px) {
+        #connection-dialog {
+          width: calc(100vw - 16px);
+          max-height: calc(100dvh - 16px);
+          border-radius: 0.75rem;
+        }
+        #connection-dialog #connection-manager {
+          padding: 1rem;
+        }
+        .dialog-heading {
+          padding: 0.7rem 1rem;
+        }
+        #dialog-session-actions {
+          padding-left: 1rem;
+          padding-right: 1rem;
+        }
+      }
+      .page-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 20px;
+        padding-bottom: 23px;
+        border-bottom: 1px solid var(--line);
+      }
+      .page-header h1 {
+        margin: 0;
+        line-height: 1;
+      }
+      h1 img {
+        display: block;
+        width: 152px;
+        max-width: 100%;
+        height: auto;
+      }
+      h2,
+      h3 {
+        margin: 0;
+        font-weight: 600;
+        line-height: 1.4;
+      }
+      h2 {
+        font-size: 21px;
+      }
+      h3 {
+        font-size: 14px;
+      }
+      p {
+        color: var(--muted);
+        margin: 8px 0 16px;
+      }
+      .eyebrow {
+        font-size: 10px;
+        letter-spacing: 1.5px;
+        font-weight: 650;
+        margin: 0 0 12px;
+      }
+      .welcome {
+        margin: 36px 0 28px;
+        max-width: 700px;
+      }
+      .welcome h2 {
+        font-size: 36px;
+        font-weight: 650;
+        letter-spacing: -1px;
+      }
+      .welcome > p:last-child {
+        max-width: 620px;
+        font-size: 13px;
+        line-height: 1.8;
+        margin-bottom: 0;
+      }
+      .connection-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.35fr) minmax(260px, 1fr);
+        gap: 26px;
+        align-items: start;
+      }
+      .connection-card,
+      .guide-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--card);
+        padding: 28px;
+      }
+      .guide-card {
+        background: var(--soft);
+      }
+      .connection-card > h2 {
+        font-size: 19px;
+      }
+      .flow {
+        list-style: none;
+        padding: 0;
+        margin: 20px 0 26px;
+        display: flex;
+        gap: 8px;
+      }
+      .flow li {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        flex: 1;
+        font-size: 10px;
+        color: var(--muted);
+      }
+      .flow li > span {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        border: 1px solid var(--line);
+        border-radius: 50%;
+        font-size: 10px;
+        flex-shrink: 0;
+      }
+      .flow li[data-active] {
+        color: var(--fg);
+        font-weight: 600;
+      }
+      .flow li[data-active] > span {
+        background: var(--accent);
+        color: white;
+        border-color: var(--accent);
+      }
+      .flow li[data-complete] > span {
+        border-color: var(--accent);
+        color: var(--accent);
+        background: var(--soft);
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        font-weight: 600;
+        margin: 22px 0 8px;
+      }
+      input {
+        width: 100%;
+        padding: 14px;
+        font:
+          17px/1.5 ui-monospace,
+          monospace;
+        letter-spacing: 1px;
+        border: 1px solid var(--line);
+        border-radius: 9px;
+        background: var(--bg);
+        color: inherit;
+      }
+      input::placeholder {
+        font-size: 13px;
+        letter-spacing: 0;
+        color: var(--muted);
+      }
+      input[aria-invalid="true"] {
+        border-color: var(--error);
+      }
+      .field-error {
+        font-size: 12px;
+        color: var(--error);
+        margin: 8px 0;
+      }
+      button {
+        padding: 10px 16px;
+        font: 600 12px/1.6 inherit;
+        font-family: inherit;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--accent);
+        color: white;
+        cursor: pointer;
+        min-height: 40px;
+      }
+      button:hover {
+        filter: brightness(0.94);
+      }
+      button[disabled] {
+        opacity: 0.55;
+        cursor: progress;
+      }
+      button:focus-visible,
+      a:focus-visible,
+      input:focus-visible,
+      summary:focus-visible {
+        outline: 3px solid #69a992;
+        outline-offset: 3px;
+      }
+      #language {
+        background: transparent;
+        color: var(--fg);
+        padding: 6px 13px;
+        min-height: 34px;
+      }
+      #connect {
+        width: 100%;
+        font-size: 14px;
+        padding: 13px;
+        margin-top: 14px;
+      }
+      #forget {
+        background: transparent;
+        color: var(--muted);
+        font-size: 11px;
+        margin-top: 12px;
+      }
+      #state {
+        font-size: 12px;
+        margin-top: 18px;
+        white-space: pre-wrap;
+      }
+      #state:empty {
+        margin-top: 0;
+      }
+      #state[data-phase="failed"] {
+        color: var(--error);
+        padding: 12px 14px;
+        background: color-mix(in srgb, var(--error) 7%, var(--card));
+        border-radius: 8px;
+      }
+      #state[data-phase="offline"] {
+        color: light-dark(#9b651a, #ecc080);
+      }
+      #device {
+        font-size: 11px;
+        overflow-wrap: anywhere;
+      }
+      #rooms {
+        padding-bottom: 18px;
+        margin-bottom: 18px;
+        border-bottom: 1px solid var(--line);
+      }
+      #rooms h2 {
+        font-size: 13px !important;
+      }
+      #room-list {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+      }
+      #room-list li {
+        flex-wrap: wrap;
+        overflow-wrap: anywhere;
+        align-items: center;
+        margin-top: 12px;
+      }
+      #room-list button {
+        min-height: 34px;
+        font-size: 11px;
+        padding: 6px 10px;
+      }
+      #room-list button:last-child {
+        background: transparent;
+        color: var(--muted);
+      }
+      #room-list span {
+        font-size: 10px !important;
+      }
+      #panel {
+        margin-top: 22px;
+        padding-top: 20px;
+        border-top: 1px solid var(--line);
+      }
+      #headline {
+        font-weight: 600;
+        color: var(--fg);
+        margin: 0;
+        font-size: 14px;
+      }
+      #detail {
+        margin: 6px 0 0;
+        font-size: 12px;
+      }
+      #panel[data-tone="ok"] #headline {
+        color: light-dark(#216956, #a3d6be);
+      }
+      #panel[data-tone="warn"] #headline {
+        color: light-dark(#91601b, #e0b566);
+      }
+      #panel[data-tone="error"] #headline {
+        color: var(--error);
+      }
+      #actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-top: 16px;
+      }
+      #actions p {
+        flex-basis: 100%;
+        margin: 3px 0 0;
+        font-size: 11px;
+      }
+      #open {
+        margin-top: 16px;
+      }
+      .hint {
+        font-size: 11px;
+        margin: 9px 0;
+        color: var(--muted);
+      }
+      #pairing-hint {
+        border-left: 2px solid var(--line);
+        padding-left: 12px;
+        margin: 16px 0;
+      }
+      .setup-steps {
+        list-style: none;
+        padding: 0;
+        margin: 24px 0 0;
+      }
+      .setup-steps li {
+        display: flex;
+        gap: 14px;
+        margin-bottom: 23px;
+      }
+      .setup-steps li > span {
+        font:
+          11px ui-monospace,
+          monospace;
+        color: var(--accent);
+        padding-top: 3px;
+      }
+      .setup-steps strong {
+        font-size: 12px;
+        font-weight: 600;
+      }
+      .setup-steps p {
+        font-size: 11px;
+        margin: 5px 0 0;
+      }
+      .trust-note {
+        border-top: 1px solid var(--line);
+        padding-top: 18px;
+        font-size: 11px;
+        margin-bottom: 0;
+      }
+      details {
+        margin-top: 22px;
+        font-size: 12px;
+        border-top: 1px solid var(--line);
+        padding-top: 17px;
+      }
+      summary {
+        cursor: pointer;
+        font-weight: 600;
+      }
+      details li {
+        margin: 10px 0;
+      }
+      #browser-checks {
+        list-style: none;
+        padding: 0;
+        margin: 12px 0 0;
+      }
+      #browser-checks li {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        font-size: 11px;
+      }
+      #browser-checks li[data-available="false"] {
+        color: var(--error);
+      }
+      #browser-checks li[data-available="true"] span:last-child {
+        color: light-dark(#216956, #a3d6be);
+      }
+      #notifications {
+        margin-top: 26px;
+        padding: 24px;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 13px;
+      }
+      #notifications h2 {
+        font-size: 16px;
+      }
+      #notification-badge {
+        margin-left: 8px;
+        color: var(--accent);
+        font-size: 12px;
+      }
+      #notification-alert {
+        border-left: 3px solid #b48336;
+        padding: 8px 12px;
+        font-weight: 600;
+      }
+      #notification-list {
+        padding-left: 20px;
+        max-height: 240px;
+        overflow: auto;
+      }
+      #notification-list li {
+        margin: 8px 0;
+        font-size: 12px;
+      }
+      #notification-list li[data-severity="alert"] {
+        font-weight: 600;
+      }
+      #notification-list small {
+        display: block;
+        color: var(--muted);
+        font-weight: normal;
+        font-size: 10px;
+      }
+      #state,
+      #device,
+      #detail,
+      .hint,
+      details {
+        overflow-wrap: anywhere;
+      }
+      code {
+        background: color-mix(in srgb, currentColor 7%, transparent);
+        padding: 2px 5px;
+        border-radius: 4px;
+        font-size: 0.95em;
+      }
+      a {
+        color: light-dark(#216956, #a3d6be);
+      }
+      .page-footer {
+        font-size: 10px;
+        border-top: 1px solid var(--line);
+        padding-top: 20px;
+        margin: 28px 0 0;
+      }
+      #connection-dialog .welcome,
+      #connection-dialog .guide-card,
+      #connection-dialog .page-footer {
+        display: none;
+      }
+      #connection-dialog .connection-grid {
+        display: block;
+      }
+      #connection-dialog .connection-card {
+        padding: 20px 0 0;
+        border: 0;
+      }
+      #connection-dialog .page-header {
+        padding-bottom: 17px;
+      }
+      @media (max-width: 720px) {
+        body {
+          padding: 22px 18px;
+        }
+        .welcome {
+          margin: 28px 0 24px;
+        }
+        .welcome h2 {
+          font-size: 30px;
+        }
+        .connection-grid {
+          grid-template-columns: 1fr;
+          gap: 20px;
+        }
+        .connection-card,
+        .guide-card {
+          padding: 23px;
+        }
+        .page-header {
+          padding-bottom: 20px;
+        }
+        .guide-card {
+          padding: 24px;
+        }
+        .setup-steps {
+          margin-top: 18px;
+        }
+        .page-header h1 img {
+          width: 130px;
+        }
+        .flow li {
+          font-size: 9px;
+          gap: 5px;
+        }
+        .flow {
+          gap: 5px;
+        }
+        .welcome > p:last-child {
+          font-size: 12px;
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * {
+          scroll-behavior: auto !important;
+          transition: none !important;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main id="connection-manager">
+      <header class="page-header">
+        <h1>
+          <picture>
+            <source
+              media="(prefers-color-scheme: dark)"
+              srcset="/client/logo-dark.png"
+            />
+            <img src="/client/logo.png" width="720" height="192" alt="dr.dsh" />
+          </picture>
+        </h1>
+        <button
+          id="language"
+          type="button"
+          lang="zh-CN"
+          aria-label="Switch to Chinese"
+        >
+          中文
+        </button>
+      </header>
+      <section class="welcome">
+        <p class="eyebrow" data-i18n="page.eyebrow">
+          YOUR COMPUTER. YOUR WORKSPACE.
+        </p>
+        <h2 data-i18n="page.welcome">Your workspace, wherever you are.</h2>
+        <p data-i18n="page.intro">
+          This page connects your browser to the DeepSeek Harness running on
+          your own computer. Traffic is end-to-end encrypted: this relay
+          forwards it without being able to read it.
+        </p>
+      </section>
 
-  <form id="connection-form">
-  <label for="key" data-i18n="page.credential">Pairing code or room key</label>
-  <input id="key" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="go" placeholder="XXXX-XXXX-XX"
-         aria-describedby="pairing-hint connection-hint">
-  <p id="pairing-hint" class="hint" data-i18n="page.pairingHint">On the computer running DSH, run <code>drdsh daemon pair</code>
-     (or <code>drdsh-daemon pair</code>) and keep the command running. Codes expire after five minutes
-     and can be used for one attempt, even if it fails.</p>
-  <p id="connection-hint" class="hint">Enter the pairing code and press Connect or Enter. Pairing saves this computer and opens Harness automatically when DSH is running.</p>
-  <button id="connect" type="submit" data-i18n="page.connect">Connect</button>
-  <button id="forget" type="button" data-i18n="page.forgetAll" hidden>Forget all computers</button>
-  </form>
-  <div id="state" data-phase="idle" role="status" aria-live="polite"></div>
-  <p id="device" hidden></p>
-
-  <!-- One machine per paired room (ADR-0007). Hidden until there is at least one, so a first-time
+      <div class="connection-grid">
+        <div class="connection-card">
+          <h2 data-i18n="page.connectionTitle">Connect to your computer</h2>
+          <ol class="flow" aria-label="Connection progress">
+            <li data-step="0" data-active>
+              <span>1</span
+              ><strong data-i18n="page.stepCode">Enter code</strong>
+            </li>
+            <li data-step="1">
+              <span>2</span
+              ><strong data-i18n="page.stepConnect">Secure connection</strong>
+            </li>
+            <li data-step="2">
+              <span>3</span
+              ><strong data-i18n="page.stepOpen">Open workspace</strong>
+            </li>
+          </ol>
+          <!-- One machine per paired room (ADR-0007). Hidden until there is at least one, so a first-time
        visitor sees the code field and nothing else. -->
-  <section id="rooms" hidden>
-    <h2 style="font-size:1rem" data-i18n="page.computers">Your computers</h2>
-    <ul id="room-list" style="list-style:none;padding:0;margin:0"></ul>
-  </section>
+          <section id="rooms" hidden>
+            <h2 style="font-size: 1rem" data-i18n="page.computers">
+              Your computers
+            </h2>
+            <ul
+              id="room-list"
+              style="list-style: none; padding: 0; margin: 0"
+            ></ul>
+          </section>
 
-  <section id="panel" hidden>
-    <p id="headline"></p>
-    <p id="detail"></p>
-    <div id="actions"></div>
-    <button id="open" type="button" data-i18n="page.open" hidden>Return to Harness</button>
-    <p class="hint" data-i18n="page.keepOpen">Harness opens here after connecting. Return to connection management at any time, and keep your DSH computer awake and online.</p>
-  </section>
+          <form id="connection-form" novalidate>
+            <label for="key" data-i18n="page.credential"
+              >Pairing code or room key</label
+            >
+            <input
+              id="key"
+              autocomplete="off"
+              autocapitalize="none"
+              spellcheck="false"
+              enterkeyhint="go"
+              placeholder="XXXX-XXXX-XX"
+              aria-describedby="pairing-hint connection-hint credential-error"
+            />
+            <p
+              id="credential-error"
+              class="field-error"
+              role="alert"
+              hidden
+            ></p>
+            <p id="pairing-hint" class="hint" data-i18n="page.pairingHint">
+              On the computer running DSH, run
+              <code>drdsh daemon pair</code> (or <code>drdsh-daemon pair</code>)
+              and keep the command running. Codes expire after five minutes and
+              can be used for one attempt, even if it fails.
+            </p>
+            <p id="connection-hint" class="hint">
+              Enter the pairing code and press Connect or Enter. Pairing saves
+              this computer and opens Harness automatically when DSH is running.
+            </p>
+            <button id="connect" type="submit" data-i18n="page.connect">
+              Connect
+            </button>
+            <button id="forget" type="button" data-i18n="page.forgetAll" hidden>
+              Forget all computers
+            </button>
+          </form>
+          <div
+            id="state"
+            data-phase="idle"
+            role="status"
+            aria-live="polite"
+          ></div>
+          <p id="device" hidden></p>
 
-  <section id="notifications" hidden aria-labelledby="notification-heading">
-    <h2><span id="notification-heading" data-i18n="notification.heading">Live notifications</span>
-      <span id="notification-badge" role="status" aria-live="polite" hidden></span></h2>
-    <p class="hint" data-i18n="notification.hint">Events from the optional DSH plugin appear here while connected.
-      The latest 50 are kept for this connection only; missed events are not replayed.</p>
-    <div id="notification-alert" role="alert" aria-atomic="true" hidden></div>
-    <p id="notification-empty" class="hint" data-i18n="notification.empty">No events received on this connection.</p>
-    <ol id="notification-list"></ol>
-    <button id="notification-read" type="button" data-i18n="notification.read" disabled>Mark all as read</button>
-  </section>
+          <section id="panel" hidden>
+            <p id="headline"></p>
+            <p id="detail"></p>
+            <div id="actions"></div>
+            <button id="open" type="button" data-i18n="page.open" hidden>
+              Return to Harness
+            </button>
+            <p class="hint" data-i18n="page.keepOpen">
+              Harness opens here after connecting. Return to connection
+              management at any time, and keep your DSH computer awake and
+              online.
+            </p>
+          </section>
+        </div>
+        <aside class="guide-card">
+          <p class="eyebrow" data-i18n="page.guideLabel">FIRST CONNECTION</p>
+          <h2 data-i18n="page.guideTitle">Ready in three steps.</h2>
+          <ol class="setup-steps">
+            <li>
+              <span>01</span>
+              <div>
+                <strong data-i18n="page.guideHost">Keep DSH running</strong>
+                <p data-i18n="page.guideHostDetail">
+                  Start DSH and its daemon or plugin tunnel on your computer.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span>02</span>
+              <div>
+                <strong data-i18n="page.guideCode">Get a pairing code</strong>
+                <p data-i18n="page.guideCodeDetail">
+                  Generate one in local management, or run `drdsh daemon pair`.
+                </p>
+              </div>
+            </li>
+            <li>
+              <span>03</span>
+              <div>
+                <strong data-i18n="page.guideConnect">Enter it here</strong>
+                <p data-i18n="page.guideConnectDetail">
+                  Your computer is saved after pairing. Next time, just select
+                  it and connect.
+                </p>
+              </div>
+            </li>
+          </ol>
+          <p class="trust-note" data-i18n="page.guidePrivacy">
+            Your sessions stay on your computer. The relay only forwards
+            encrypted traffic.
+          </p>
+          <details id="browser-preflight">
+            <summary id="browser-summary"></summary>
+            <ul id="browser-checks"></ul>
+            <p class="hint" data-i18n="browser.scope">
+              These checks confirm browser capabilities, not relay or DSH
+              connectivity.
+            </p>
+          </details>
+        </aside>
+      </div>
 
-  <details>
-    <summary data-i18n="page.help">Setup and troubleshooting</summary>
-    <ul>
-      <li data-i18n="page.helpDaemon">On the DSH computer, check <code>drdsh daemon status</code>. If the service is stopped,
-          run <code>drdsh daemon start</code>. Use <code>drdsh daemon logs --follow</code> or
-          <code>drdsh daemon doctor</code> to investigate a failure.</li>
-      <li data-i18n="page.helpHttps">Open this relay's HTTPS address on remote devices. The browser and daemon must reach
-          the same relay; localhost HTTP is only for testing on the relay computer.</li>
-      <li data-i18n="page.helpPair">To pair another computer, run <code>drdsh daemon pair</code> there and enter its code here.
-          Existing pairings stay in Your computers.</li>
-      <li data-i18n="page.helpForget">Forgetting removes saved pairings from this browser. To revoke access on the DSH computer,
-          use <code>drdsh daemon devices</code>, then <code>drdsh daemon devices --revoke &lt;id&gt;</code>.
-          Read local audit and crash reports with <code>drdsh daemon audit</code> and
-          <code>drdsh daemon crashes</code>.</li>
-      <li data-i18n="page.helpKey">A room key is only for a daemon explicitly configured with that same key.
-          <code>drdsh daemon room-key</code> generates a new key; it does not show the installed
-          daemon's key. Use pairing for an existing installation.</li>
-      <li data-i18n="page.helpRelay">On the relay server, check <code>drdsh relay status</code> and <code>drdsh relay logs --follow</code>.
-          For Release installations, <code>drdsh relay update</code> updates the relay and its PWA;
-          <code>drdsh daemon update</code> runs separately on the DSH computer.
-          If nginx serves the PWA directly, its static files must also be updated.</li>
-    </ul>
-    <p><a data-i18n="page.daemonGuide" href="https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md" target="_blank" rel="noopener noreferrer">Daemon setup guide</a>
-       · <a data-i18n="page.relayGuide" href="https://github.com/luckyuro/dr.dsh/blob/master/relay/README.md" target="_blank" rel="noopener noreferrer">Relay hosting guide</a></p>
-  </details>
-  <p class="hint" style="margin-top:2rem" data-i18n="page.privacy">Keep pairing codes and room keys private. Pairings are saved in
-     this browser for this relay address. Clearing site data or forgetting a computer requires pairing
-     again to reconnect.</p>
-</main>
-<section id="harness-view" hidden>
-  <iframe id="harness-frame" title="DeepSeek Harness" allow="clipboard-read; clipboard-write" referrerpolicy="same-origin"></iframe>
-</section>
-<button id="return-to-connection" type="button" hidden aria-label="Connection controls" aria-haspopup="dialog"
-        aria-controls="connection-dialog" aria-expanded="false" aria-describedby="control-instructions"><span aria-hidden="true">dr</span></button>
-<span id="control-instructions" class="visually-hidden" data-i18n="page.controlInstructions">Drag to either edge, or use the arrow keys to move. Press Enter to open connection controls.</span>
-<dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
-  <header class="dialog-heading">
-    <h2 id="connection-dialog-title" data-i18n="page.returnToConnection">Connection management</h2>
-    <button id="close-controls" type="button" aria-label="Close connection controls"><span aria-hidden="true">×</span></button>
-  </header>
-  <div id="dialog-session-actions">
-    <button id="reload-harness" type="button" data-i18n="page.reloadHarness" disabled>Reload Harness</button>
-    <button id="disconnect" type="button" data-i18n="page.disconnect" disabled>Disconnect</button>
-  </div>
-  <div id="connection-dialog-content"></div>
-</dialog>
-<script type="module" src="/client/shell.js"></script>
-</body>
+      <section id="notifications" hidden aria-labelledby="notification-heading">
+        <h2>
+          <span id="notification-heading" data-i18n="notification.heading"
+            >Live notifications</span
+          >
+          <span
+            id="notification-badge"
+            role="status"
+            aria-live="polite"
+            hidden
+          ></span>
+        </h2>
+        <p class="hint" data-i18n="notification.hint">
+          Events from the optional DSH plugin appear here while connected. The
+          latest 50 are kept for this connection only; missed events are not
+          replayed.
+        </p>
+        <div
+          id="notification-alert"
+          role="alert"
+          aria-atomic="true"
+          hidden
+        ></div>
+        <p id="notification-empty" class="hint" data-i18n="notification.empty">
+          No events received on this connection.
+        </p>
+        <ol id="notification-list"></ol>
+        <button
+          id="notification-read"
+          type="button"
+          data-i18n="notification.read"
+          disabled
+        >
+          Mark all as read
+        </button>
+      </section>
+
+      <details>
+        <summary data-i18n="page.help">Setup and troubleshooting</summary>
+        <ul>
+          <li data-i18n="page.helpDaemon">
+            On the DSH computer, check <code>drdsh daemon status</code>. If the
+            service is stopped, run <code>drdsh daemon start</code>. Use
+            <code>drdsh daemon logs --follow</code> or
+            <code>drdsh daemon doctor</code> to investigate a failure.
+          </li>
+          <li data-i18n="page.helpHttps">
+            Open this relay's HTTPS address on remote devices. The browser and
+            daemon must reach the same relay; localhost HTTP is only for testing
+            on the relay computer.
+          </li>
+          <li data-i18n="page.helpPair">
+            To pair another computer, run <code>drdsh daemon pair</code> there
+            and enter its code here. Existing pairings stay in Your computers.
+          </li>
+          <li data-i18n="page.helpForget">
+            Forgetting removes saved pairings from this browser. To revoke
+            access on the DSH computer, use <code>drdsh daemon devices</code>,
+            then <code>drdsh daemon devices --revoke &lt;id&gt;</code>. Read
+            local audit and crash reports with
+            <code>drdsh daemon audit</code> and
+            <code>drdsh daemon crashes</code>.
+          </li>
+          <li data-i18n="page.helpKey">
+            A room key is only for a daemon explicitly configured with that same
+            key. <code>drdsh daemon room-key</code> generates a new key; it does
+            not show the installed daemon's key. Use pairing for an existing
+            installation.
+          </li>
+          <li data-i18n="page.helpRelay">
+            On the relay server, check <code>drdsh relay status</code> and
+            <code>drdsh relay logs --follow</code>. For Release installations,
+            <code>drdsh relay update</code> updates the relay and its PWA;
+            <code>drdsh daemon update</code> runs separately on the DSH
+            computer. If nginx serves the PWA directly, its static files must
+            also be updated.
+          </li>
+        </ul>
+        <p>
+          <a
+            data-i18n="page.daemonGuide"
+            href="https://github.com/luckyuro/dr.dsh/blob/master/daemon/README.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Daemon setup guide</a
+          >
+          ·
+          <a
+            data-i18n="page.relayGuide"
+            href="https://github.com/luckyuro/dr.dsh/blob/master/relay/README.md"
+            target="_blank"
+            rel="noopener noreferrer"
+            >Relay hosting guide</a
+          >
+        </p>
+      </details>
+      <p class="page-footer" data-i18n="page.privacy">
+        Keep pairing codes and room keys private. Pairings are saved in this
+        browser for this relay address. Clearing site data or forgetting a
+        computer requires pairing again to reconnect.
+      </p>
+    </main>
+    <section id="harness-view" hidden>
+      <iframe
+        id="harness-frame"
+        title="DeepSeek Harness"
+        allow="clipboard-read; clipboard-write"
+        referrerpolicy="same-origin"
+      ></iframe>
+    </section>
+    <button
+      id="return-to-connection"
+      type="button"
+      hidden
+      aria-label="Connection controls"
+      aria-haspopup="dialog"
+      aria-controls="connection-dialog"
+      aria-expanded="false"
+      aria-describedby="control-instructions"
+    >
+      <span aria-hidden="true">dr</span>
+    </button>
+    <span
+      id="control-instructions"
+      class="visually-hidden"
+      data-i18n="page.controlInstructions"
+      >Drag to either edge, or use the arrow keys to move. Press Enter to open
+      connection controls.</span
+    >
+    <dialog id="connection-dialog" aria-labelledby="connection-dialog-title">
+      <header class="dialog-heading">
+        <h2 id="connection-dialog-title" data-i18n="page.returnToConnection">
+          Connection management
+        </h2>
+        <button
+          id="close-controls"
+          type="button"
+          aria-label="Close connection controls"
+        >
+          <span aria-hidden="true">×</span>
+        </button>
+      </header>
+      <div id="dialog-session-actions">
+        <button
+          id="reload-harness"
+          type="button"
+          data-i18n="page.reloadHarness"
+          disabled
+        >
+          Reload Harness
+        </button>
+        <button
+          id="disconnect"
+          type="button"
+          data-i18n="page.disconnect"
+          disabled
+        >
+          Disconnect
+        </button>
+      </div>
+      <div id="connection-dialog-content"></div>
+    </dialog>
+    <script type="module" src="/client/shell.js"></script>
+  </body>
 </html>

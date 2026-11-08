@@ -20,6 +20,7 @@
 | [`operations/releases.md`](operations/releases.md) | v0.2.0 下载、平台选包、摘要校验与升级 |
 | [`operations/dsh-provisioning.md`](operations/dsh-provisioning.md) | 自动安装 DSH、固定依赖与外部安装的数据边界 |
 | [`operations/acceptance-2026-11-04.md`](operations/acceptance-2026-11-04.md) | v0.2.0 的实测结果、环境和未覆盖范围 |
+| [`operations/acceptance-2026-11-07.md`](operations/acceptance-2026-11-07.md) | blade / ali 的全新安装、项目创建、插件增删、真实接管与跨机验收 |
 | [`operations/cli.md`](operations/cli.md) | 两侧命令与配置、旧版统一入口兼容与配对状态迁移 |
 | [`operations/daemon-management.md`](operations/daemon-management.md) | 单包 DSH 插件、本机页面授权、daemon 安装/接管、持久作业、JSON CLI 与在线配对/撤销 |
 | [`operations/install.md`](operations/install.md) | daemon 构建、旧 CPU、Linux/macOS 常驻、Windows 边界与附着模式 |
@@ -46,6 +47,7 @@
 | 文档 | 内容 |
 | :--- | :--- |
 | [`development/contributing.md`](development/contributing.md) | 验证命令、仓库结构、评审强制的硬规则 |
+| [`development/validation.md`](development/validation.md) | 共享校验、Standard Schema、框架接入矩阵与结构化诊断复验 |
 | [`development/plugin-model-test.md`](development/plugin-model-test.md) | 2026-10-29 真实模型与插件通知验收、认证阻塞、隔离事故及恢复残留 |
 | [`architecture.md`](architecture.md) | 组件边界与数据流（改之前先读这个） |
 | [`decisions/`](decisions/) | 每条 ADR 都记录了被否决的方案——先确认你的改动不是被否决过的那个 |

@@ -124,6 +124,9 @@ importers:
       '@dr.dsh/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
+      '@dr.dsh/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
     devDependencies:
       '@types/node':
         specifier: ^22.20.2
@@ -154,7 +157,20 @@ importers:
         specifier: ^5.9.3
         version: 5.9.3
 
+  packages/validation:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.2
+        version: 22.20.2
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+
   plugins/dr.dsh:
+    dependencies:
+      '@dr.dsh/validation':
+        specifier: workspace:*
+        version: link:../../packages/validation
     devDependencies:
       '@types/node':
         specifier: ^22.20.2

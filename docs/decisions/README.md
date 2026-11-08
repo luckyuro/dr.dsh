@@ -30,6 +30,8 @@
 | [0024](0024-embedded-harness-session-isolation.md) | 同页 Harness 与连接隔离 | iframe 保留隧道、按视图隔离 HTTP/WS、同房间单活连接与有序加密发送 |
 | [0025](0025-host-directory-browser.md) | 主机目录浏览 | 默认受管 DSH 以临时 overlay 使用内置 browse 组合，保留显式 profile 配置 |
 | [0026](0026-plugin-owned-tunnel.md) | 插件独立连接 | 插件持有原生隧道的生命周期；常驻 daemon 仅在需要监督 DSH 时启用 |
+| [0027](0027-validation-and-diagnostics.md) | 校验与诊断 | 无框架依赖的共享校验、结构化本机报告、分区管理界面与权限隔离 |
+| [0028](0028-streaming-and-large-snapshots.md) | 流式响应与大快照 | HTTP 持续转发、Worker 更换时恢复 SSE、PX v2 有界文本分片与共享向量 |
 
 ## 什么时候需要写一条新 ADR
 

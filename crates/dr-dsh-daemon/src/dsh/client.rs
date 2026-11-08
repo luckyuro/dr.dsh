@@ -44,11 +44,10 @@ use hyper_util::client::legacy::Client;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::rt::TokioExecutor;
 
-/// How long a single loopback request may take.
+/// How long DSH may take to send a response head.
 ///
-/// Generous, because DSH legitimately streams long responses, and this timeout
-/// only guards against a wedged socket — the supervisor's health check is what
-/// notices a dead process.
+/// An event stream may remain open indefinitely after its head arrives; the
+/// supervisor and carrier lifetime govern that body instead of a total deadline.
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Why a request to DSH failed.
@@ -112,10 +111,8 @@ pub struct DshResponse {
     pub headers: hyper::HeaderMap,
     /// The complete response body.
     ///
-    /// Buffered rather than streamed for the M0 control paths. Proxying to a
-    /// remote client will need streaming (see the roadmap), and when it does, it
-    /// belongs in the proxy module rather than here — this type stays small and
-    /// easy to reason about.
+    /// Control paths use this complete value. The proxy uses `forward_stream`
+    /// so an event stream does not have to finish before the browser can read it.
     pub body: Bytes,
 }
 
@@ -480,6 +477,29 @@ impl DshClient {
         headers: &[(String, String)],
         body: Vec<u8>,
     ) -> Result<DshResponse, DshClientError> {
+        Self::collect_response(
+            self.forward_stream(method, path_and_query, headers, body)
+                .await?,
+        )
+        .await
+    }
+
+    /// Forwards under the same authority and cookie, returning before the body ends.
+    ///
+    /// The proxy consumes this body incrementally, including an event stream that
+    /// stays open between plugin changes. Dropping it closes the upstream request.
+    ///
+    /// # Errors
+    ///
+    /// Returns request validation, connection or response-head timeout failures.
+    /// A non-success HTTP status is returned as an ordinary response.
+    pub async fn forward_stream(
+        &self,
+        method: &str,
+        path_and_query: &str,
+        headers: &[(String, String)],
+        body: Vec<u8>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, DshClientError> {
         let method =
             Method::from_bytes(method.as_bytes()).map_err(|error| DshClientError::Unexpected {
                 status: StatusCode::BAD_REQUEST,
@@ -493,7 +513,7 @@ impl DshClient {
             }
             builder = builder.header(name, value);
         }
-        self.finish(builder, Some(body)).await
+        self.begin(builder, Some(body)).await
     }
 
     /// Performs a WebSocket handshake against DSH and returns the upgraded connection.
@@ -559,7 +579,11 @@ impl DshClient {
         let socket = tokio_tungstenite::WebSocketStream::from_raw_socket(
             hyper_util::rt::TokioIo::new(upgraded),
             tokio_tungstenite::tungstenite::protocol::Role::Client,
-            None,
+            Some(
+                tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                    .max_message_size(Some(dr_dsh_proto::proxy_ws::MAX_TEXT_BYTES))
+                    .max_frame_size(Some(dr_dsh_proto::proxy_ws::MAX_TEXT_BYTES)),
+            ),
         )
         .await;
         Ok(WebSocketConn::new(socket))
@@ -585,9 +609,17 @@ impl DshClient {
     /// Applies this client's authority and cookie, then sends.
     async fn finish(
         &self,
-        mut builder: hyper::http::request::Builder,
+        builder: hyper::http::request::Builder,
         body: Option<Vec<u8>>,
     ) -> Result<DshResponse, DshClientError> {
+        Self::collect_response(self.begin(builder, body).await?).await
+    }
+
+    async fn begin(
+        &self,
+        mut builder: hyper::http::request::Builder,
+        body: Option<Vec<u8>>,
+    ) -> Result<hyper::Response<hyper::body::Incoming>, DshClientError> {
         // The Host header is not a formality: DSH's session cookie is signed
         // against the request authority, and its `/api` fence refuses anything
         // that is not loopback or an explicitly trusted host. Setting it
@@ -607,11 +639,15 @@ impl DshClient {
                 .map_err(|error| DshClientError::Transport(error.to_string()))?,
         };
 
-        let response = tokio::time::timeout(REQUEST_TIMEOUT, self.http.request(request))
+        tokio::time::timeout(REQUEST_TIMEOUT, self.http.request(request))
             .await
             .map_err(|_| DshClientError::Transport("loopback request timed out".to_owned()))?
-            .map_err(|error| DshClientError::Transport(error.to_string()))?;
+            .map_err(|error| DshClientError::Transport(error.to_string()))
+    }
 
+    async fn collect_response(
+        response: hyper::Response<hyper::body::Incoming>,
+    ) -> Result<DshResponse, DshClientError> {
         let status = response.status();
         let headers = response.headers().clone();
         let body = response

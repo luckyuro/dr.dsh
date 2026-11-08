@@ -5,6 +5,7 @@ import { constants } from 'node:fs';
 import { open, rename, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { validateRelay } from '@dr.dsh/validation';
 import { BootstrapError, ensureNativeBundle, privateDirectory } from './bootstrap.ts';
 import type { BootstrapOptions, NativeBundle } from './bootstrap.ts';
 
@@ -151,10 +152,8 @@ export function validateOperation(operation: unknown, value: unknown): { operati
       if (typeof item !== 'string' || item.length === 0 || item.length > 4096 || /[\0\r\n]/u.test(item)) invalid(`${key} requires a nonempty string without control characters.`);
       if (key !== 'relay' && !isAbsolute(item)) invalid(`${key} requires an absolute local path.`);
       if (key === 'relay') {
-        try {
-          const url = new URL(item);
-          if (!['ws:', 'wss:'].includes(url.protocol) || !url.hostname || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) invalid('relay requires a ws:// or wss:// origin without credentials, path, query or fragment.');
-        } catch { invalid('relay requires a valid ws:// or wss:// origin.'); }
+        const checked = validateRelay(item);
+        if (checked.issues) invalid(checked.issues[0]!.message);
       }
     } else if (booleanFields.has(key)) {
       if (typeof item !== 'boolean') invalid(`${key} requires true or false.`);

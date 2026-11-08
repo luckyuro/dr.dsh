@@ -22,6 +22,7 @@
 
 use std::sync::Arc;
 
+use http_body_util::BodyExt as _;
 use tokio::sync::mpsc;
 
 use super::message::{
@@ -224,21 +225,14 @@ impl ProxyService {
         let destination = validate_target(&head.target)?;
         let body = request_body(&head)?;
 
-        let outcome = self
+        let response = self
             .client
-            .forward(&head.method, &destination, &head.headers, body)
-            .await;
-        let response = match outcome {
-            Ok(response) => response,
-            Err(error) => {
-                let reason = upstream_reason(&error);
-                self.report_failure(stream_id, head.id, &reason, outbox)
-                    .await?;
-                return Err(ProxyError::Upstream(reason));
-            }
-        };
+            .forward_stream(&head.method, &destination, &head.headers, body)
+            .await
+            .map_err(|error| ProxyError::Upstream(upstream_reason(&error)))?;
+        let (parts, mut body) = response.into_parts();
 
-        let response_headers: Vec<(String, String)> = response
+        let response_headers: Vec<(String, String)> = parts
             .headers
             .iter()
             .filter_map(|(name, value)| {
@@ -253,20 +247,30 @@ impl ProxyService {
             stream_id,
             &ProxyMessage::ResponseStart(ResponseHead {
                 id: head.id,
-                status: response.status.as_u16(),
+                status: parts.status.as_u16(),
                 headers: response_headers,
             }),
             outbox,
         )
         .await?;
 
-        for chunk in chunk_body(&response.body) {
-            self.send(
-                stream_id,
-                &ProxyMessage::ResponseBody(chunk.to_vec()),
-                outbox,
-            )
-            .await?;
+        while let Some(frame) = body.frame().await {
+            let frame = frame.map_err(|_| {
+                ProxyError::Upstream(
+                    "DSH closed its response unexpectedly; reload the interface or reconnect"
+                        .into(),
+                )
+            })?;
+            if let Ok(data) = frame.into_data() {
+                for chunk in chunk_body(&data) {
+                    self.send(
+                        stream_id,
+                        &ProxyMessage::ResponseBody(chunk.to_vec()),
+                        outbox,
+                    )
+                    .await?;
+                }
+            }
         }
         self.send(stream_id, &ProxyMessage::ResponseEnd, outbox)
             .await
@@ -327,18 +331,34 @@ impl ProxyService {
                         frame = reader.next() => frame,
                         () = outbox.closed() => break,
                     };
-                    let Ok(Some(frame)) = frame else {
-                        break;
+                    let frame = match frame {
+                        Ok(Some(frame)) => frame,
+                        Ok(None) => break,
+                        Err(_) => {
+                            let mut payload = Vec::new();
+                            let failure = ProxyMessage::Failure(Failure {
+                                id,
+                                reason: "DSH WebSocket response failed or exceeded the 8 MiB receive limit; open a smaller session or check the DSH process".into(),
+                            });
+                            if encode(&failure, &mut payload).is_ok() {
+                                let _ = outbox.send(Outbound { stream_id, payload }).await;
+                            }
+                            break;
+                        }
                     };
-                    let message = ProxyMessage::WsData(WsData {
-                        id,
-                        frame: from_dsh(frame),
-                    });
-                    let mut payload = Vec::new();
-                    if encode(&message, &mut payload).is_err() {
-                        break;
-                    }
-                    if outbox.send(Outbound { stream_id, payload }).await.is_err() {
+                    if let Err(error) = send_socket_frame(stream_id, id, frame, &outbox).await {
+                        let mut payload = Vec::new();
+                        if encode(
+                            &ProxyMessage::Failure(Failure {
+                                id,
+                                reason: error.to_string(),
+                            }),
+                            &mut payload,
+                        )
+                        .is_ok()
+                        {
+                            let _ = outbox.send(Outbound { stream_id, payload }).await;
+                        }
                         break;
                     }
                 }
@@ -460,6 +480,58 @@ fn request_body(head: &RequestHead) -> Result<Vec<u8>, ProxyError> {
             Ok(head.body.clone())
         }
     }
+}
+
+async fn send_socket_frame(
+    stream_id: u32,
+    id: u64,
+    frame: DshWsFrame,
+    outbox: &mpsc::Sender<Outbound>,
+) -> Result<(), ProxyError> {
+    use dr_dsh_proto::proxy_ws::{MAX_CHUNK_BYTES, MAX_TEXT_BYTES, TextChunk};
+
+    if let DshWsFrame::Text(text) = &frame
+        && text.len() > MAX_CHUNK_BYTES
+    {
+        if text.len() > MAX_TEXT_BYTES {
+            return Err(ProxyError::Refused(format!(
+                "DSH WebSocket text exceeds the {MAX_TEXT_BYTES}-byte receive limit; open a smaller session or reduce its output"
+            )));
+        }
+        let total = text.len() as u32;
+        for (index, bytes) in text.as_bytes().chunks(MAX_CHUNK_BYTES).enumerate() {
+            let payload = TextChunk {
+                id,
+                total,
+                offset: (index * MAX_CHUNK_BYTES) as u32,
+                bytes,
+            }
+            .encode()
+            .map_err(|error| ProxyError::Refused(error.to_string()))?;
+            outbox
+                .send(Outbound { stream_id, payload })
+                .await
+                .map_err(|_| ProxyError::Carrier("the carrier is gone".into()))?;
+        }
+        return Ok(());
+    }
+    let mut payload = Vec::new();
+    encode(
+        &ProxyMessage::WsData(WsData {
+            id,
+            frame: from_dsh(frame),
+        }),
+        &mut payload,
+    )
+    .map_err(|error| {
+        ProxyError::Refused(format!(
+            "DSH WebSocket message could not be forwarded: {error}; reload the interface"
+        ))
+    })?;
+    outbox
+        .send(Outbound { stream_id, payload })
+        .await
+        .map_err(|_| ProxyError::Carrier("the carrier is gone".into()))
 }
 
 /// A second handle on the WebSocket registry, for tasks that must clean up their own entry.
@@ -827,6 +899,59 @@ mod tests {
         encode(&ProxyMessage::ResponseEnd, &mut payload)?;
         let (outbox, _inbox) = mpsc::channel(4);
         assert!(service.handle(1, &payload, &outbox).await.is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn event_stream_delivers_headers_and_data_before_the_host_closes() -> TestResult {
+        use futures_util::StreamExt as _;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let app = axum::Router::new().route(
+            "/events",
+            axum::routing::get(|| async {
+                let chunks = futures_util::stream::once(async {
+                    Ok::<_, std::convert::Infallible>(bytes::Bytes::from_static(b"data: first\n\n"))
+                })
+                .chain(futures_util::stream::pending());
+                (
+                    [("content-type", "text/event-stream")],
+                    axum::body::Body::from_stream(chunks),
+                )
+            }),
+        );
+        let server = tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        let service = ProxyService::new(Arc::new(DshClient::new(&format!("http://{address}"))?));
+        let mut payload = Vec::new();
+        encode(
+            &ProxyMessage::RequestStart(RequestHead {
+                id: 1,
+                method: "GET".into(),
+                target: "/events".into(),
+                headers: vec![],
+                body: vec![],
+            }),
+            &mut payload,
+        )?;
+        let (outbox, mut inbox) = mpsc::channel(4);
+        let forwarding = tokio::spawn(async move { service.handle(1, &payload, &outbox).await });
+        let received = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            let head = inbox.recv().await.ok_or("missing response headers")?;
+            let body = inbox.recv().await.ok_or("missing initial event")?;
+            Ok::<_, Box<dyn std::error::Error>>((
+                super::super::message::decode(&head.payload)?,
+                super::super::message::decode(&body.payload)?,
+            ))
+        })
+        .await;
+        forwarding.abort();
+        server.abort();
+        let (head, body) = received??;
+        assert!(matches!(head, ProxyMessage::ResponseStart(head) if head.status == 200));
+        assert!(matches!(body, ProxyMessage::ResponseBody(bytes) if bytes == b"data: first\n\n"));
         Ok(())
     }
 }

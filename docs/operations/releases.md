@@ -4,6 +4,28 @@
 先按下表选包；第一次使用可直接看[项目快速开始](../../README.zh.md#快速开始)。
 本次功能和环境范围见[发布验收记录](acceptance-2026-11-04.md)。
 
+## 未发布的源码更新
+
+以下改动已在当前源码实现，尚未包含在上述 v0.2.0 Release 附件中；下载入口仍提供原发布包。
+
+- 兼容 DSH `0.2.2-rc.1`，首次私有安装固定该版本与 Cordis `4.1.0` 依赖组合；
+  更新 daemon 时保留已有私有 DSH `0.2.2-alpha.2` 的版本和依赖锁。
+- 管理页与 PWA 共用字段校验，提供浏览器预检、分区管理界面和 `doctor --json` 结构化诊断；
+  诊断失败、未知或截断输出不会显示为全部通过。
+- 修复 OS 服务接管后丢失自定义管理 prefix 和授权存储的问题，保留原实例、profile 与作业记录。
+- HTTP 持续响应逐段传递；Worker 正常更换后 SSE 可以重新订阅。
+- DSH 输出的大型 WebSocket 文本使用 PX v2 分片，最大 8 MiB，修复长会话刷新后反复重连。
+  carrier 仍为 64 KiB；输入和二进制消息仍受 PX v1 的单块限制。
+
+使用大快照修复时，需要同时更新 daemon 和 Relay 提供的 PWA；插件自持隧道则更新插件附带的
+native 程序。nginx 独立托管时也要更新 `client/`。旧客户端不能解码 PX v2，不能只更新一端。
+当前源码 PWA 缓存为 `dr.dsh-client-v17`，更新后完整重载浏览器页面，已有配对保留。
+
+完整跨机、真实模型及服务隔离验证见 [2026-11-07 验收记录](acceptance-2026-11-07.md)，
+协议范围见 [ADR-0028](../decisions/0028-streaming-and-large-snapshots.md)。
+
+## 已发布的平台与包
+
 从 `v0.1.0` 起，GitHub [Releases](https://github.com/luckyuro/dr.dsh/releases) 提供下列 `.tar.gz`。
 版本尚处早期自托管阶段；没有第三方审计、代码签名或可复现构建保证。`SHA256SUMS` 用于校验下载内容，
 与压缩包通过同一 GitHub HTTPS 来源取得，不等同于独立签名。

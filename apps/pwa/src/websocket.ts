@@ -25,6 +25,7 @@
  */
 
 import { decodeMessage, encodeWsData, encodeWsOpen } from './proxy.ts';
+import { WebSocketTextAssembler } from '@dr.dsh/protocol/proxy-ws';
 
 /** The slice of a tunnel this adapter needs, so it can be tested without one. */
 export interface SocketTunnel {
@@ -91,6 +92,7 @@ export function tunneledWebSocket(
     private readonly id: number;
     private unsubscribe: (() => void) | null = null;
     private pending: string[] = [];
+    private readonly text = new WebSocketTextAssembler();
 
     public constructor(url: string, _protocols?: string | string[]) {
       this.streamId = nextStream();
@@ -118,8 +120,11 @@ export function tunneledWebSocket(
 
     /** Routes one proxied message. */
     private absorb(payload: Uint8Array<ArrayBuffer>): void {
-      const message = decodeMessage(payload);
+      let message;
+      try { message = decodeMessage(payload); }
+      catch { this.finish(1006, 'DSH sent an unsupported WebSocket message; update both daemon and client, then reconnect.'); return; }
       if (message === undefined) return;
+      if ('id' in message && message.id !== this.id) return;
       switch (message.kind) {
         case 'wsOpened':
           if (message.status === 101) {
@@ -137,9 +142,16 @@ export function tunneledWebSocket(
             this.finish(1000, '');
             return;
           }
+          if (this.text.pending) { this.finish(1006, 'DSH interrupted a fragmented message; reconnect the interface.'); return; }
           this.onmessage?.({ data: frame.text });
           return;
         }
+        case 'wsTextChunk':
+          try {
+            const text = this.text.push(message);
+            if (text !== undefined) this.onmessage?.({ data: text });
+          } catch { this.finish(1006, 'DSH sent invalid WebSocket text fragments; update both daemon and client, then reconnect.'); }
+          return;
         case 'failure':
           this.finish(1006, message.reason);
           return;
@@ -185,6 +197,7 @@ export function tunneledWebSocket(
     private finish(code: number, reason: string): void {
       if (this.readyState === CLOSED) return;
       this.readyState = CLOSED;
+      this.text.reset();
       this.unsubscribe?.();
       this.unsubscribe = null;
       this.onclose?.({ code, reason });

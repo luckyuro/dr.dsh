@@ -76,7 +76,7 @@ test('a request travels over the port and its answer comes back', async () => {
     body: new Uint8Array(0),
   });
   assert.equal(answer.status, 200);
-  assert.equal(new TextDecoder().decode(answer.body), '<html>ok</html>');
+  assert.equal(await toResponse(answer).text(), '<html>ok</html>');
 });
 
 test('two requests in flight do not swap answers', async () => {
@@ -95,8 +95,8 @@ test('two requests in flight do not swap answers', async () => {
     service.fetch({ method: 'GET', path: '/slow.css', headers: [], body: new Uint8Array(0) }),
     service.fetch({ method: 'GET', path: '/fast.js', headers: [], body: new Uint8Array(0) }),
   ]);
-  assert.equal(new TextDecoder().decode(first.body), '/slow.css');
-  assert.equal(new TextDecoder().decode(second.body), '/fast.js');
+  assert.equal(await toResponse(first).text(), '/slow.css');
+  assert.equal(await toResponse(second).text(), '/fast.js');
 });
 
 test('a failure from the page becomes a readable error', async () => {
@@ -293,10 +293,23 @@ test('a late answer for an unknown request is dropped, not thrown', async () => 
   const pending = service.fetch({ method: 'GET', path: '/first', headers: [], body: new Uint8Array(0) });
   await new Promise(resolve => setTimeout(resolve, 20));
   const second = await service.fetch({ method: 'GET', path: '/second', headers: [], body: new Uint8Array(0) });
-  assert.equal(new TextDecoder().decode(second.body), 'answered');
+  assert.equal(await toResponse(second).text(), 'answered');
   // Settle the first so the test does not leave a pending promise behind.
   service.detach();
   await assert.rejects(pending, /detached/);
+});
+
+test('a late streamed answer cancels its producer', { timeout: 2000 }, async () => {
+  const { service, page } = channel();
+  let cancel!: () => void;
+  const cancelled = new Promise<void>(resolve => { cancel = resolve; });
+  const body = new ReadableStream<Uint8Array<ArrayBuffer>>({ cancel });
+  page.postMessage({ kind: 'response-stream', id: 999, status: 200, headers: [], body }, [body]);
+  try {
+    await cancelled;
+  } finally {
+    service.detach();
+  }
 });
 
 test('a page request becomes an origin-form tunnel request', async () => {

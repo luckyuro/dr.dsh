@@ -11,5 +11,5 @@
   },
   "include": ["src"],
   "exclude": ["src/service-worker.ts"],
-  "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/crypto" }]
+  "references": [{ "path": "../../packages/protocol" }, { "path": "../../packages/crypto" }, { "path": "../../packages/validation" }]
 }

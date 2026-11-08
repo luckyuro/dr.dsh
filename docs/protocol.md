@@ -383,6 +383,19 @@ daemon ─ WsData*  ◀─ client   DSH → 客户端的帧
 either ─ WsData{Close} ─▶ other
 ```
 
+大型 **DSH → 客户端文本消息**使用新增 PX **版本 2**、tag `12`（`WsTextChunk`）。
+这是端点载荷版本扩展；carrier 保持 `0.1`，中继不解析它。普通 PX v1 消息与原有向量不变。
+每块字段均为大端：`"PX" | 2:u8 | 12:u8 | id:u64 | total:u32 | offset:u32 | length:u32 | bytes`。
+`id` 不得超过 JavaScript 安全整数；`total` 为完整 UTF-8 字节数，范围 `1..=8 MiB`；
+每块非空，最大 `64 KiB - 64`，`offset + length <= total`，并且禁止截断或多余尾字节。
+同一 socket 一次只组装一条消息，首块 offset 为 0，后续 offset 必须等于已收字节数，id 和 total 不变；
+完整后严格解码 UTF-8，并交付单个 WebSocket 文本事件。乱序、重叠、身份变化和非法 UTF-8 均清空部分结果并关闭该 socket。
+daemon 的上游 WebSocket 同样在 8 MiB 限制处拒绝，错误只含原因，不含正文。
+规范实现为 `dr-dsh-proto::proxy_ws`，TypeScript 镜像为 `packages/protocol/src/proxy-ws.ts`；
+共享向量中的 `proxyTextChunks` / `proxyTextRejections` 由两种语言读取。
+完整大快照需要同时更新 daemon（插件自持隧道则更新其 native 包）和 relay 的 PWA；旧客户端不能解码 PX v2。
+客户端 → DSH 的消息和二进制 WebSocket 消息仍使用 PX v1 的单块限制；本扩展不改变该方向。
+
 三条规则：
 
 1. **target 必须是 origin-form**（以 `/` 开头，且不含 `..`、反斜杠、空白，也不以 `//` 开头）。绝对 URL 被**拒绝而不是改写**：主机由 daemon 决定，客户端说"要什么"，不说"去哪里"。

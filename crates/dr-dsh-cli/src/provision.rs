@@ -8,10 +8,19 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-pub(crate) const DSH_VERSION: &str = "0.2.2-alpha.2";
+pub(crate) const DSH_VERSION: &str = "0.2.2-rc.1";
+const RUNTIME_PINS: [(&str, &str); 7] = [
+    ("@deepseek-ai/cordis", "4.1.0"),
+    ("@deepseek-ai/cordis-plugin-group", "1.1.0"),
+    ("@deepseek-ai/cordis-plugin-include", "1.1.0"),
+    ("@deepseek-ai/cordis-plugin-loader", "1.1.0"),
+    ("@deepseek-ai/cordis-plugin-timer", "1.2.0"),
+    ("@deepseek-ai/cosmokit", "1.9.0"),
+    ("@deepseek-ai/schemastery", "3.19.0"),
+];
 // DSH's prerelease ranges also admit Cordis alpha.2, whose changed event contracts
 // break settings writes and session creation in this DSH release. Keep the tested family together.
-const RUNTIME_PINS: [(&str, &str); 7] = [
+const LEGACY_RUNTIME_PINS: [(&str, &str); 7] = [
     ("@deepseek-ai/cordis", "4.0.6-alpha.1"),
     ("@deepseek-ai/cordis-plugin-group", "1.0.6-alpha.1"),
     ("@deepseek-ai/cordis-plugin-include", "1.0.11-alpha.1"),
@@ -21,6 +30,14 @@ const RUNTIME_PINS: [(&str, &str); 7] = [
     ("@deepseek-ai/schemastery", "3.18.6-alpha.1"),
 ];
 
+fn runtime_pins(version: &str) -> Option<&'static [(&'static str, &'static str)]> {
+    match version {
+        DSH_VERSION => Some(&RUNTIME_PINS),
+        "0.2.2-alpha.2" => Some(&LEGACY_RUNTIME_PINS),
+        _ => None,
+    }
+}
+
 pub(crate) fn launcher(p: &Paths) -> PathBuf {
     p.root.join("dsh").join(DSH_VERSION).join("bin/dsh")
 }
@@ -29,8 +46,11 @@ pub(crate) fn validate(config: &Config, p: &Paths) -> Result<()> {
     if config.dsh_managed == Some(true) {
         ensure!(
             config.scope == "daemon"
-                && config.dsh_version.as_deref() == Some(DSH_VERSION)
-                && config.dsh.as_ref() == Some(&launcher(p)),
+                && config.dsh_version.as_deref().is_some_and(|version| {
+                    runtime_pins(version).is_some()
+                        && config.dsh.as_ref()
+                            == Some(&p.root.join("dsh").join(version).join("bin/dsh"))
+                }),
             "Managed DSH version/path does not match this release; use its matching drdsh installer or select an external executable with --dsh."
         );
     } else {
@@ -118,21 +138,22 @@ fn supported_node(version: &str) -> bool {
     }
 }
 
-fn check_version(binary: &Path) -> Result<()> {
+fn check_version(binary: &Path, expected: &str) -> Result<()> {
     let version = run(
         Command::new(binary).arg("--version"),
         Duration::from_secs(20),
         "DSH version verification",
     )?;
     ensure!(
-        version == DSH_VERSION,
-        "The private DSH executable does not report the pinned version {DSH_VERSION}; remove that private version directory and retry installation."
+        version == expected,
+        "The private DSH executable does not report the pinned version {expected}; remove that private version directory and retry installation."
     );
     Ok(())
 }
 
-fn check_runtime_dependencies(directory: &Path) -> Result<()> {
-    for (package, expected) in RUNTIME_PINS {
+fn check_runtime_dependencies(directory: &Path, version: &str) -> Result<()> {
+    let pins = runtime_pins(version).context("This managed DSH version is not supported; use its matching drdsh installer or select an external executable with --dsh.")?;
+    for &(package, expected) in pins {
         let path = directory
             .join("node_modules")
             .join(package)
@@ -144,7 +165,7 @@ fn check_runtime_dependencies(directory: &Path) -> Result<()> {
             metadata
                 .as_ref()
                 .is_some_and(|value| value["version"] == expected),
-            "Private DSH dependency {package} must be {expected} for DSH {DSH_VERSION}. Stop the daemon, move {} aside, then reinstall to download the compatible runtime. Keep your separate DSH home and daemon state directories; they contain sessions and pairings. Existing services were not stopped.",
+            "Private DSH dependency {package} must be {expected} for DSH {version}. Stop the daemon, move {} aside, then reinstall to download the compatible runtime. Keep your separate DSH home and daemon state directories; they contain sessions and pairings. Existing services were not stopped.",
             directory.display()
         );
     }
@@ -156,22 +177,32 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
         return Ok(());
     }
     validate(config, p)?;
-    let binary = launcher(p);
+    // A daemon update must not silently replace an existing managed Harness.
+    let version = config
+        .dsh_version
+        .as_deref()
+        .context("Managed DSH version is missing; reinstall with an explicit --dsh path.")?;
+    let pins = runtime_pins(version)
+        .context("Managed DSH dependencies are unavailable for this version.")?;
+    let binary = config
+        .dsh
+        .clone()
+        .context("Managed DSH launcher is missing; reinstall with an explicit --dsh path.")?;
     if binary.exists() {
-        check_runtime_dependencies(&p.root.join("dsh").join(DSH_VERSION))?;
-        return check_version(&binary);
+        check_runtime_dependencies(&p.root.join("dsh").join(version), version)?;
+        return check_version(&binary, version);
     }
     let node = management::executable("node").context("Automatic DSH installation needs Node >=24.9 and npm on PATH; install Node, or select an existing DSH with --dsh.")?;
     let npm = management::executable("npm").context(
         "Automatic DSH installation needs npm on PATH; install npm with Node, then retry.",
     )?;
-    let version = run(
+    let node_version = run(
         Command::new(&node).arg("--version"),
         Duration::from_secs(10),
         "Node version check",
     )?;
     ensure!(
-        supported_node(&version),
+        supported_node(&node_version),
         "Automatic DSH installation needs Node >=24.9; update Node or provide a compatible DSH launcher using --dsh."
     );
     let path = format!(
@@ -187,10 +218,10 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
     // Pin reviewed native install hooks for npm versions that require approvals.
     let manifest = serde_json::json!({
         "name":"drdsh-private-harness", "private":true, "type":"module",
-        "dependencies":{"@deepseek-ai/dsh":DSH_VERSION},
-        "overrides":RUNTIME_PINS.into_iter().collect::<std::collections::BTreeMap<_, _>>(),
+        "dependencies":{"@deepseek-ai/dsh":version},
+        "overrides":pins.iter().copied().collect::<std::collections::BTreeMap<_, _>>(),
         "allowScripts":{
-            "@deepseek-ai/dsh-subprocess-local@0.2.2-alpha.2":true,
+            (format!("@deepseek-ai/dsh-subprocess-local@{version}")):true,
             "@google/genai@2.21.0":true, "koffi@3.1.1":true,
             "node-pty@1.2.0-beta.15":true, "protobufjs@7.6.6":true
         }
@@ -206,7 +237,7 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
     let global_config = stage.0.join("npm-global.config");
     files::atomic_write(&user_config, b"", 0o600)?;
     files::atomic_write(&global_config, b"", 0o600)?;
-    println!("Installing private DSH {DSH_VERSION} from registry.npmjs.org…");
+    println!("Installing private DSH {version} from registry.npmjs.org…");
     let mut npm_command = Command::new(npm);
     npm_command
         .env_clear()
@@ -258,10 +289,10 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
         stage.0.join("node_modules/@deepseek-ai/dsh/package.json"),
     )?)?;
     ensure!(
-        metadata["name"] == "@deepseek-ai/dsh" && metadata["version"] == DSH_VERSION,
+        metadata["name"] == "@deepseek-ai/dsh" && metadata["version"] == version,
         "npm returned an unexpected DSH package; discard the staging directory and retry with the official registry."
     );
-    check_runtime_dependencies(&stage.0)?;
+    check_runtime_dependencies(&stage.0, version)?;
     let downloaded_version = run(
         Command::new(&node)
             .arg(stage.0.join("node_modules/@deepseek-ai/dsh/lib/bin.js"))
@@ -270,8 +301,8 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
         "Downloaded DSH startup check",
     )?;
     ensure!(
-        downloaded_version == DSH_VERSION,
-        "Downloaded DSH did not report the pinned version {DSH_VERSION}; retry installation from the official registry. Existing services were not stopped."
+        downloaded_version == version,
+        "Downloaded DSH did not report the pinned version {version}; retry installation from the official registry. Existing services were not stopped."
     );
     let destination = binary
         .parent()
@@ -294,12 +325,33 @@ pub(crate) fn ensure_dsh(config: &mut Config, p: &Paths) -> Result<()> {
     fs::rename(&stage.0, destination).context(
         "Cannot activate the private DSH version; check prefix permissions and disk space.",
     )?;
-    check_version(&binary)
+    check_version(&binary, version)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn existing_managed_runtime_keeps_its_version_but_cannot_escape_its_private_path() -> Result<()>
+    {
+        let p = Paths::new(Path::new("/tmp/drdsh-version-test"), "daemon")?;
+        for version in ["0.2.2-alpha.2", DSH_VERSION] {
+            let mut config: Config = serde_json::from_value(serde_json::json!({
+                "version": 1, "prefix": p.prefix, "scope": "daemon", "source": "/tmp/source",
+                "components": ["daemon"], "dshManaged": true, "dshVersion": version,
+                "dsh": p.root.join("dsh").join(version).join("bin/dsh"),
+            }))?;
+            validate(&config, &p)?;
+            config.dsh = Some(p.root.join("dsh/foreign/bin/dsh"));
+            assert!(validate(&config, &p).is_err());
+            config.dsh_version = Some("unreviewed-version".into());
+            config.dsh = Some(p.root.join("dsh/unreviewed-version/bin/dsh"));
+            assert!(validate(&config, &p).is_err());
+        }
+        Ok(())
+    }
+
     #[test]
     fn node_floor_matches_the_verified_dsh_engine() {
         assert!(!supported_node("v24.8.9"));

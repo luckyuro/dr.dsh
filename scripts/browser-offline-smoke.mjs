@@ -22,7 +22,7 @@ const playwright = await import(process.env.PLAYWRIGHT_MODULE ?? 'playwright-cor
 const { chromium } = playwright.default ?? playwright;
 
 import { OFFLINE_CACHE } from '../apps/pwa/src/offline.ts';
-import { reloadOffline, restoreOnline } from './browser-network.mjs';
+import { OFFLINE_PROBE_PATH, reloadOffline, restoreOnline } from './browser-network.mjs';
 
 const [relayUrl, roomKey, ...flags] = process.argv.slice(2);
 if (relayUrl === undefined || roomKey === undefined) {
@@ -50,7 +50,7 @@ const context = await browser.newContext();
 const page = await context.newPage();
 const consoleErrors = [];
 page.on('console', message => {
-  if (message.location().url.endsWith('/healthz') && message.text().includes('ERR_INTERNET_DISCONNECTED')) return;
+  if (message.location().url.endsWith(OFFLINE_PROBE_PATH) && message.text().includes('ERR_INTERNET_DISCONNECTED')) return;
   if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 160));
 });
 page.on('pageerror', error => consoleErrors.push(`uncaught: ${error.message}`));

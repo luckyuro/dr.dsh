@@ -12,7 +12,7 @@ dr.dsh：让用户从任意设备安全地访问运行在自己电脑上的 Deep
 见 [`docs/audit-scope.md`](docs/audit-scope.md) § 2.4）、**没有第三方审计**、**没有托管中继**。
 逐条状态见 [`docs/product/mvp.md`](docs/product/mvp.md) 的进度行。
 
-插件统一入口在 `plugins/dr.dsh`：单包携带原生隧道与管理程序，当前支持 DSH `0.2.2-alpha.2` 并回归 `0.2.1-rc.5`。本机
+插件统一入口在 `plugins/dr.dsh`：单包携带原生隧道与管理程序，当前支持 DSH `0.2.2-rc.1` 并回归 `0.2.1-rc.5`。本机
 `/_drdsh/manage` 页面通过独立授权调用原生管理层。安装、更新与接管使用 OS 持久作业；
 DSH 停止时页面也停止，不能把插件描述为独立常驻服务。见 [ADR-0023](docs/decisions/0023-plugin-local-management.md)。
 插件配置 `relayUrl` 可不安装 daemon 服务而独立连接；连接随宿主退出。常驻 daemon 负责可选的

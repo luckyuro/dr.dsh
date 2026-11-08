@@ -189,23 +189,25 @@ test('arbitrary backend errors cannot expose native diagnostics to HTTP callers'
   } finally { await app.close(); }
 });
 
-test('loopback addresses are checked from the socket and the generated launcher preserves literal argv', async () => {
+test('loopback addresses are checked and the launcher preserves argv and its management instance', async () => {
   for (const value of ['127.0.0.1', '127.2.3.4', '::1', '::ffff:127.0.0.1']) assert.equal(isLoopbackPeer(value), true);
   for (const value of [undefined, 'localhost', '127.0.0.999', '192.168.1.1', '::ffff:192.168.1.1']) assert.equal(isLoopbackPeer(value), false);
   const directory = await mkdtemp(join(tmpdir(), 'drdsh-launcher-'));
   try {
     const script = join(directory, "entry's script.mjs");
-    await writeFile(script, 'console.log(JSON.stringify(process.argv.slice(2)));\n');
-    const launcher = await createTrustedLauncher(directory, process.execPath, script);
+    const prefix = join(directory, "prefix's $(literal)");
+    await writeFile(script, 'console.log(JSON.stringify({args:process.argv.slice(2),prefix:process.env.DRDSH_MANAGER_PREFIX,storage:process.env.DRDSH_MANAGER_STORAGE}));\n');
+    const launcher = await createTrustedLauncher(directory, prefix, process.execPath, script);
     assert.equal((await stat(launcher)).mode & 0o777, 0o700);
     const expected = ['web', 'a b', "literal'quote", '$(not-a-command)'];
-    const child = spawn(launcher, expected, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(launcher, expected, { env: { DRDSH_MANAGER_PREFIX: '/wrong', DRDSH_MANAGER_STORAGE: '/wrong' }, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     child.stdout.on('data', bytes => { stdout += bytes; });
     assert.equal((await once(child, 'close'))[0], 0);
-    assert.deepEqual(JSON.parse(stdout), expected);
+    assert.deepEqual(JSON.parse(stdout), { args: expected, prefix, storage: directory });
     await writeFile(launcher, 'changed');
-    await assert.rejects(createTrustedLauncher(directory, process.execPath, script), /differs from this running CLI/u);
-    await assert.rejects(createTrustedLauncher(directory, process.execPath, 'relative.mjs'), /absolute local CLI/u);
+    await assert.rejects(createTrustedLauncher(directory, prefix, process.execPath, script), /differs from this running CLI/u);
+    await assert.rejects(createTrustedLauncher(directory, prefix, process.execPath, 'relative.mjs'), /absolute local CLI/u);
+    await assert.rejects(createTrustedLauncher(directory, 'relative'), /absolute local directories/u);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });

@@ -94,6 +94,8 @@ pub enum Command {
         dsh: Option<PathBuf>,
         /// Port to probe instead of the configured default.
         port: Option<u16>,
+        /// Emit a versioned report for local tools and framework integrations.
+        json: bool,
     },
     /// Print version and protocol numbers.
     Version,
@@ -142,6 +144,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
     let mut name = None;
     let mut out = None;
     let mut rendezvous = None;
+    let mut json = false;
     while let Some(flag) = args.next() {
         let flag = flag.to_string_lossy().into_owned();
         match flag.as_str() {
@@ -150,6 +153,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
             "--room-key" => room_key = Some(next_value(&mut args, "--room-key")?),
             "--revoke" => revoke = Some(next_value(&mut args, "--revoke")?),
             "--clear" => clear = true,
+            "--json" if verb == "doctor" => json = true,
             "--wait" => {
                 let value = next_value(&mut args, "--wait")?;
                 let seconds = value.parse::<u64>().map_err(|error| {
@@ -222,7 +226,7 @@ pub fn parse(args: impl IntoIterator<Item = OsString>) -> Result<Command> {
         "devices" => Command::Devices { revoke },
         "crashes" => Command::Crashes { clear },
         "audit" => Command::Audit { clear },
-        "doctor" => Command::Doctor { dsh, port },
+        "doctor" => Command::Doctor { dsh, port, json },
         "version" => Command::Version,
         "room-key" => Command::RoomKey,
         other => {
@@ -263,7 +267,7 @@ pub fn run_with_args(args: Vec<OsString>) -> Result<ExitCode> {
             );
             Ok(ExitCode::SUCCESS)
         }
-        Command::Doctor { dsh, port } => crate::doctor::run(dsh.as_deref(), port),
+        Command::Doctor { dsh, port, json } => crate::doctor::run(dsh.as_deref(), port, json),
         Command::Pair {
             relay,
             room_key,
@@ -352,7 +356,7 @@ pub fn help_text() -> String {
          \x20   drdshd devices [--revoke <device-id>]\n\
          \x20   drdshd crashes [--clear]\n\
          \x20   drdshd audit [--clear]\n\
-         \x20   drdshd doctor [--dsh <path>] [--port <port>]\n\
+         \x20   drdshd doctor [--dsh <path>] [--port <port>] [--json]\n\
          \x20   drdshd version\n\
          \n\
          The daemon supervises the local DSH instance, keeps it bound to loopback,\n\
@@ -512,5 +516,19 @@ mod tests {
     #[test]
     fn doctor_rejects_a_non_numeric_port() {
         assert!(parse_str(&["doctor", "--port", "http"]).is_err());
+    }
+
+    #[test]
+    fn structured_diagnostics_are_explicit_and_doctor_only() -> TestResult {
+        assert!(matches!(
+            parse_str(&["doctor", "--json"])?,
+            Command::Doctor { json: true, .. }
+        ));
+        assert!(matches!(
+            parse_str(&["doctor"])?,
+            Command::Doctor { json: false, .. }
+        ));
+        assert!(parse_str(&["run", "--json"]).is_err());
+        Ok(())
     }
 }

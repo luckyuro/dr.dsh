@@ -29,7 +29,7 @@ Daemon 完整使用入口见 [`../../daemon/README.zh.md`](../../daemon/README.z
 两侧配置和旧安装迁移见 [`cli.md`](cli.md)。下面保留手工构建、旧 CPU 与附着模式说明。
 Windows 的一键路径是启用 systemd 的 WSL2；原生 Windows 仍需手工运行二进制。
 
-v0.2.0 支持首次省略 `--dsh`：安装器下载固定的 DSH `0.2.2-alpha.2` 到 daemon
+当前源码支持首次省略 `--dsh`：安装器下载固定的 DSH `0.2.2-rc.1` 到 daemon
 私有版本目录，记录版本与路径，并默认装配随包插件。需要 Node **24.9+**、npm 和 npm registry
 访问能力；已有 DSH 配置会保留，模型账号/API key 仍由用户设置。完整命令、失败恢复和版本
 边界见 [DSH 自动安装](dsh-provisioning.md)。这项能力尚不能视为已有 Release 的行为。

@@ -3,12 +3,16 @@
 set -eu
 drdsh_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 drdsh_dist=$drdsh_root/apps/pwa/dist
-for drdsh_name in session.js service-worker.js offline.js i18n.js; do
+for drdsh_name in session.js service-worker.js offline.js i18n.js preflight.js validation.js proxy-ws.js; do
   [ -s "$drdsh_dist/$drdsh_name" ] || {
     echo "PWA build is missing $drdsh_name; run pnpm --filter @dr.dsh/pwa build before packaging." >&2
     exit 1
   }
 done
+cmp -s "$drdsh_root/packages/validation/src/index.js" "$drdsh_dist/validation.js" || {
+  echo 'PWA validation module is stale; run pnpm --filter @dr.dsh/pwa build before packaging.' >&2
+  exit 1
+}
 for drdsh_source in "$drdsh_root/apps/pwa/static/"* "$drdsh_root/apps/pwa/src/shell.js" "$drdsh_root/apps/pwa/src/ws-bootstrap.js"; do
   drdsh_name=${drdsh_source##*/}
   [ -s "$drdsh_source" ] && cmp -s "$drdsh_source" "$drdsh_dist/$drdsh_name" || {

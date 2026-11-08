@@ -4,15 +4,13 @@
 
 DSH 的 README 明确写道："Developer preview … **THERE WILL BE COMPATIBILITY-BREAKING CHANGES.**" 因此本文的目的不是"确认依赖稳定"，而是"把不稳定性关进一个可以被检查的笼子里"。
 
-核对基准（2026-10-30）：**DSH `0.2.2-alpha.2`**，上游提交
-[`f3803c96974ad4a94195fb97e5c637e9c2a3afe3`](https://github.com/deepseek-ai/deepseek-harness/tree/f3803c96974ad4a94195fb97e5c637e9c2a3afe3)。
-官方 npm 的 `alpha` 指向此版本；`latest` 与 `next` 均为 `0.2.1-rc.5`，提交
-[`b830ec950faba0a46dda564be3e2d854afed94f1`](https://github.com/deepseek-ai/deepseek-harness/tree/b830ec950faba0a46dda564be3e2d854afed94f1)。
-本次按用户选择保留最新 alpha，并对 rc.5 回归；其余版本保留历史记录。
-版本列表由 `npm view @deepseek-ai/dsh dist-tags --registry=https://registry.npmjs.org` 取得。
+核对基准（2026-11-07）：**DSH `0.2.2-rc.1`**，上游提交
+[`66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db`](https://github.com/deepseek-ai/deepseek-harness/tree/66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db)。
+官方 npm 的 `latest` 与 `next` 指向此版本；`alpha` 为 `0.2.2-alpha.3`，本轮未扩大到该 alpha。
+版本列表由 `npm view @deepseek-ai/dsh dist-tags --registry=https://registry.npmjs.org` 在线取得。
 
-插件本机管理面与独立连接面以 **`0.2.2-alpha.2`** 的 Web 服务和启动生命周期契约为基准，
-同样检查 `0.2.1-rc.5` 的已发布运行时代码。
+插件本机管理面与独立连接面以 **`0.2.2-rc.1`** 的 Web 服务和启动生命周期契约为基准。
+`0.2.2-alpha.2`、`0.2.1-rc.5` 的既有兼容记录保留在下方；更新 daemon 不会自动替换已有 DSH。
 下方历史版本的事件报告验收不扩大管理面兼容范围；旧版本缺少管理契约时只停用管理子树，
 报告能力按原有契约继续工作。
 
